@@ -1,8 +1,34 @@
 # Alexandria
 
-A self-hosted personal library for managing 3D printing model collections. Handles upload, processing, organization, and search of model files (STLs, images, supporting documents) packaged as zip archives.
+A self-hosted personal library for managing 3D printing model collections. Think of it as Plex for 3D printing files — upload your zip archives, and Alexandria handles processing, thumbnail generation, metadata, organization, and search.
 
-Think of it as Plex for 3D printing files.
+---
+
+## Features
+
+**Ingestion and storage**
+- Upload zip archives containing STL files, images, and supporting documents
+- Chunked uploads up to 5 GB with 10 MB chunks and automatic retry
+- Async processing pipeline with thumbnail generation (WebP at multiple sizes)
+- Import existing library folders with pattern-based hierarchy parsing (e.g. `{artist}/{year}/{name}`) using hardlink, copy, or move strategies
+
+**Organization**
+- Flexible metadata system with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL) and user-defined custom fields
+- Nestable collections — models can belong to multiple collections simultaneously
+- Tag normalization prevents case-variant duplicates
+
+**Search and browse**
+- PostgreSQL full-text search across model names and descriptions
+- Filter by any metadata field value
+- Cursor-based pagination for efficient large library browsing
+
+**API**
+- 32 REST endpoints with a consistent `{ data, meta, errors }` envelope on every response
+- Serves thumbnails and raw model files directly
+
+**Auth**
+- Single-user email/password login with HTTP-only signed session cookie
+- argon2 password hashing
 
 ---
 
@@ -10,25 +36,20 @@ Think of it as Plex for 3D printing files.
 
 | Layer | Choice |
 |---|---|
-| Frontend | React 19 + Vite + TypeScript, Tailwind CSS |
+| Frontend | React 19 + Vite + TypeScript, Tailwind CSS + shadcn/ui |
 | Backend | Fastify 5 + TypeScript |
 | Database | PostgreSQL 16, Drizzle ORM |
-| Job Queue | BullMQ + Redis (Phase 2+) |
-| Storage | Local filesystem (S3-compatible planned) |
+| Job Queue | BullMQ + Redis |
+| Storage | Local filesystem |
 | Auth | Session cookie with argon2 password hashing |
 | Deployment | Docker Compose |
 | Monorepo | npm workspaces + Turborepo |
 
 ---
 
-## Prerequisites
+## Quick Start
 
-- Node.js 20 or later
-- Docker and Docker Compose
-
----
-
-## Quick Start (Docker Compose)
+Requires Docker and Docker Compose.
 
 ```bash
 git clone <repo-url> alexandria
@@ -37,7 +58,7 @@ cd alexandria
 # Start all services (Postgres, Redis, backend, frontend)
 docker compose -f docker/docker-compose.yml up --build
 
-# In a separate terminal, seed the database (first time only)
+# Seed the database (first time only)
 docker compose -f docker/docker-compose.yml exec backend npm run db:seed
 ```
 
@@ -47,58 +68,40 @@ Services are available at:
 - Backend API: http://localhost:3001
 - Postgres: localhost:5433 (user: `alexandria`, password: `alexandria`, db: `alexandria`)
 
-Default admin credentials after seeding: `admin@alexandria.local` / `changeme`
-
-Set `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables before seeding to override the defaults.
+Default login after seeding: `admin@alexandria.local` / `changeme`
 
 ---
 
 ## Development Setup
 
-Install dependencies from the repo root:
+Requires Node.js 20 or later.
 
 ```bash
 npm install
-```
-
-Start all services in development mode (with watch/hot-reload):
-
-```bash
 npm run dev
 ```
 
-This runs Turborepo's `dev` task across all packages. The backend uses `tsx watch` and the frontend uses Vite's dev server.
+`npm run dev` runs Turborepo's dev task across all packages. The backend uses `tsx watch` and the frontend uses Vite's dev server with hot reload. The frontend dev server proxies `/api/*` requests to `http://localhost:3000`.
 
-To run services individually:
+To run a single app:
 
 ```bash
-# Backend only
 cd apps/backend && npm run dev
-
-# Frontend only
 cd apps/frontend && npm run dev
 ```
 
-The frontend dev server proxies `/api/*` requests to `http://localhost:3000` (the backend's default development port). When running via Docker Compose, the backend is exposed on host port 3001.
-
 ### Database
 
-The backend runs Drizzle migrations automatically on startup. To run migrations or generate new ones manually:
+Drizzle migrations run automatically on backend startup. To run them manually or generate new ones after schema changes:
 
 ```bash
 cd apps/backend
-
-# Apply pending migrations
-npm run db:migrate
-
-# Generate a new migration after schema changes
-npm run db:generate
-
-# Seed the database with default user and metadata fields
-npm run db:seed
+npm run db:migrate    # Apply pending migrations
+npm run db:generate   # Generate migration after schema changes
+npm run db:seed       # Seed default user and metadata fields
 ```
 
-You need a running Postgres instance. When developing outside Docker, the backend defaults to `postgresql://alexandria:alexandria@localhost:5432/alexandria`. Override with `DATABASE_URL`.
+For local development outside Docker, the backend connects to `postgresql://alexandria:alexandria@localhost:5432/alexandria` by default. Override with `DATABASE_URL`.
 
 ---
 
@@ -109,16 +112,22 @@ alexandria/
 ├── apps/
 │   ├── backend/            Fastify API server
 │   │   └── src/
-│   │       ├── routes/     Thin route handlers (auth implemented in Phase 1)
-│   │       ├── services/   Business logic services
+│   │       ├── routes/     Thin route handlers
+│   │       ├── services/   Business logic (12 services)
+│   │       ├── workers/    BullMQ workers
 │   │       ├── db/
-│   │       │   ├── schema/ Drizzle table definitions (all entities defined)
+│   │       │   ├── schema/ Drizzle table definitions
 │   │       │   └── migrations/
 │   │       ├── middleware/ Auth, validation, error handler
 │   │       ├── config/     Environment configuration
-│   │       └── utils/      AppError and error factories
+│   │       └── utils/      AppError, logger, slug, format
 │   │
-│   └── frontend/           Vite + React scaffold
+│   └── frontend/           Vite + React 19
+│       └── src/
+│           ├── api/        Typed API clients
+│           ├── components/ UI components (shadcn/ui + custom)
+│           ├── hooks/      Auth, filters, selection, toast
+│           └── pages/      All application pages
 │
 ├── packages/
 │   └── shared/             Types, constants, and Zod schemas shared by both apps
@@ -132,14 +141,14 @@ alexandria/
 │   ├── Dockerfile.backend
 │   └── Dockerfile.frontend
 │
-└── docs/                   Architecture, types, conventions, and plan
+└── docs/                   Architecture, API reference, types, conventions
 ```
 
 ---
 
 ## Environment Variables
 
-The backend reads these from the environment. All have development defaults.
+All backend variables have development defaults and can be set in the environment or a `.env` file.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -151,7 +160,7 @@ The backend reads these from the environment. All have development defaults.
 | `HOST` | `0.0.0.0` | Host the backend binds to |
 | `NODE_ENV` | `development` | Affects log level and cookie security |
 
-Seed-only variables (only read by `npm run db:seed`):
+Seed-only variables (read by `npm run db:seed`):
 
 | Variable | Default | Description |
 |---|---|---|
@@ -161,29 +170,36 @@ Seed-only variables (only read by `npm run db:seed`):
 
 ---
 
-## Current Status
+## Testing
 
-Phase 1 (Foundation) is complete. What's built:
+```bash
+npm run test
+```
 
-- Full monorepo setup with shared types package
-- All database schemas defined and migrated (User, Model, ModelFile, Thumbnail, MetadataFieldDefinition, ModelMetadata, Tag, Collection, and all join tables)
-- AuthService with argon2 password hashing, session cookies, and profile management
-- StorageService local filesystem implementation with the `IStorageService` interface
-- Auth routes: `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `PATCH /auth/me`
-- Global error handler producing the `{ data, meta, errors }` envelope on all errors
-- Request validation middleware using shared Zod schemas
-- Health check: `GET /health`
-- Database seed with default admin user and six metadata fields (Tags, Artist, Year, NSFW, URL, Pre-supported)
-- Docker Compose setup with health checks on all services
+Tests run with Vitest and live alongside source files. Integration tests require a running Postgres and Redis instance. Point `DATABASE_URL` at a local or Docker-hosted Postgres before running.
 
-Phases 2–8 (ingestion pipeline, metadata, folder import, search, collections, API polish, frontend UI) are planned. See `docs/PLAN.md`.
+```bash
+# Start only the infrastructure services for testing
+docker compose -f docker/docker-compose.yml up -d postgres redis
+```
 
 ---
 
 ## Documentation
 
 - `docs/ARCHITECTURE.md` — service boundaries, API design, and decision log
+- `docs/API.md` — full API reference (32 endpoints)
 - `docs/TYPES.md` — canonical type definitions
 - `docs/CONVENTIONS.md` — naming, patterns, and coding standards
-- `docs/PLAN.md` — phase-by-phase implementation plan
 - `docs/PROJECT-BRIEF.md` — project overview and rationale
+
+---
+
+## Roadmap
+
+The following are planned but not yet implemented:
+
+- **3D model viewer** — in-browser STL/3MF rendering
+- **Multi-user support** — roles, per-user collections, shared libraries
+- **S3-compatible storage** — swap local filesystem for object storage
+- **Print job tracking** — link models to print history and notes
