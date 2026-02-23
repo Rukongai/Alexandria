@@ -1,6 +1,7 @@
 import { Worker, type Job } from 'bullmq';
 import { config } from '../config/index.js';
 import { ingestionService } from '../services/ingestion.service.js';
+import { modelService } from '../services/model.service.js';
 import { jobService, type IngestionJobPayload, type FolderImportJobPayload } from '../services/job.service.js';
 import { parseRedisUrl } from '../utils/redis.js';
 import { createLogger } from '../utils/logger.js';
@@ -37,11 +38,22 @@ export function startIngestionWorker(): void {
     },
   );
 
-  ingestionWorker.on('failed', (job, err) => {
+  ingestionWorker.on('failed', async (job, err) => {
     logger.error(
       { jobId: job?.id, modelId: job?.data?.modelId, error: err.message },
       'Ingestion job failed',
     );
+    // Safety net: if all retries exhausted, ensure model is marked as error
+    if (job && job.attemptsMade >= (job.opts.attempts ?? 1)) {
+      try {
+        await modelService.updateModelStatus(job.data.modelId, 'error');
+      } catch (updateErr) {
+        logger.error(
+          { modelId: job.data.modelId, error: String(updateErr) },
+          'Failed to update model status after job failure',
+        );
+      }
+    }
   });
 
   importWorker = new Worker(

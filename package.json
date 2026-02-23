@@ -7,6 +7,10 @@
   ],
   "scripts": {
     "dev": "turbo dev",
+    "dev:up": "[ -f .env ] || cp .env.example .env && npm run services:up && npm run db:setup && export $(grep -v '^#' .env | xargs) && turbo dev",
+    "services:up": "docker compose -f docker/docker-compose.yml up -d postgres redis --wait",
+    "services:down": "docker compose -f docker/docker-compose.yml down",
+    "db:setup": "DATABASE_URL=postgresql://alexandria:alexandria@localhost:5433/alexandria npm run db:migrate -w @alexandria/backend && DATABASE_URL=postgresql://alexandria:alexandria@localhost:5433/alexandria npm run db:seed -w @alexandria/backend",
     "build": "turbo build",
     "lint": "turbo lint",
     "test": "turbo test"

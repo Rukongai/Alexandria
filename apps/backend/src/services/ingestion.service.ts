@@ -34,12 +34,19 @@ export class IngestionService {
       originalFilename: file.originalFilename,
     });
 
-    const jobId = await jobService.enqueueIngestionJob({
-      modelId,
-      tempFilePath: file.tempFilePath,
-      originalFilename: file.originalFilename,
-      userId,
-    });
+    let jobId: string;
+    try {
+      jobId = await jobService.enqueueIngestionJob({
+        modelId,
+        tempFilePath: file.tempFilePath,
+        originalFilename: file.originalFilename,
+        userId,
+      });
+    } catch (err) {
+      logger.error({ modelId, error: String(err) }, 'Failed to enqueue ingestion job');
+      await modelService.updateModelStatus(modelId, 'error');
+      throw err;
+    }
 
     logger.info({ modelId, jobId }, 'Upload accepted, ingestion job enqueued');
     return { modelId, jobId };
@@ -100,12 +107,19 @@ export class IngestionService {
       logger.info({ modelId, jobId }, 'Processing completed — model is ready');
     } catch (err) {
       logger.error({ modelId, jobId, error: String(err) }, 'Processing failed');
-      await modelService.updateModelStatus(modelId, 'error');
+      const maxAttempts = job.opts.attempts ?? 1;
+      if (job.attemptsMade >= maxAttempts - 1) {
+        await modelService.updateModelStatus(modelId, 'error');
+      }
       throw err;
     } finally {
-      // Clean up temp files
-      await fsPromises.rm(tempFilePath, { force: true });
-      await fsPromises.rm(extractDir, { recursive: true, force: true });
+      // Only clean up temp files on success or final attempt to preserve files for BullMQ retries
+      const maxAttempts = job.opts.attempts ?? 1;
+      const isFinalAttempt = job.attemptsMade >= maxAttempts - 1;
+      if (!job.failedReason || isFinalAttempt) {
+        await fsPromises.rm(tempFilePath, { force: true });
+        await fsPromises.rm(extractDir, { recursive: true, force: true });
+      }
     }
   }
   async handleFolderImport(
