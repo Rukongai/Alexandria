@@ -1,5 +1,15 @@
-import { pgTable, uuid, varchar, text, bigint, integer, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, bigint, integer, timestamp, index, customType } from 'drizzle-orm/pg-core';
 import { users } from './user';
+
+// Custom tsvector type — Drizzle does not ship a native tsvector column type.
+// This is a thin wrapper that maps the column to PostgreSQL's tsvector type.
+// The column value is managed exclusively by the models_search_vector_update trigger;
+// application code should never write to it directly.
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
 
 // Models table — the central entity. Each model represents one 3D printing model
 // (a single zip upload or folder import).
@@ -28,6 +38,10 @@ export const models = pgTable(
     fileHash: varchar('file_hash', { length: 64 }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    // Populated and maintained by the models_search_vector_update trigger.
+    // name is weighted A (most relevant), description is weighted B.
+    // Never set this column from application code.
+    searchVector: tsvector('search_vector'),
   },
   (table) => [
     // Fast lookup by slug for URL-based access
@@ -38,6 +52,8 @@ export const models = pgTable(
     index('models_status_idx').on(table.status),
     // Sort by creation date (default browse order)
     index('models_created_at_idx').on(table.createdAt),
+    // GIN index required for efficient tsvector @@ tsquery full-text search
+    index('models_search_vector_idx').using('gin', table.searchVector),
   ],
 );
 
