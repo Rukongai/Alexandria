@@ -4,6 +4,7 @@ import type { ModelCard as ModelCardType } from '@alexandria/shared';
 import { Badge } from '../ui/badge';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
+import { useDisplayPreferences } from '../../hooks/use-display-preferences';
 
 interface ModelCardProps {
   model: ModelCardType;
@@ -39,6 +40,7 @@ function StatusIndicator({ status }: { status: ModelCardType['status'] }) {
 
 export function ModelCard({ model, selectable, selected, onToggleSelect }: ModelCardProps) {
   const navigate = useNavigate();
+  const { cardAspectRatio } = useDisplayPreferences();
 
   const tags = model.metadata
     .filter((m) => m.fieldSlug === 'tags')
@@ -91,7 +93,7 @@ export function ModelCard({ model, selectable, selected, onToggleSelect }: Model
       )}
 
       {/* Thumbnail area */}
-      <div className="relative aspect-[4/3] overflow-hidden bg-muted">
+      <div className="relative overflow-hidden bg-muted" style={{ aspectRatio: cardAspectRatio }}>
         {thumbnailSrc ? (
           <img
             src={thumbnailSrc}

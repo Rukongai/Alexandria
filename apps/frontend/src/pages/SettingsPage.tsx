@@ -4,10 +4,12 @@ import { Plus, Pencil, Trash2, Lock, Filter, Eye } from 'lucide-react';
 import type { MetadataFieldDetail } from '@alexandria/shared';
 import { getFields, deleteField } from '../api/metadata';
 import { useToast } from '../hooks/use-toast';
+import { useDisplayPreferences, type AspectRatio } from '../hooks/use-display-preferences';
 import { FieldDialog } from '../components/metadata/FieldDialog';
 import { AlertDialog } from '../components/ui/alert-dialog';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
+import { Select } from '../components/ui/select';
 import { Skeleton } from '../components/ui/skeleton';
 
 const TYPE_LABELS: Record<string, string> = {
@@ -20,9 +22,17 @@ const TYPE_LABELS: Record<string, string> = {
   multi_enum: 'Multi-select',
 };
 
+const ASPECT_RATIO_OPTIONS: { label: string; value: AspectRatio; description: string }[] = [
+  { label: 'Square (1:1)', value: '1/1', description: 'Equal width and height' },
+  { label: 'Portrait — Tall (2:3)', value: '2/3', description: 'Best for character/figure shots' },
+  { label: 'Portrait — Standard (3:4)', value: '3/4', description: 'Common for cards and covers' },
+  { label: 'Landscape (4:3)', value: '4/3', description: 'Current default — wider than tall' },
+];
+
 export function SettingsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { cardAspectRatio, setCardAspectRatio } = useDisplayPreferences();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<MetadataFieldDetail | undefined>(undefined);
@@ -53,6 +63,40 @@ export function SettingsPage() {
           Manage metadata fields and other library preferences.
         </p>
       </div>
+
+      {/* Library Display section */}
+      <section className="flex flex-col gap-4">
+        <div>
+          <h2 className="text-base font-semibold text-foreground">Library Display</h2>
+          <p className="text-sm text-muted-foreground">
+            Customize how model cards appear in the library grid.
+          </p>
+        </div>
+        <div className="rounded-xl border p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <label htmlFor="card-aspect-ratio" className="text-sm font-medium text-foreground">
+                Card Aspect Ratio
+              </label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {ASPECT_RATIO_OPTIONS.find((o) => o.value === cardAspectRatio)?.description}
+              </p>
+            </div>
+            <Select
+              id="card-aspect-ratio"
+              value={cardAspectRatio}
+              onChange={(e) => setCardAspectRatio(e.target.value as AspectRatio)}
+              className="w-56"
+            >
+              {ASPECT_RATIO_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </div>
+      </section>
 
       {/* Metadata Fields section */}
       <section className="flex flex-col gap-4">
