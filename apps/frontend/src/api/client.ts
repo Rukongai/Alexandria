@@ -20,13 +20,17 @@ async function request<T>(
 ): Promise<ApiResponse<T>> {
   const url = `${BASE_URL}${path}`;
 
+  const headers: Record<string, string> = { ...init.headers as Record<string, string> };
+  // Only set Content-Type when a body is present — Fastify rejects
+  // Content-Type: application/json on requests with no body.
+  if (init.body !== undefined) {
+    headers['Content-Type'] ??= 'application/json';
+  }
+
   const response = await fetch(url, {
     ...init,
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...init.headers,
-    },
+    headers,
   });
 
   const body: ApiResponse<T> = await response.json();
