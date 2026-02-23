@@ -1,4 +1,4 @@
-import { eq, and, inArray, isNull, sql, count } from 'drizzle-orm';
+import { eq, and, inArray, sql, count } from 'drizzle-orm';
 import type {
   Collection,
   CollectionDetail,
@@ -163,30 +163,29 @@ export class CollectionService {
   }
 
   /**
-   * List top-level collections for a user. Loads children to the specified depth
-   * (default 1 — returns summaries of direct children only, no recursion).
+   * List all collections for a user as a flat array. Each entry includes its
+   * direct children as CollectionSummary[]. The caller is responsible for
+   * filtering top-level vs nested collections using parentCollectionId.
    */
   async listCollections(
     userId: string,
     params: { depth?: number } = {},
   ): Promise<CollectionDetail[]> {
-    const depth = params.depth ?? 1;
-
-    const topLevel = await db
+    const allRows = await db
       .select()
       .from(collections)
-      .where(and(eq(collections.userId, userId), isNull(collections.parentCollectionId)))
+      .where(eq(collections.userId, userId))
       .orderBy(collections.createdAt);
 
-    if (topLevel.length === 0) {
+    if (allRows.length === 0) {
       return [];
     }
 
-    const topLevelIds = topLevel.map((c) => c.id);
-    const modelCounts = await this._getModelCounts(topLevelIds);
+    const allIds = allRows.map((c) => c.id);
+    const modelCounts = await this._getModelCounts(allIds);
 
     const results: CollectionDetail[] = [];
-    for (const row of topLevel) {
+    for (const row of allRows) {
       const children = await this._loadChildren(row.id);
       results.push({
         id: row.id,
