@@ -7,6 +7,7 @@ export default defineConfig({
     // Run all tests in a single process serially — avoids database conflicts
     // in integration tests and matches how the app runs.
     singleThread: true,
+    exclude: ['dist/**', 'node_modules/**'],
     env: {
       DATABASE_URL: 'postgresql://alexandria:alexandria@localhost:5433/alexandria_test',
     },

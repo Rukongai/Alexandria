@@ -1,10 +1,13 @@
 import Fastify from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyCookie from '@fastify/cookie';
+import fastifyMultipart from '@fastify/multipart';
 import { config } from './config/index.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { AuthService } from './services/auth.service.js';
 import { authRoutes } from './routes/auth.js';
+import { modelRoutes } from './routes/models.js';
+import { startIngestionWorker } from './workers/ingestion.worker.js';
 
 export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   const app = Fastify({
@@ -26,6 +29,13 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
     secret: config.sessionSecret,
   });
 
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: 100 * 1024 * 1024, // 100MB
+      files: 1,
+    },
+  });
+
   // Instantiate services and make them available on the app instance
   const authService = new AuthService();
   (app as typeof app & { authService: AuthService }).authService = authService;
@@ -40,6 +50,10 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
 
   // Route registrations
   await app.register(authRoutes, { prefix: '/auth' });
+  await app.register(modelRoutes, { prefix: '/models' });
+
+  // Start background workers
+  startIngestionWorker();
 
   return app;
 }

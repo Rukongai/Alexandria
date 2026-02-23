@@ -22,7 +22,12 @@ export class StorageService implements IStorageService {
   }
 
   private resolve(filePath: string): string {
-    return path.join(this.root, filePath);
+    const absolute = path.resolve(this.root, filePath);
+    const root = path.resolve(this.root);
+    if (!absolute.startsWith(root + path.sep) && absolute !== root) {
+      throw storageError(`Path traversal attempt: ${filePath}`);
+    }
+    return absolute;
   }
 
   async store(filePath: string, data: Buffer | NodeJS.ReadableStream): Promise<void> {

@@ -39,3 +39,7 @@ export function storageError(message: string): AppError {
 export function internalError(message: string): AppError {
   return new AppError(ErrorCodes.INTERNAL_ERROR, 500, message);
 }
+
+export function processingError(message: string): AppError {
+  return new AppError(ErrorCodes.PROCESSING_FAILED, 422, message);
+}
