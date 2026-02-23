@@ -61,6 +61,7 @@ export interface ModelRow {
   fileCount: number;
   totalSizeBytes: number;
   createdAt: Date;
+  previewImageFileId?: string | null;
 }
 
 /** Minimal model-file row shape needed for file-tree building. */
@@ -84,7 +85,10 @@ export class PresenterService implements IPresenterService {
   async buildModelCard(modelId: string): Promise<ModelCard> {
     const model = await modelService.getModelById(modelId);
     const metadata = await metadataService.getModelMetadata(modelId);
-    const thumbnailUrl = await this._resolveGridThumbnailUrl(modelId);
+    const thumbnailUrl = await this._resolveGridThumbnailUrl(
+      modelId,
+      model.previewImageFileId ?? null,
+    );
 
     return {
       id: model.id,
@@ -109,8 +113,19 @@ export class PresenterService implements IPresenterService {
   ): Promise<ModelCard[]> {
     if (rows.length === 0) return [];
 
+    // Build a map of modelId → previewImageFileId for rows that have it set
+    const previewFileIdByModel = new Map<string, string>();
+    for (const row of rows) {
+      if (row.previewImageFileId) {
+        previewFileIdByModel.set(row.id, row.previewImageFileId);
+      }
+    }
+
     // Batch-load thumbnails ------------------------------------------------
-    const thumbnailUrlByModel = await this._batchResolveGridThumbnails(modelIds);
+    const thumbnailUrlByModel = await this._batchResolveGridThumbnails(
+      modelIds,
+      previewFileIdByModel,
+    );
 
     // Batch-load metadata --------------------------------------------------
     const { genericMetaByModel, tagsByModel } =
@@ -228,10 +243,18 @@ export class PresenterService implements IPresenterService {
         };
       });
 
-      // Primary thumbnail = grid-size of first image
-      const firstGridThumb = gridThumbByFile.get(imageFiles[0].id);
-      if (firstGridThumb) {
-        thumbnailUrl = `/files/thumbnails/${firstGridThumb}.webp`;
+      // Primary thumbnail: prefer grid-size of previewImageFileId when set,
+      // fall back to grid-size of the first image file.
+      const coverFileId = model.previewImageFileId ?? imageFiles[0].id;
+      const coverGridThumb = gridThumbByFile.get(coverFileId);
+      if (coverGridThumb) {
+        thumbnailUrl = `/files/thumbnails/${coverGridThumb}.webp`;
+      } else {
+        // Fallback: use first image's grid thumb if the cover file has no thumb
+        const firstGridThumb = gridThumbByFile.get(imageFiles[0].id);
+        if (firstGridThumb) {
+          thumbnailUrl = `/files/thumbnails/${firstGridThumb}.webp`;
+        }
       }
     }
 
@@ -241,6 +264,7 @@ export class PresenterService implements IPresenterService {
       slug: model.slug,
       description: model.description,
       thumbnailUrl,
+      previewImageFileId: model.previewImageFileId ?? null,
       metadata,
       sourceType: model.sourceType as ModelSourceType,
       originalFilename: model.originalFilename,
@@ -328,24 +352,33 @@ export class PresenterService implements IPresenterService {
 
   /**
    * Resolve the grid-size thumbnail URL for a single model.
+   * When previewImageFileId is set, that file's thumbnail is preferred.
    */
   private async _resolveGridThumbnailUrl(
     modelId: string,
+    previewImageFileId: string | null,
   ): Promise<string | null> {
-    const map = await this._batchResolveGridThumbnails([modelId]);
+    const previewMap = new Map<string, string>();
+    if (previewImageFileId) {
+      previewMap.set(modelId, previewImageFileId);
+    }
+    const map = await this._batchResolveGridThumbnails([modelId], previewMap);
     return map.get(modelId) ?? null;
   }
 
   /**
    * Batch-resolve grid-size thumbnail URLs for multiple models.
    * Returns a Map of modelId → thumbnail URL string.
+   * When previewFileIdByModel contains an entry for a model, that specific
+   * file's thumbnail is used instead of the first image file fallback.
    */
   private async _batchResolveGridThumbnails(
     modelIds: string[],
+    previewFileIdByModel: Map<string, string> = new Map(),
   ): Promise<Map<string, string>> {
     if (modelIds.length === 0) return new Map();
 
-    // Step 1: find first image file per model
+    // Step 1: find first image file per model (for fallback)
     const imageFileRows = await db
       .select({
         modelId: modelFiles.modelId,
@@ -367,7 +400,19 @@ export class PresenterService implements IPresenterService {
       }
     }
 
-    const imageFileIds = [...firstImageFileByModel.values()];
+    // Determine which file ID to use for thumbnail resolution per model:
+    // prefer previewImageFileId when set, fall back to first image file.
+    const resolvedFileByModel = new Map<string, string>();
+    for (const modelId of modelIds) {
+      const preferred = previewFileIdByModel.get(modelId);
+      const fallback = firstImageFileByModel.get(modelId);
+      const fileId = preferred ?? fallback;
+      if (fileId) {
+        resolvedFileByModel.set(modelId, fileId);
+      }
+    }
+
+    const imageFileIds = [...new Set(resolvedFileByModel.values())];
     if (imageFileIds.length === 0) return new Map();
 
     // Step 2: find grid-size thumbnail for each image file
@@ -390,9 +435,23 @@ export class PresenterService implements IPresenterService {
     }
 
     // Step 3: map modelId → URL
+    // If the preferred file has no thumbnail, fall back to first image file.
     const result = new Map<string, string>();
-    for (const [modelId, fileId] of firstImageFileByModel.entries()) {
-      const thumbId = thumbnailByFileId.get(fileId);
+    for (const modelId of modelIds) {
+      const preferredFileId = previewFileIdByModel.get(modelId);
+      const fallbackFileId = firstImageFileByModel.get(modelId);
+
+      let thumbId: string | undefined;
+
+      if (preferredFileId) {
+        thumbId = thumbnailByFileId.get(preferredFileId);
+      }
+
+      // Fall back to first image file thumbnail when preferred has none
+      if (!thumbId && fallbackFileId) {
+        thumbId = thumbnailByFileId.get(fallbackFileId);
+      }
+
       if (thumbId) {
         result.set(modelId, `/files/thumbnails/${thumbId}.webp`);
       }

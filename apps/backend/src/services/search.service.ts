@@ -259,6 +259,7 @@ export class PostgresSearchService implements ISearchService {
         fileCount: models.fileCount,
         totalSizeBytes: models.totalSizeBytes,
         createdAt: models.createdAt,
+        previewImageFileId: models.previewImageFileId,
         // Include the sort value in the result so we can encode the cursor
         sortValue: sortColumnSql,
       })

@@ -50,6 +50,7 @@ interface Model {
   totalSizeBytes: number;
   fileCount: number;
   fileHash: string | null;
+  previewImageFileId: string | null; // user-selected cover image; null = first-image fallback
   createdAt: string;
   updatedAt: string;
 }
@@ -214,6 +215,7 @@ interface ModelDetail {
   slug: string;
   description: string | null;
   thumbnailUrl: string | null;
+  previewImageFileId: string | null; // user-selected cover image; null = first-image fallback
   metadata: MetadataValue[];
   sourceType: ModelSourceType;
   originalFilename: string | null;
@@ -380,6 +382,7 @@ Shared validation schemas (Zod) for request bodies.
 interface UpdateModelRequest {
   name?: string;
   description?: string | null;
+  previewImageFileId?: string | null; // set to a ModelFile UUID to pin cover; null to revert to fallback
 }
 ```
 
