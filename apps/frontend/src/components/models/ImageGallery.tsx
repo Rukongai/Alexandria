@@ -101,6 +101,9 @@ export function ImageGallery({ images }: ImageGalleryProps) {
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
           onClick={() => setLightboxOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image lightbox"
         >
           <div
             className="relative max-w-5xl w-full mx-4"

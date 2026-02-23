@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, SlidersHorizontal } from 'lucide-react';
 import type { MetadataFieldDetail, MetadataFieldValue } from '@alexandria/shared';
 import { getFields, getFieldValues } from '../../api/metadata';
-import { Checkbox } from '../ui/checkbox';
 import { Input } from '../ui/input';
 import { Skeleton } from '../ui/skeleton';
 import { cn } from '../../lib/utils';

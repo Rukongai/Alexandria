@@ -20,6 +20,13 @@ export function SearchBar({ value, onChange, placeholder = 'Search models...', c
     setLocalValue(value);
   }, [value]);
 
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
+
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const next = e.target.value;
     setLocalValue(next);

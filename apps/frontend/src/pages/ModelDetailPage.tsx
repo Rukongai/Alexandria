@@ -36,7 +36,7 @@ export function ModelDetailPage() {
       {/* Back nav */}
       <div>
         <Link
-          to="/library"
+          to="/"
           className="inline-flex items-center gap-0.5 h-8 px-2 -ml-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
         >
           <ChevronLeft className="h-4 w-4" />
@@ -56,7 +56,7 @@ export function ModelDetailPage() {
             </p>
           </div>
           <Link
-            to="/library"
+            to="/"
             className="inline-flex items-center justify-center h-9 px-4 rounded-md border border-input bg-background text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground transition-colors"
           >
             Go to Library

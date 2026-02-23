@@ -40,5 +40,5 @@ export async function setModelMetadata(
   modelId: string,
   data: SetModelMetadataRequest
 ): Promise<void> {
-  await post(`/models/${modelId}/metadata`, data);
+  await patch(`/models/${modelId}/metadata`, data);
 }

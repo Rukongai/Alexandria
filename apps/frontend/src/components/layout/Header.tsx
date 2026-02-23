@@ -1,4 +1,4 @@
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { LogOut, User } from 'lucide-react';
 import { useAuth } from '../../hooks/use-auth';
 import { Avatar, AvatarFallback } from '../ui/avatar';
@@ -34,6 +34,7 @@ function getInitials(displayName: string): string {
 
 export function Header() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const title = usePageTitle();
 
   return (
@@ -61,9 +62,9 @@ export function Header() {
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => {}}>
+            <DropdownMenuItem onClick={() => navigate('/settings')}>
               <User className="mr-2 h-4 w-4" />
-              Profile
+              Settings
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem

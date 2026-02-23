@@ -59,12 +59,19 @@ export function ModelCard({ model, selectable, selected, onToggleSelect }: Model
   return (
     <article
       className={cn(
-        'group relative flex flex-col overflow-hidden rounded-xl border bg-card shadow transition-all hover:shadow-md hover:-translate-y-0.5 cursor-pointer',
+        'group relative flex flex-col overflow-hidden rounded-xl border bg-card shadow transition-all hover:shadow-md hover:-translate-y-0.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
         selected && 'ring-2 ring-primary ring-offset-2'
       )}
       onClick={handleClick}
-      aria-label={`View model: ${model.name}`}
-      aria-selected={selectable ? selected : undefined}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          handleClick(e as unknown as React.MouseEvent);
+        }
+      }}
+      tabIndex={0}
+      role="button"
+      aria-label={selectable ? `${selected ? 'Deselect' : 'Select'} model: ${model.name}` : `View model: ${model.name}`}
     >
       {/* Selection overlay */}
       {selectable && (

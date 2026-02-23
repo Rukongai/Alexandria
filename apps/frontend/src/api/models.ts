@@ -9,17 +9,7 @@ import type {
   ImportConfig,
 } from '@alexandria/shared';
 import { get, post, patch, del, postForm } from './client';
-
-function buildQueryString(params: Record<string, unknown>): string {
-  const entries = Object.entries(params).filter(
-    ([, v]) => v !== undefined && v !== null && v !== ''
-  );
-  if (entries.length === 0) return '';
-  const qs = entries
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-    .join('&');
-  return `?${qs}`;
-}
+import { buildQueryString } from '../lib/query';
 
 export async function getModels(params: ModelSearchParams): Promise<ApiResponse<ModelCard[]>> {
   const { metadataFilters, ...rest } = params;
