@@ -14,10 +14,10 @@ interface MetadataPanelProps {
   modelId: string;
 }
 
-type EditState = Record<string, string | string[]>;
+export type EditState = Record<string, string | string[]>;
 
 /** An "editable field" — either from existing metadata or from an unassigned field definition. */
-interface EditableField {
+export interface EditableField {
   fieldSlug: string;
   fieldName: string;
   type: MetadataFieldType;
@@ -25,13 +25,13 @@ interface EditableField {
   isDefault?: boolean;
 }
 
-function defaultValueForType(type: MetadataFieldType): string | string[] {
+export function defaultValueForType(type: MetadataFieldType): string | string[] {
   if (type === 'multi_enum') return [];
   if (type === 'boolean') return 'false';
   return '';
 }
 
-function buildEditState(metadata: MetadataValue[], unassigned: EditableField[]): EditState {
+export function buildEditState(metadata: MetadataValue[], unassigned: EditableField[]): EditState {
   const state: EditState = {};
   for (const m of metadata) {
     state[m.fieldSlug] = m.value;
@@ -42,7 +42,7 @@ function buildEditState(metadata: MetadataValue[], unassigned: EditableField[]):
   return state;
 }
 
-function buildRequest(editState: EditState, fields: EditableField[], initialState: EditState): SetModelMetadataRequest {
+export function buildRequest(editState: EditState, fields: EditableField[], initialState: EditState): SetModelMetadataRequest {
   const req: SetModelMetadataRequest = {};
   for (const f of fields) {
     const val = editState[f.fieldSlug];
