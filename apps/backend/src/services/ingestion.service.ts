@@ -242,10 +242,18 @@ export class IngestionService {
         allThumbnailRecords.push(...thumbnailRecords);
       } catch (err) {
         logger.warn(
-          { modelId, fileId: createdFile.id, error: String(err) },
-          'Thumbnail generation failed (non-fatal)',
+          { modelId, fileId: createdFile.id, path: fileInput.relativePath, error: String(err) },
+          'Thumbnail generation failed for file (non-fatal)',
         );
       }
+    }
+
+    const imageCount = fileInputs.filter((f) => f.fileType === 'image').length;
+    if (imageCount > 0 && allThumbnailRecords.length === 0) {
+      logger.error(
+        { modelId, imageCount },
+        'Thumbnail generation failed for all image files — model will have no thumbnails',
+      );
     }
 
     await modelService.createThumbnails(allThumbnailRecords);

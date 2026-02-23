@@ -326,6 +326,8 @@ const THUMBNAIL_SIZES = {
 } as const;
 ```
 
+These are target sizes passed to `sharp`, which uses `fit: inside`. Because `fit: inside` never upscales, a source image smaller than the target is written at its original dimensions. A 300×300 source produces a 300×300 grid thumbnail, not a 400×400 one. As a result, the `width` and `height` columns on a `Thumbnail` record reflect the actual output dimensions and cannot be used to reliably identify whether a thumbnail is `grid` or `detail` size. Use the `storagePath` suffix instead: paths ending in `_grid.webp` are grid thumbnails; paths ending in `_detail.webp` are detail thumbnails.
+
 ### File Hashing
 
 SHA-256 hash is computed on every file during ingestion and stored on the ModelFile record. Hashing happens as part of the file read — the file is streamed through a hash computation, not read twice.

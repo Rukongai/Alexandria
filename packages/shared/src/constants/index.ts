@@ -1,7 +1,7 @@
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 200;
 
-export const SUPPORTED_IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'tif'] as const;
+export const SUPPORTED_IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'] as const;
 export const SUPPORTED_DOCUMENT_FORMATS = ['pdf', 'txt', 'md'] as const;
 export const STL_EXTENSIONS = ['stl'] as const;
 

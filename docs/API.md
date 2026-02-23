@@ -564,7 +564,7 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
 
 ### PATCH /models/:id
 
-Update a model's name or description.
+Update a model's name, description, or cover image.
 
 **Auth required:** Yes
 
@@ -575,7 +575,8 @@ Update a model's name or description.
 ```json
 {
   "name": "Updated Model Name",
-  "description": "Updated description."
+  "description": "Updated description.",
+  "previewImageFileId": "uuid-of-image-file"
 }
 ```
 
@@ -583,6 +584,7 @@ Update a model's name or description.
 |-------|------|-------------|
 | `name` | string (optional) | 1–255 characters |
 | `description` | string or null (optional) | Pass `null` to clear |
+| `previewImageFileId` | string or null (optional) | UUID of a `ModelFile` with `fileType: "image"` to use as the model's cover image. Pass `null` to clear the pinned cover and revert to the first-image fallback. |
 
 **Response (200):** Returns the full `ModelDetail` for the updated model, in the same shape as `GET /models/:id`.
 
@@ -1095,6 +1097,8 @@ Serve a model file by its relative path within the model. The `*` wildcard captu
 **Response (200):** Raw file bytes. `Content-Type` is set from the stored MIME type, or inferred from the file extension. `Cache-Control: public, max-age=86400` (1 day).
 
 Supported extension-to-MIME mappings: `.webp`, `.jpg`/`.jpeg`, `.png`, `.gif`, `.tif`/`.tiff`, `.stl`, `.obj`, `.pdf`, `.txt`, `.md`. Files with unrecognized extensions return `application/octet-stream`.
+
+Note: `.gif` is included in the MIME map above for file serving, but it is not in `SUPPORTED_IMAGE_FORMATS` and is not currently treated as an image type during ingestion. Files with a `.gif` extension are classified as `other`, will not have thumbnails generated, and will not appear in the model's `images` gallery.
 
 ---
 
