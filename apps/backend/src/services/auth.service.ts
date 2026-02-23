@@ -1,5 +1,4 @@
 import * as argon2 from 'argon2';
-import type { FastifyInstance } from 'fastify';
 import type { UserProfile, UserRole } from '@alexandria/shared';
 import { ErrorCodes } from '@alexandria/shared';
 import { db } from '../db/index.js';
@@ -8,18 +7,11 @@ import { eq } from 'drizzle-orm';
 import { AppError } from '../utils/errors.js';
 import { conflict, notFound, unauthorized } from '../utils/errors.js';
 
-const COOKIE_NAME = 'alexandria_session';
-
 export interface AuthenticateResult {
   user: UserProfile;
 }
 
 export class AuthService {
-  private app: FastifyInstance;
-
-  constructor(app: FastifyInstance) {
-    this.app = app;
-  }
 
   async createUser(
     email: string,
@@ -233,17 +225,4 @@ export class AuthService {
     };
   }
 
-  setCookie(reply: import('fastify').FastifyReply, userId: string): void {
-    reply.setCookie(COOKIE_NAME, userId, {
-      httpOnly: true,
-      secure: false, // set to true in production behind HTTPS
-      sameSite: 'lax',
-      path: '/',
-      signed: true,
-    });
-  }
-
-  clearCookie(reply: import('fastify').FastifyReply): void {
-    reply.clearCookie(COOKIE_NAME, { path: '/' });
-  }
 }

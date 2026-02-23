@@ -27,7 +27,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   });
 
   // Instantiate services and make them available on the app instance
-  const authService = new AuthService(app);
+  const authService = new AuthService();
   (app as typeof app & { authService: AuthService }).authService = authService;
 
   // Global error handler
@@ -35,7 +35,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
 
   // Health check
   app.get('/health', async (_request, reply) => {
-    return reply.status(200).send({ status: 'ok' });
+    return reply.status(200).send({ data: { status: 'ok' }, meta: null, errors: null });
   });
 
   // Route registrations

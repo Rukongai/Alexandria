@@ -477,7 +477,7 @@ interface ModelSearchParams {
   q?: string;                    // full-text search query
   tags?: string;                 // comma-separated tag slugs
   collectionId?: string;
-  [metadataFilter: string]: string; // dynamic metadata filters by field slug
+  metadataFilters?: Record<string, string>; // dynamic metadata filters keyed by field slug
   fileType?: FileType;           // filter by presence of file type
   status?: ModelStatus;
   sort?: 'name' | 'createdAt' | 'totalSizeBytes';
