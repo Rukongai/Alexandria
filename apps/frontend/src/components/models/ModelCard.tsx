@@ -1,11 +1,15 @@
 import { useNavigate } from 'react-router-dom';
-import { Package, AlertCircle, Loader2 } from 'lucide-react';
+import { Package, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
 import type { ModelCard as ModelCardType } from '@alexandria/shared';
 import { Badge } from '../ui/badge';
 import { formatFileSize } from '../../lib/format';
+import { cn } from '../../lib/utils';
 
 interface ModelCardProps {
   model: ModelCardType;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
 function StatusIndicator({ status }: { status: ModelCardType['status'] }) {
@@ -33,7 +37,7 @@ function StatusIndicator({ status }: { status: ModelCardType['status'] }) {
   );
 }
 
-export function ModelCard({ model }: ModelCardProps) {
+export function ModelCard({ model, selectable, selected, onToggleSelect }: ModelCardProps) {
   const navigate = useNavigate();
 
   const tags = model.metadata
@@ -43,12 +47,42 @@ export function ModelCard({ model }: ModelCardProps) {
 
   const thumbnailSrc = model.thumbnailUrl ? `/api${model.thumbnailUrl}` : null;
 
+  function handleClick(e: React.MouseEvent) {
+    if (selectable) {
+      e.preventDefault();
+      onToggleSelect?.(model.id);
+      return;
+    }
+    navigate(`/models/${model.id}`);
+  }
+
   return (
     <article
-      className="group relative flex flex-col overflow-hidden rounded-xl border bg-card shadow transition-all hover:shadow-md hover:-translate-y-0.5 cursor-pointer"
-      onClick={() => navigate(`/models/${model.id}`)}
+      className={cn(
+        'group relative flex flex-col overflow-hidden rounded-xl border bg-card shadow transition-all hover:shadow-md hover:-translate-y-0.5 cursor-pointer',
+        selected && 'ring-2 ring-primary ring-offset-2'
+      )}
+      onClick={handleClick}
       aria-label={`View model: ${model.name}`}
+      aria-selected={selectable ? selected : undefined}
     >
+      {/* Selection overlay */}
+      {selectable && (
+        <div className={cn(
+          'absolute top-2 left-2 z-10 transition-opacity',
+          selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        )}>
+          <div className={cn(
+            'h-5 w-5 rounded-full border-2 flex items-center justify-center',
+            selected
+              ? 'bg-primary border-primary text-primary-foreground'
+              : 'bg-background/90 border-border'
+          )}>
+            {selected && <CheckCircle2 className="h-4 w-4" />}
+          </div>
+        </div>
+      )}
+
       {/* Thumbnail area */}
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
         {thumbnailSrc ? (

@@ -6,6 +6,7 @@ import { LoginPage } from './pages/LoginPage';
 import { LibraryPage } from './pages/LibraryPage';
 import { ModelDetailPage } from './pages/ModelDetailPage';
 import { CollectionsPage } from './pages/CollectionsPage';
+import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UploadPage } from './pages/UploadPage';
 
@@ -42,6 +43,7 @@ export default function App() {
         <Route index element={<LibraryPage />} />
         <Route path="models/:id" element={<ModelDetailPage />} />
         <Route path="collections" element={<CollectionsPage />} />
+        <Route path="collections/:id" element={<CollectionDetailPage />} />
         <Route path="upload" element={<UploadPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

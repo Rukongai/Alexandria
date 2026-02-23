@@ -1,8 +1,10 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
+import { CheckSquare, Square } from 'lucide-react';
 import type { ModelCard, ModelSearchParams } from '@alexandria/shared';
 import { getModels } from '../api/models';
 import { useModelFilters } from '../hooks/use-model-filters';
+import { useBulkSelection } from '../hooks/use-bulk-selection';
 import { ModelCard as ModelCardComponent } from '../components/models/ModelCard';
 import { ModelCardSkeleton } from '../components/models/ModelCardSkeleton';
 import { SearchBar } from '../components/models/SearchBar';
@@ -10,6 +12,8 @@ import { SortControls } from '../components/models/SortControls';
 import { FilterPanel } from '../components/models/FilterPanel';
 import { ActiveFilters } from '../components/models/ActiveFilters';
 import { EmptyLibrary } from '../components/models/EmptyLibrary';
+import { BulkActions } from '../components/models/BulkActions';
+import { Button } from '../components/ui/button';
 import { Loader2 } from 'lucide-react';
 
 export function LibraryPage() {
@@ -26,6 +30,8 @@ export function LibraryPage() {
   } = useModelFilters();
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const { selected, toggle, selectAll, clear, isSelected, count } = useBulkSelection();
 
   const {
     data,
@@ -76,6 +82,22 @@ export function LibraryPage() {
     setSort(sort, sortDir);
   }
 
+  function toggleBulkMode() {
+    if (bulkMode) {
+      clear();
+    }
+    setBulkMode((v) => !v);
+  }
+
+  function handleSelectAll() {
+    selectAll(allModels.map((m) => m.id));
+  }
+
+  function handleDeleted() {
+    clear();
+    setBulkMode(false);
+  }
+
   return (
     <div className="flex gap-6 min-h-full">
       {/* Filter sidebar */}
@@ -111,8 +133,53 @@ export function LibraryPage() {
                 sortDir={filters.sortDir}
                 onSortChange={handleSortChange}
               />
+              {/* Bulk mode toggle */}
+              {allModels.length > 0 && (
+                <Button
+                  variant={bulkMode ? 'secondary' : 'outline'}
+                  size="sm"
+                  onClick={toggleBulkMode}
+                >
+                  {bulkMode ? (
+                    <>
+                      <CheckSquare className="h-4 w-4 mr-1.5" />
+                      Done
+                    </>
+                  ) : (
+                    <>
+                      <Square className="h-4 w-4 mr-1.5" />
+                      Select
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
           </div>
+
+          {/* Select all row (shown in bulk mode) */}
+          {bulkMode && allModels.length > 0 && (
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <button
+                type="button"
+                className="hover:text-foreground transition-colors"
+                onClick={handleSelectAll}
+              >
+                Select all {allModels.length} visible
+              </button>
+              {count > 0 && (
+                <>
+                  <span>·</span>
+                  <button
+                    type="button"
+                    className="hover:text-foreground transition-colors"
+                    onClick={clear}
+                  >
+                    Clear selection
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Active filter chips */}
           <ActiveFilters
@@ -146,7 +213,13 @@ export function LibraryPage() {
         {!isLoading && allModels.length > 0 && (
           <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
             {allModels.map((model) => (
-              <ModelCardComponent key={model.id} model={model} />
+              <ModelCardComponent
+                key={model.id}
+                model={model}
+                selectable={bulkMode}
+                selected={isSelected(model.id)}
+                onToggleSelect={toggle}
+              />
             ))}
           </div>
         )}
@@ -173,6 +246,13 @@ export function LibraryPage() {
           </p>
         )}
       </div>
+
+      {/* Bulk actions bar */}
+      <BulkActions
+        selectedIds={selected}
+        onClear={() => { clear(); setBulkMode(false); }}
+        onDeleted={handleDeleted}
+      />
     </div>
   );
 }
