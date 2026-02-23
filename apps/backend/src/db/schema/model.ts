@@ -42,6 +42,12 @@ export const models = pgTable(
     // name is weighted A (most relevant), description is weighted B.
     // Never set this column from application code.
     searchVector: tsvector('search_vector'),
+    // User-selected cover image for library cards. Nullable — when null, the system
+    // falls back to the first image file in the model.
+    // References model_files(id) ON DELETE SET NULL — enforced in SQL migration.
+    // Note: Drizzle-level .references() is omitted here to avoid the circular import
+    // between model.ts and model-file.ts; the FK constraint lives in the migration SQL.
+    previewImageFileId: uuid('preview_image_file_id'),
   },
   (table) => [
     // Fast lookup by slug for URL-based access
@@ -54,6 +60,8 @@ export const models = pgTable(
     index('models_created_at_idx').on(table.createdAt),
     // GIN index required for efficient tsvector @@ tsquery full-text search
     index('models_search_vector_idx').using('gin', table.searchVector),
+    // FK index: resolve which model owns a preview image file (ON DELETE SET NULL lookup)
+    index('models_preview_image_file_id_idx').on(table.previewImageFileId),
   ],
 );
 

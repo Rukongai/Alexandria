@@ -1,15 +1,34 @@
 import * as React from 'react';
-import { ChevronLeft, ChevronRight, X, Package } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Package, Star } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { ImageFile } from '@alexandria/shared';
 import { cn } from '../../lib/utils';
+import { updateModel } from '../../api/models';
+import { toast } from '../../hooks/use-toast';
 
 interface ImageGalleryProps {
   images: ImageFile[];
+  previewImageFileId: string | null;
+  modelId: string;
 }
 
-export function ImageGallery({ images }: ImageGalleryProps) {
+export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalleryProps) {
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const [lightboxOpen, setLightboxOpen] = React.useState(false);
+  const [settingCoverId, setSettingCoverId] = React.useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  async function handleSetCover(imageId: string) {
+    setSettingCoverId(imageId);
+    try {
+      await updateModel(modelId, { previewImageFileId: imageId });
+      await queryClient.invalidateQueries({ queryKey: ['model', modelId] });
+    } catch {
+      toast({ title: 'Failed to set cover image', variant: 'destructive' });
+    } finally {
+      setSettingCoverId(null);
+    }
+  }
 
   React.useEffect(() => {
     if (!lightboxOpen) return;
@@ -49,6 +68,12 @@ export function ImageGallery({ images }: ImageGalleryProps) {
           className="w-full aspect-video object-contain cursor-zoom-in"
           onClick={() => setLightboxOpen(true)}
         />
+        {selected.id === previewImageFileId && (
+          <div className="absolute top-2 left-2 flex items-center gap-1 bg-amber-500/90 text-white text-xs font-medium rounded-full px-2 py-0.5 pointer-events-none">
+            <Star className="h-3 w-3 fill-white" />
+            Cover
+          </div>
+        )}
         {images.length > 1 && (
           <>
             <button
@@ -75,24 +100,46 @@ export function ImageGallery({ images }: ImageGalleryProps) {
       {/* Thumbnail strip */}
       {images.length > 1 && (
         <div className="flex gap-2 mt-2 overflow-x-auto pb-1">
-          {images.map((image, index) => (
-            <button
-              key={image.id}
-              onClick={() => setSelectedIndex(index)}
-              className={cn(
-                'flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors',
-                index === selectedIndex
-                  ? 'border-primary'
-                  : 'border-transparent hover:border-border'
-              )}
-            >
-              <img
-                src={`/api${image.thumbnailUrl}`}
-                alt={image.filename}
-                className="w-full h-full object-cover"
-              />
-            </button>
-          ))}
+          {images.map((image, index) => {
+            const isCover = image.id === previewImageFileId;
+            const isSettingThis = settingCoverId === image.id;
+            return (
+              <div key={image.id} className="relative flex-shrink-0 group">
+                <button
+                  onClick={() => setSelectedIndex(index)}
+                  className={cn(
+                    'w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors',
+                    index === selectedIndex
+                      ? 'border-primary'
+                      : 'border-transparent hover:border-border',
+                    isCover && 'ring-2 ring-amber-400 ring-offset-1'
+                  )}
+                >
+                  <img
+                    src={`/api${image.thumbnailUrl}`}
+                    alt={image.filename}
+                    className="w-full h-full object-cover"
+                  />
+                </button>
+                {isCover ? (
+                  <div className="absolute top-0.5 right-0.5 bg-amber-500/90 rounded-full p-0.5 pointer-events-none">
+                    <Star className="h-2.5 w-2.5 fill-white text-white" />
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => handleSetCover(image.id)}
+                    disabled={isSettingThis}
+                    title="Set as cover"
+                    className="absolute inset-0 flex items-end justify-center pb-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity bg-black/30"
+                  >
+                    <span className="text-white text-[10px] font-medium leading-none bg-black/60 rounded px-1 py-0.5">
+                      {isSettingThis ? '...' : 'Set cover'}
+                    </span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

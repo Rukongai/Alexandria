@@ -68,7 +68,11 @@ export function ModelDetailPage() {
         <div className="flex flex-col lg:flex-row gap-6">
           {/* Left column: gallery + file tree */}
           <div className="flex-1 min-w-0 flex flex-col gap-4">
-            <ImageGallery images={model.images} />
+            <ImageGallery
+              images={model.images}
+              previewImageFileId={model.previewImageFileId}
+              modelId={model.id}
+            />
             <FileTree tree={fileTree} />
           </div>
 

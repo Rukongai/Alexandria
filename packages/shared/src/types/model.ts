@@ -14,6 +14,7 @@ export interface Model {
   totalSizeBytes: number;
   fileCount: number;
   fileHash: string | null;
+  previewImageFileId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -59,6 +60,7 @@ export interface ModelDetail {
   slug: string;
   description: string | null;
   thumbnailUrl: string | null;
+  previewImageFileId: string | null;
   metadata: import('./metadata').MetadataValue[];
   sourceType: ModelSourceType;
   originalFilename: string | null;
@@ -90,6 +92,7 @@ export interface FileTreeNode {
 export interface UpdateModelRequest {
   name?: string;
   description?: string | null;
+  previewImageFileId?: string | null;
 }
 
 export interface JobStatus {

@@ -1,8 +1,8 @@
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, and } from 'drizzle-orm';
 import type { ModelSourceType, ModelStatus, FileType, UpdateModelRequest } from '@alexandria/shared';
 import { db } from '../db/index.js';
 import { models, modelFiles, thumbnails } from '../db/schema/index.js';
-import { notFound } from '../utils/errors.js';
+import { notFound, validationError } from '../utils/errors.js';
 import type { Model } from '../db/schema/model.js';
 
 export interface CreateModelData {
@@ -124,11 +124,37 @@ export class ModelService {
   async updateModel(id: string, data: UpdateModelRequest): Promise<Model> {
     await this.getModelById(id);
 
-    const updateValues: Partial<{ name: string; description: string | null; updatedAt: Date }> = {
+    if (data.previewImageFileId != null) {
+      const [file] = await db
+        .select({ id: modelFiles.id })
+        .from(modelFiles)
+        .where(
+          and(
+            eq(modelFiles.id, data.previewImageFileId),
+            eq(modelFiles.modelId, id),
+            eq(modelFiles.fileType, 'image'),
+          ),
+        )
+        .limit(1);
+      if (!file) {
+        throw validationError(
+          'previewImageFileId must reference an image file belonging to this model',
+          'previewImageFileId',
+        );
+      }
+    }
+
+    const updateValues: Partial<{
+      name: string;
+      description: string | null;
+      previewImageFileId: string | null;
+      updatedAt: Date;
+    }> = {
       updatedAt: new Date(),
     };
     if (data.name !== undefined) updateValues.name = data.name;
     if (data.description !== undefined) updateValues.description = data.description;
+    if (data.previewImageFileId !== undefined) updateValues.previewImageFileId = data.previewImageFileId;
 
     const [updated] = await db
       .update(models)
