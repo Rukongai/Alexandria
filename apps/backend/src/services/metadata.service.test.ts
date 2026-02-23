@@ -6,7 +6,7 @@ import {
   afterAll,
   beforeEach,
 } from 'vitest';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   users,
@@ -66,7 +66,15 @@ const createdFieldIds: string[] = [];
 
 beforeAll(async () => {
   // Remove any leftover test fixtures from previous failed runs
-  await db.delete(users).where(eq(users.email, 'metadata-test@example.com'));
+  const leftoverUsers = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, 'metadata-test@example.com'));
+  if (leftoverUsers.length > 0) {
+    const leftoverUserIds = leftoverUsers.map((u) => u.id);
+    await db.delete(models).where(inArray(models.userId, leftoverUserIds));
+    await db.delete(users).where(eq(users.email, 'metadata-test@example.com'));
+  }
 
   // Create a test user
   const [testUser] = await db

@@ -17,6 +17,7 @@ import type { MetadataFieldDefinition as MetadataFieldDefinitionRow } from '../d
 import { notFound, forbidden } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 import { generateSlug } from '../utils/slug.js';
+import { formatDisplayValue } from '../utils/format.js';
 
 const logger = createLogger('MetadataService');
 
@@ -46,19 +47,6 @@ export class MetadataService {
       field.type === 'multi_enum' &&
       field.isDefault === true
     );
-  }
-
-  private formatDisplayValue(
-    type: MetadataFieldType,
-    value: string | string[],
-  ): string {
-    if (type === 'boolean') {
-      return value === 'true' ? 'Yes' : 'No';
-    }
-    if (type === 'multi_enum') {
-      return Array.isArray(value) ? value.join(', ') : value;
-    }
-    return Array.isArray(value) ? value.join(', ') : value;
   }
 
   private coerceToString(value: string | string[] | number | boolean): string {
@@ -228,7 +216,7 @@ export class MetadataService {
         fieldName: row.fieldName,
         type,
         value,
-        displayValue: this.formatDisplayValue(type, value),
+        displayValue: formatDisplayValue(type, value),
       });
     }
 
@@ -248,7 +236,7 @@ export class MetadataService {
         fieldName: 'Tags',
         type: 'multi_enum',
         value: tagNames,
-        displayValue: this.formatDisplayValue('multi_enum', tagNames),
+        displayValue: formatDisplayValue('multi_enum', tagNames),
       });
     }
 

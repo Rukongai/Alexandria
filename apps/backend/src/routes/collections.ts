@@ -14,6 +14,7 @@ import {
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { collectionService } from '../services/collection.service.js';
+import { presenterService } from '../services/presenter.service.js';
 import { searchService } from '../services/search.service.js';
 import { validationError } from '../utils/errors.js';
 
@@ -65,7 +66,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const detail = await collectionService.getCollectionDetail(id);
+      const detail = await presenterService.buildCollectionDetail(id);
 
       return reply.status(200).send({ data: detail, meta: null, errors: null });
     },

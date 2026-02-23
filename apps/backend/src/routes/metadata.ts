@@ -12,6 +12,7 @@ import type {
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { metadataService } from '../services/metadata.service.js';
+import { presenterService } from '../services/presenter.service.js';
 
 export async function metadataFieldRoutes(app: FastifyInstance): Promise<void> {
   // GET / — list all metadata field definitions
@@ -19,7 +20,7 @@ export async function metadataFieldRoutes(app: FastifyInstance): Promise<void> {
     '/',
     { preHandler: [requireAuth] },
     async (_request, reply) => {
-      const fields = await metadataService.listFields();
+      const fields = await presenterService.buildMetadataFieldList();
       return reply.status(200).send({ data: fields, meta: null, errors: null });
     },
   );

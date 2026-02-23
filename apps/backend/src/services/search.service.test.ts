@@ -51,7 +51,18 @@ beforeAll(async () => {
   // -------------------------------------------------------------------------
   // Cleanup any leftovers from a previous failed run
   // -------------------------------------------------------------------------
-  await db.delete(users).where(eq(users.email, 'search-test@example.com'));
+  const leftoverUsers = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, 'search-test@example.com'));
+  if (leftoverUsers.length > 0) {
+    const leftoverUserIds = leftoverUsers.map((u) => u.id);
+    await db.delete(collections).where(inArray(collections.userId, leftoverUserIds));
+    await db.delete(models).where(inArray(models.userId, leftoverUserIds));
+    await db.delete(users).where(eq(users.email, 'search-test@example.com'));
+  }
+  // Clean up orphaned test tags from previous runs
+  await db.delete(tags).where(inArray(tags.name, ['Dragon', 'Fantasy', 'Sci-Fi']));
 
   // -------------------------------------------------------------------------
   // Create test user

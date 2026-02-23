@@ -1,24 +1,11 @@
-import { eq, and, inArray, asc, desc, sql, SQL } from 'drizzle-orm';
+import { and, asc, desc, sql, SQL } from 'drizzle-orm';
 import type {
   ModelSearchParams,
   ModelCard,
-  MetadataValue,
-  MetadataFieldType,
-  FileType,
-  ModelStatus,
 } from '@alexandria/shared';
 import { db } from '../db/index.js';
-import {
-  models,
-  modelFiles,
-  tags,
-  modelTags,
-  modelMetadata,
-  metadataFieldDefinitions,
-  collectionModels,
-  thumbnails,
-} from '../db/schema/index.js';
-import type { Model as ModelRow } from '../db/schema/model.js';
+import { models } from '../db/schema/index.js';
+import { presenterService } from './presenter.service.js';
 import { validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -26,7 +13,6 @@ const logger = createLogger('SearchService');
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
-const GRID_THUMBNAIL_WIDTH = 400;
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -109,20 +95,6 @@ function buildCursorWhere(
     return sql`(${sortColumn} < ${cursorValue} OR (${sortColumn} = ${cursorValue} AND ${models.id} < ${cursorId}))`;
   }
   return sql`(${sortColumn} > ${cursorValue} OR (${sortColumn} = ${cursorValue} AND ${models.id} > ${cursorId}))`;
-}
-
-/**
- * Format a display value for a metadata type. Mirrors the helper in MetadataService
- * but lives here to keep SearchService self-contained (no cross-service calls).
- */
-function formatDisplayValue(type: MetadataFieldType, value: string | string[]): string {
-  if (type === 'boolean') {
-    return value === 'true' ? 'Yes' : 'No';
-  }
-  if (Array.isArray(value)) {
-    return value.join(', ');
-  }
-  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,8 +203,6 @@ export class PostgresSearchService implements ISearchService {
     // Determine sort column expression
     // -----------------------------------------------------------------------
 
-    // We need a plain SQL expression for the sort column so we can reference it
-    // in cursor comparisons and ORDER BY clauses.
     let sortColumnSql: SQL;
     if (useRelevanceSort && tsQuery) {
       sortColumnSql = sql`ts_rank_cd(${models.searchVector}, to_tsquery('english', ${tsQuery}))`;
@@ -275,7 +245,6 @@ export class PostgresSearchService implements ISearchService {
     // Main SELECT query
     // -----------------------------------------------------------------------
 
-    // Build ORDER BY: primary sort column, secondary tiebreaker by id
     const orderByExpression =
       sortDir === 'desc'
         ? [desc(sortColumnSql), desc(models.id)]
@@ -305,151 +274,10 @@ export class PostgresSearchService implements ISearchService {
     const modelIds = rows.map((r) => r.id);
 
     // -----------------------------------------------------------------------
-    // Batch-load thumbnails for all returned models
-    // Thumbnail URL: first image file per model → its grid-size thumbnail
+    // Delegate card assembly to PresenterService
     // -----------------------------------------------------------------------
 
-    // Step 1: find the first image file per model (smallest id as tiebreaker)
-    const imageFileRows = await db
-      .select({
-        modelId: modelFiles.modelId,
-        fileId: modelFiles.id,
-      })
-      .from(modelFiles)
-      .where(
-        and(
-          inArray(modelFiles.modelId, modelIds),
-          eq(modelFiles.fileType, 'image' as FileType),
-        ),
-      )
-      .orderBy(asc(modelFiles.createdAt));
-
-    // Keep only one image file per model (the first one encountered)
-    const firstImageFileByModel = new Map<string, string>();
-    for (const row of imageFileRows) {
-      if (!firstImageFileByModel.has(row.modelId)) {
-        firstImageFileByModel.set(row.modelId, row.fileId);
-      }
-    }
-
-    const imageFileIds = [...firstImageFileByModel.values()];
-
-    // Step 2: find the grid-size thumbnail for each image file
-    const thumbnailRows =
-      imageFileIds.length > 0
-        ? await db
-            .select({
-              id: thumbnails.id,
-              sourceFileId: thumbnails.sourceFileId,
-            })
-            .from(thumbnails)
-            .where(
-              and(
-                inArray(thumbnails.sourceFileId, imageFileIds),
-                eq(thumbnails.width, GRID_THUMBNAIL_WIDTH),
-              ),
-            )
-        : [];
-
-    // Map sourceFileId → thumbnailId
-    const thumbnailByFileId = new Map<string, string>();
-    for (const t of thumbnailRows) {
-      thumbnailByFileId.set(t.sourceFileId, t.id);
-    }
-
-    // Resolve final thumbnailUrl per modelId
-    const thumbnailUrlByModel = new Map<string, string>();
-    for (const [modelId, fileId] of firstImageFileByModel.entries()) {
-      const thumbId = thumbnailByFileId.get(fileId);
-      if (thumbId) {
-        thumbnailUrlByModel.set(modelId, `/files/thumbnails/${thumbId}.webp`);
-      }
-    }
-
-    // -----------------------------------------------------------------------
-    // Batch-load metadata for all returned models
-    // -----------------------------------------------------------------------
-
-    // Generic metadata (model_metadata + field definitions)
-    const genericMetaRows = await db
-      .select({
-        modelId: modelMetadata.modelId,
-        fieldSlug: metadataFieldDefinitions.slug,
-        fieldName: metadataFieldDefinitions.name,
-        fieldType: metadataFieldDefinitions.type,
-        value: modelMetadata.value,
-      })
-      .from(modelMetadata)
-      .innerJoin(
-        metadataFieldDefinitions,
-        eq(modelMetadata.fieldDefinitionId, metadataFieldDefinitions.id),
-      )
-      .where(inArray(modelMetadata.modelId, modelIds));
-
-    // Tag metadata (model_tags + tags)
-    const tagMetaRows = await db
-      .select({
-        modelId: modelTags.modelId,
-        tagName: tags.name,
-      })
-      .from(modelTags)
-      .innerJoin(tags, eq(modelTags.tagId, tags.id))
-      .where(inArray(modelTags.modelId, modelIds));
-
-    // Group generic metadata by modelId
-    const genericMetaByModel = new Map<string, MetadataValue[]>();
-    for (const row of genericMetaRows) {
-      if (!genericMetaByModel.has(row.modelId)) {
-        genericMetaByModel.set(row.modelId, []);
-      }
-      const type = row.fieldType as MetadataFieldType;
-      genericMetaByModel.get(row.modelId)!.push({
-        fieldSlug: row.fieldSlug,
-        fieldName: row.fieldName,
-        type,
-        value: row.value,
-        displayValue: formatDisplayValue(type, row.value),
-      });
-    }
-
-    // Group tags by modelId
-    const tagsByModel = new Map<string, string[]>();
-    for (const row of tagMetaRows) {
-      if (!tagsByModel.has(row.modelId)) {
-        tagsByModel.set(row.modelId, []);
-      }
-      tagsByModel.get(row.modelId)!.push(row.tagName);
-    }
-
-    // -----------------------------------------------------------------------
-    // Assemble ModelCard results
-    // -----------------------------------------------------------------------
-
-    const modelCards: ModelCard[] = rows.map((row) => {
-      const metadata: MetadataValue[] = genericMetaByModel.get(row.id) ?? [];
-      const tagNames = tagsByModel.get(row.id);
-      if (tagNames && tagNames.length > 0) {
-        metadata.push({
-          fieldSlug: 'tags',
-          fieldName: 'Tags',
-          type: 'multi_enum',
-          value: tagNames,
-          displayValue: formatDisplayValue('multi_enum', tagNames),
-        });
-      }
-
-      return {
-        id: row.id,
-        name: row.name,
-        slug: row.slug,
-        status: row.status as ModelStatus,
-        fileCount: row.fileCount,
-        totalSizeBytes: row.totalSizeBytes,
-        createdAt: row.createdAt.toISOString(),
-        thumbnailUrl: thumbnailUrlByModel.get(row.id) ?? null,
-        metadata,
-      };
-    });
+    const modelCards = await presenterService.buildModelCardsFromRows(rows, modelIds);
 
     // -----------------------------------------------------------------------
     // Compute next cursor from the last row
@@ -458,9 +286,7 @@ export class PostgresSearchService implements ISearchService {
     let nextCursor: string | null = null;
     if (rows.length === pageSize) {
       const lastRow = rows[rows.length - 1];
-      // sortValue is the value of the sort column for the last row
       const rawSortValue = lastRow.sortValue;
-      // Normalize to a serializable primitive
       const sortValue =
         rawSortValue instanceof Date
           ? rawSortValue.toISOString()

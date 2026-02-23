@@ -4,13 +4,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import type { ImportConfig, ModelSearchParams } from '@alexandria/shared';
-import { importConfigSchema, modelSearchParamsSchema } from '@alexandria/shared';
+import type { ImportConfig, ModelSearchParams, UpdateModelRequest } from '@alexandria/shared';
+import { importConfigSchema, modelSearchParamsSchema, updateModelSchema } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { ingestionService } from '../services/ingestion.service.js';
 import { modelService } from '../services/model.service.js';
 import { searchService } from '../services/search.service.js';
+import { presenterService } from '../services/presenter.service.js';
+import { storageService } from '../services/storage.service.js';
 import { validationError } from '../utils/errors.js';
 
 export async function modelRoutes(app: FastifyInstance): Promise<void> {
@@ -145,9 +147,61 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [requireAuth] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const model = await modelService.getModelById(id);
+      const detail = await presenterService.buildModelDetail(id);
 
-      return reply.status(200).send({ data: model, meta: null, errors: null });
+      return reply.status(200).send({ data: detail, meta: null, errors: null });
+    },
+  );
+
+  // GET /:id/files — file tree for a model
+  app.get(
+    '/:id/files',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      await modelService.getModelById(id); // verify exists
+      const files = await modelService.getModelFiles(id);
+      const tree = presenterService.buildFileTree(files);
+
+      return reply.status(200).send({ data: tree, meta: null, errors: null });
+    },
+  );
+
+  // PATCH /:id — update model name/description
+  app.patch(
+    '/:id',
+    { preHandler: [requireAuth, validate(updateModelSchema)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as UpdateModelRequest;
+      await modelService.updateModel(id, body);
+      const detail = await presenterService.buildModelDetail(id);
+
+      return reply.status(200).send({ data: detail, meta: null, errors: null });
+    },
+  );
+
+  // DELETE /:id — delete model and its files from storage
+  app.delete(
+    '/:id',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      // Get model files to clean up storage
+      const files = await modelService.getModelFiles(id);
+      await modelService.deleteModel(id);
+
+      // Clean up storage (best-effort, model is already deleted from DB)
+      for (const file of files) {
+        try {
+          await storageService.delete(file.storagePath);
+        } catch {
+          // Storage cleanup failures are logged but don't fail the request
+        }
+      }
+
+      return reply.status(200).send({ data: null, meta: null, errors: null });
     },
   );
 }

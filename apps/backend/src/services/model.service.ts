@@ -1,5 +1,5 @@
-import { eq } from 'drizzle-orm';
-import type { ModelSourceType, ModelStatus, FileType } from '@alexandria/shared';
+import { eq, asc } from 'drizzle-orm';
+import type { ModelSourceType, ModelStatus, FileType, UpdateModelRequest } from '@alexandria/shared';
 import { db } from '../db/index.js';
 import { models, modelFiles, thumbnails } from '../db/schema/index.js';
 import { notFound } from '../utils/errors.js';
@@ -121,8 +121,47 @@ export class ModelService {
     return row;
   }
 
+  async updateModel(id: string, data: UpdateModelRequest): Promise<Model> {
+    await this.getModelById(id);
+
+    const updateValues: Partial<{ name: string; description: string | null; updatedAt: Date }> = {
+      updatedAt: new Date(),
+    };
+    if (data.name !== undefined) updateValues.name = data.name;
+    if (data.description !== undefined) updateValues.description = data.description;
+
+    const [updated] = await db
+      .update(models)
+      .set(updateValues)
+      .where(eq(models.id, id))
+      .returning();
+
+    return updated;
+  }
+
+  async getModelFiles(modelId: string): Promise<Array<typeof modelFiles.$inferSelect>> {
+    return db
+      .select()
+      .from(modelFiles)
+      .where(eq(modelFiles.modelId, modelId))
+      .orderBy(asc(modelFiles.relativePath));
+  }
+
   async deleteModel(id: string): Promise<void> {
+    await this.getModelById(id);
     await db.delete(models).where(eq(models.id, id));
+  }
+
+  async deleteModels(ids: string[]): Promise<string[]> {
+    const deleted: string[] = [];
+    for (const id of ids) {
+      const [row] = await db.select({ id: models.id }).from(models).where(eq(models.id, id)).limit(1);
+      if (row) {
+        await db.delete(models).where(eq(models.id, id));
+        deleted.push(id);
+      }
+    }
+    return deleted;
   }
 }
 
