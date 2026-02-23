@@ -131,6 +131,18 @@ describe('FileProcessingService – file type classification', () => {
     expect(manifest.entries[0].mimeType).toBe('image/tiff');
   });
 
+  it('should classify .tiff files as image', async () => {
+    const zipPath = path.join(tmpDir, 'tiff.zip');
+    const extractDir = path.join(tmpDir, 'tiff-extract');
+
+    await createTestZip(zipPath, [{ name: 'scan.tiff', content: 'fake-tiff-data' }]);
+
+    const manifest = await service.processZip(zipPath, extractDir);
+
+    expect(manifest.entries[0].fileType).toBe('image');
+    expect(manifest.entries[0].mimeType).toBe('image/tiff');
+  });
+
   it('should classify .pdf files as document', async () => {
     const zipPath = path.join(tmpDir, 'pdf.zip');
     const extractDir = path.join(tmpDir, 'pdf-extract');

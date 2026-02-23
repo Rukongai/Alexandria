@@ -23,6 +23,7 @@ export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalle
     try {
       await updateModel(modelId, { previewImageFileId: imageId });
       await queryClient.invalidateQueries({ queryKey: ['model', modelId] });
+      await queryClient.invalidateQueries({ queryKey: ['models'] });
     } catch {
       toast({ title: 'Failed to set cover image', variant: 'destructive' });
     } finally {
@@ -61,7 +62,7 @@ export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalle
   return (
     <>
       {/* Main image */}
-      <div className="relative rounded-xl overflow-hidden bg-muted border border-border">
+      <div className="relative rounded-xl overflow-hidden bg-muted border border-border group">
         <img
           src={`/api${selected.originalUrl}`}
           alt={selected.filename}
@@ -73,6 +74,16 @@ export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalle
             <Star className="h-3 w-3 fill-white" />
             Cover
           </div>
+        )}
+        {selected.id !== previewImageFileId && (
+          <button
+            onClick={(e) => { e.stopPropagation(); handleSetCover(selected.id); }}
+            disabled={settingCoverId === selected.id}
+            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-black/60 hover:bg-black/80 text-white text-xs font-medium rounded-full px-2.5 py-1"
+          >
+            <Star className="h-3 w-3" />
+            {settingCoverId === selected.id ? 'Setting…' : 'Set Preview'}
+          </button>
         )}
         {images.length > 1 && (
           <>
@@ -102,7 +113,6 @@ export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalle
         <div className="flex gap-2 mt-2 overflow-x-auto pb-1">
           {images.map((image, index) => {
             const isCover = image.id === previewImageFileId;
-            const isSettingThis = settingCoverId === image.id;
             return (
               <div key={image.id} className="relative flex-shrink-0 group">
                 <button
@@ -121,21 +131,10 @@ export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalle
                     className="w-full h-full object-cover"
                   />
                 </button>
-                {isCover ? (
+                {isCover && (
                   <div className="absolute top-0.5 right-0.5 bg-amber-500/90 rounded-full p-0.5 pointer-events-none">
                     <Star className="h-2.5 w-2.5 fill-white text-white" />
                   </div>
-                ) : (
-                  <button
-                    onClick={() => handleSetCover(image.id)}
-                    disabled={isSettingThis}
-                    title="Set as cover"
-                    className="absolute inset-0 flex items-end justify-center pb-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity bg-black/30"
-                  >
-                    <span className="text-white text-[10px] font-medium leading-none bg-black/60 rounded px-1 py-0.5">
-                      {isSettingThis ? '...' : 'Set cover'}
-                    </span>
-                  </button>
                 )}
               </div>
             );

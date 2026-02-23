@@ -33,6 +33,7 @@ const MIME_MAP: Record<string, string> = {
   png: 'image/png',
   webp: 'image/webp',
   tif: 'image/tiff',
+  tiff: 'image/tiff',
   pdf: 'application/pdf',
   txt: 'text/plain',
   md: 'text/markdown',

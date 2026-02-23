@@ -84,13 +84,15 @@ type FileType = 'stl' | 'image' | 'document' | 'other';
 interface Thumbnail {
   id: string;
   sourceFileId: string;
-  storagePath: string;
-  width: number;
-  height: number;
-  format: string; // default: 'webp'
+  storagePath: string; // suffix _grid.webp or _detail.webp identifies size variant
+  width: number;       // actual output dimensions, not target size (sharp fit:inside never upscales)
+  height: number;      // actual output dimensions, not target size
+  format: string;      // default: 'webp'
   createdAt: string;
 }
 ```
+
+`width` and `height` reflect the dimensions of the generated file, which may be smaller than the target size when the source image is smaller than the target. To determine whether a thumbnail is a grid or detail variant, read the `storagePath` suffix: paths ending in `_grid.webp` are grid thumbnails (target 400×400) and paths ending in `_detail.webp` are detail thumbnails (target 800×800).
 
 ### MetadataFieldDefinition
 

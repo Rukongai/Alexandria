@@ -395,6 +395,93 @@ describe('buildModelCardsFromRows', () => {
     expect(cards[0].thumbnailUrl).toBe(`/files/thumbnails/${gridThumbnailId}.webp`);
     expect(cards[0].metadata.length).toBeGreaterThan(0);
   });
+
+  it('should fall back to first image file grid thumbnail when previewImageFileId file has no thumbnail', async () => {
+    // Insert an ephemeral model so this test does not disturb the shared fixtures.
+    const ts = Date.now();
+    const [ephemeralModel] = await db
+      .insert(models)
+      .values({
+        name: 'Fallback Thumbnail Test Model',
+        slug: `fallback-thumb-test-${ts}`,
+        userId: testUserId,
+        sourceType: 'zip_upload',
+        status: 'ready',
+        totalSizeBytes: 1000,
+        fileCount: 2,
+      })
+      .returning();
+
+    try {
+      // File A — created first, so it is the "first image file".  It HAS a grid thumbnail.
+      const [fileA] = await db
+        .insert(modelFiles)
+        .values({
+          modelId: ephemeralModel.id,
+          filename: 'first.png',
+          relativePath: 'first.png',
+          fileType: 'image',
+          mimeType: 'image/png',
+          sizeBytes: 500,
+          storagePath: `models/${ephemeralModel.id}/first.png`,
+          hash: `hash-a-${ts}`,
+        })
+        .returning();
+
+      const [fileAGridThumb] = await db
+        .insert(thumbnails)
+        .values({
+          sourceFileId: fileA.id,
+          storagePath: `thumbnails/${ephemeralModel.id}/${fileA.id}_grid.webp`,
+          width: 400,
+          height: 400,
+          format: 'webp',
+        })
+        .returning();
+
+      // File B — the preferred cover image. It has NO thumbnail row at all.
+      const [fileB] = await db
+        .insert(modelFiles)
+        .values({
+          modelId: ephemeralModel.id,
+          filename: 'cover.png',
+          relativePath: 'cover.png',
+          fileType: 'image',
+          mimeType: 'image/png',
+          sizeBytes: 500,
+          storagePath: `models/${ephemeralModel.id}/cover.png`,
+          hash: `hash-b-${ts}`,
+        })
+        .returning();
+
+      // Point the model's previewImageFileId at file B (no thumbnail).
+      await db
+        .update(models)
+        .set({ previewImageFileId: fileB.id })
+        .where(eq(models.id, ephemeralModel.id));
+
+      const rows = [
+        {
+          id: ephemeralModel.id,
+          name: ephemeralModel.name,
+          slug: ephemeralModel.slug,
+          status: ephemeralModel.status,
+          fileCount: ephemeralModel.fileCount,
+          totalSizeBytes: ephemeralModel.totalSizeBytes,
+          createdAt: ephemeralModel.createdAt,
+          previewImageFileId: fileB.id,
+        },
+      ];
+
+      const cards = await presenterService.buildModelCardsFromRows(rows, [ephemeralModel.id]);
+
+      expect(cards).toHaveLength(1);
+      // Must fall back to file A's grid thumbnail, not null.
+      expect(cards[0].thumbnailUrl).toBe(`/files/thumbnails/${fileAGridThumb.id}.webp`);
+    } finally {
+      await db.delete(models).where(eq(models.id, ephemeralModel.id));
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

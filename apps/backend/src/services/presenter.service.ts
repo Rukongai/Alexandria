@@ -1,4 +1,4 @@
-import { eq, and, inArray, asc } from 'drizzle-orm';
+import { eq, and, inArray, asc, like } from 'drizzle-orm';
 import type {
   ModelCard,
   ModelDetail,
@@ -31,9 +31,6 @@ import { createLogger } from '../utils/logger.js';
 import { formatDisplayValue } from '../utils/format.js';
 
 const logger = createLogger('PresenterService');
-
-const GRID_THUMBNAIL_WIDTH = 400;
-const DETAIL_THUMBNAIL_WIDTH = 800;
 
 // ---------------------------------------------------------------------------
 // Public interface
@@ -212,19 +209,20 @@ export class PresenterService implements IPresenterService {
         .select({
           id: thumbnails.id,
           sourceFileId: thumbnails.sourceFileId,
-          width: thumbnails.width,
+          storagePath: thumbnails.storagePath,
         })
         .from(thumbnails)
         .where(inArray(thumbnails.sourceFileId, imageFileIds));
 
-      // Index by sourceFileId and size
+      // Index by sourceFileId and size.
+      // Use storage path suffix instead of width because sharp's fit:inside
+      // preserves original dimensions for images smaller than the target size.
       const detailThumbByFile = new Map<string, string>();
       const gridThumbByFile = new Map<string, string>();
       for (const t of thumbRows) {
-        if (t.width === DETAIL_THUMBNAIL_WIDTH) {
+        if (t.storagePath.includes('_detail')) {
           detailThumbByFile.set(t.sourceFileId, t.id);
-        }
-        if (t.width === GRID_THUMBNAIL_WIDTH) {
+        } else if (t.storagePath.includes('_grid')) {
           gridThumbByFile.set(t.sourceFileId, t.id);
         }
       }
@@ -400,22 +398,22 @@ export class PresenterService implements IPresenterService {
       }
     }
 
-    // Determine which file ID to use for thumbnail resolution per model:
-    // prefer previewImageFileId when set, fall back to first image file.
-    const resolvedFileByModel = new Map<string, string>();
+    // Collect both preferred and fallback file IDs so that if the preferred
+    // file has no grid thumbnail we can fall back to the first image file.
+    const imageFileIdSet = new Set<string>();
     for (const modelId of modelIds) {
       const preferred = previewFileIdByModel.get(modelId);
       const fallback = firstImageFileByModel.get(modelId);
-      const fileId = preferred ?? fallback;
-      if (fileId) {
-        resolvedFileByModel.set(modelId, fileId);
-      }
+      if (preferred) imageFileIdSet.add(preferred);
+      if (fallback) imageFileIdSet.add(fallback);
     }
 
-    const imageFileIds = [...new Set(resolvedFileByModel.values())];
+    const imageFileIds = [...imageFileIdSet];
     if (imageFileIds.length === 0) return new Map();
 
-    // Step 2: find grid-size thumbnail for each image file
+    // Step 2: find grid-size thumbnail for each image file.
+    // Use storage path suffix instead of width because sharp's fit:inside
+    // preserves original dimensions for images smaller than the target size.
     const thumbRows = await db
       .select({
         id: thumbnails.id,
@@ -425,7 +423,7 @@ export class PresenterService implements IPresenterService {
       .where(
         and(
           inArray(thumbnails.sourceFileId, imageFileIds),
-          eq(thumbnails.width, GRID_THUMBNAIL_WIDTH),
+          like(thumbnails.storagePath, '%\\_grid.webp'),
         ),
       );
 
