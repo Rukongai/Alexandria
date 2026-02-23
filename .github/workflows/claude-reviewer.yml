@@ -1,0 +1,50 @@
+name: Claude Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  reviewer:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Alexandria Reviewer Agent
+        uses: anthropics/claude-code-action@v1
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are running the Alexandria project reviewer agent.
+
+            1. Read `.claude/agents/reviewer.md` — this is your full review checklist.
+            2. Read `docs/ARCHITECTURE.md`, `docs/CONVENTIONS.md`, and `docs/TYPES.md`.
+            3. Run: git diff origin/$BASE_REF...HEAD --name-only
+               to get the list of changed files, then read each one.
+            4. Apply every check in reviewer.md to the changed code.
+            5. Post your findings as a comment on this PR:
+               gh pr comment $PR_NUMBER --body "..."
+
+            Format your comment as:
+            ## Alexandria Code Review
+
+            **Result:** ✅ No issues found  (or ⚠️ N issue(s) found)
+
+            For each issue:
+            - **File:** `path/to/file.ts:line`
+            - **Rule:** (what docs/ARCHITECTURE.md or CONVENTIONS.md says)
+            - **Fix:** (specific actionable change)
+
+            If no issues are found, say so explicitly and briefly summarize what was checked.
