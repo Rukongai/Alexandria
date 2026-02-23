@@ -1,0 +1,27 @@
+FROM node:22-slim AS base
+WORKDIR /app
+
+# Copy workspace root files
+COPY package.json package-lock.json turbo.json tsconfig.base.json ./
+
+# Copy package manifests for all workspaces
+COPY packages/shared/package.json packages/shared/
+COPY apps/frontend/package.json apps/frontend/
+
+# Install dependencies
+RUN npm ci
+
+# Copy source
+COPY packages/shared/ packages/shared/
+COPY apps/frontend/ apps/frontend/
+
+# Build shared package
+RUN npm run build --workspace=packages/shared
+
+# Expose Vite dev port
+EXPOSE 5173
+
+WORKDIR /app/apps/frontend
+
+# Run Vite dev server (accessible from host)
+CMD ["npx", "vite", "--host", "0.0.0.0"]

@@ -1,0 +1,45 @@
+import { pgTable, uuid, varchar, text, bigint, integer, timestamp, index } from 'drizzle-orm/pg-core';
+import { users } from './user';
+
+// Models table — the central entity. Each model represents one 3D printing model
+// (a single zip upload or folder import).
+// ON DELETE: Deleting a user does not cascade to models — models are orphaned first
+// in the application layer, or deletion is blocked.
+export const models = pgTable(
+  'models',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: varchar('name', { length: 255 }).notNull(),
+    // Unique slug generated from name + random suffix (e.g., dragon-bust-a3f2)
+    slug: varchar('slug', { length: 255 }).notNull().unique(),
+    description: text('description'),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    // ModelSourceType: 'zip_upload' | 'folder_import' | 'manual'
+    sourceType: varchar('source_type', { length: 20 }).notNull(),
+    // ModelStatus: 'processing' | 'ready' | 'error'
+    status: varchar('status', { length: 20 }).notNull().default('processing'),
+    originalFilename: varchar('original_filename', { length: 500 }),
+    // bigint for file sizes that may exceed 2GB
+    totalSizeBytes: bigint('total_size_bytes', { mode: 'number' }).notNull().default(0),
+    fileCount: integer('file_count').notNull().default(0),
+    // SHA-256 hash of the zip/source, for deduplication detection
+    fileHash: varchar('file_hash', { length: 64 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Fast lookup by slug for URL-based access
+    index('models_slug_idx').on(table.slug),
+    // Filter models by owner (user's model library view)
+    index('models_user_id_idx').on(table.userId),
+    // Filter by processing status (job status polling, admin views)
+    index('models_status_idx').on(table.status),
+    // Sort by creation date (default browse order)
+    index('models_created_at_idx').on(table.createdAt),
+  ],
+);
+
+export type Model = typeof models.$inferSelect;
+export type NewModel = typeof models.$inferInsert;
