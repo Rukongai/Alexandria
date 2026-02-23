@@ -6,3 +6,9 @@ dist/
 .env.local
 .DS_Store
 test-files/
+.claude/agent-memory/
+.claude/statsig/
+.claude/todos/
+.claude/projects/
+/apps/backend/.claude/agent-memory/
+/apps/frontend/.claude/agent-memory/
