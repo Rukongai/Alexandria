@@ -339,7 +339,7 @@ describe('CollectionService – listCollections()', () => {
     expect(result).toEqual([]);
   });
 
-  it('should return only top-level collections (parentCollectionId IS NULL)', async () => {
+  it('should return all collections (including sub-collections) as a flat list', async () => {
     const top1 = await collectionService.createCollection(
       { name: 'Top Level 1' },
       testUserId,
@@ -348,17 +348,18 @@ describe('CollectionService – listCollections()', () => {
       { name: 'Top Level 2' },
       testUserId,
     );
-    await collectionService.createCollection(
+    const child = await collectionService.createCollection(
       { name: 'Child of Top 1', parentCollectionId: top1.id },
       testUserId,
     );
 
     const result = await collectionService.listCollections(testUserId);
 
-    expect(result.length).toBe(2);
+    expect(result.length).toBe(3);
     const resultIds = result.map((c) => c.id);
     expect(resultIds).toContain(top1.id);
     expect(resultIds).toContain(top2.id);
+    expect(resultIds).toContain(child.id);
   });
 
   it('should return CollectionDetail[] with children populated at depth=1', async () => {
@@ -999,23 +1000,26 @@ describe('CollectionService – parent-child nesting', () => {
     expect(grandparent.parentCollectionId).toBeNull();
   });
 
-  it('should not include nested collections in listCollections() top-level results', async () => {
+  it('should include nested collections in listCollections() results', async () => {
     const top = await collectionService.createCollection(
       { name: 'Top Nesting Test' },
       testUserId,
     );
-    await collectionService.createCollection(
+    const nested = await collectionService.createCollection(
       { name: 'Nested Child', parentCollectionId: top.id },
       testUserId,
     );
 
     const result = await collectionService.listCollections(testUserId);
 
-    // Only top-level
-    for (const c of result) {
-      expect(c.parentCollectionId).toBeNull();
-    }
-    expect(result.length).toBe(1);
+    // Both top-level and nested collections are returned
+    expect(result.length).toBe(2);
+    const resultIds = result.map((c) => c.id);
+    expect(resultIds).toContain(top.id);
+    expect(resultIds).toContain(nested.id);
+
+    const nestedDetail = result.find((c) => c.id === nested.id);
+    expect(nestedDetail?.parentCollectionId).toBe(top.id);
   });
 
   it("should populate grandchild's parent correctly when navigating via getCollectionDetail", async () => {
