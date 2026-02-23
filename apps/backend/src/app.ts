@@ -40,6 +40,11 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
     },
   });
 
+  // Register raw binary content type for chunked upload routes
+  app.addContentTypeParser('application/octet-stream', (_request, payload, done) => {
+    done(null, payload);
+  });
+
   // Instantiate services and make them available on the app instance
   const authService = new AuthService();
   (app as typeof app & { authService: AuthService }).authService = authService;

@@ -5,11 +5,13 @@ import type {
   AddModelsToCollectionRequest,
   ModelSearchParams,
 } from '@alexandria/shared';
+
 import {
   createCollectionSchema,
   updateCollectionSchema,
   addModelsToCollectionSchema,
   collectionListParamsSchema,
+  modelSearchParamsSchema,
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -37,7 +39,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
 
       const params = parseResult.data;
       const userId = request.user!.id;
-      const collections = await collectionService.listCollections(userId, params);
+      const collections = await presenterService.buildCollectionList(userId, params);
 
       return reply.status(200).send({
         data: collections,
@@ -79,9 +81,10 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = request.body as UpdateCollectionRequest;
-      const updated = await collectionService.updateCollection(id, body);
+      await collectionService.updateCollection(id, body);
+      const detail = await presenterService.buildCollectionDetail(id);
 
-      return reply.status(200).send({ data: updated, meta: null, errors: null });
+      return reply.status(200).send({ data: detail, meta: null, errors: null });
     },
   );
 
@@ -108,15 +111,31 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
       // Verify collection exists
       await collectionService.getCollectionById(id);
 
-      const params: ModelSearchParams = {
-        collectionId: id,
-        ...(typeof rawQuery.q === 'string' ? { q: rawQuery.q } : {}),
-        ...(typeof rawQuery.sort === 'string' ? { sort: rawQuery.sort as ModelSearchParams['sort'] } : {}),
-        ...(typeof rawQuery.sortDir === 'string' ? { sortDir: rawQuery.sortDir as ModelSearchParams['sortDir'] } : {}),
-        ...(typeof rawQuery.cursor === 'string' ? { cursor: rawQuery.cursor } : {}),
-        ...(typeof rawQuery.pageSize === 'string' ? { pageSize: Number(rawQuery.pageSize) } : {}),
-      };
+      // Extract metadata.* keys into a metadataFilters record
+      const metadataFilters: Record<string, string> = {};
+      for (const [key, val] of Object.entries(rawQuery)) {
+        if (key.startsWith('metadata.') && typeof val === 'string') {
+          const fieldSlug = key.slice('metadata.'.length);
+          if (fieldSlug) {
+            metadataFilters[fieldSlug] = val;
+          }
+        }
+      }
 
+      const parseResult = modelSearchParamsSchema.safeParse({
+        ...rawQuery,
+        ...(Object.keys(metadataFilters).length > 0 ? { metadataFilters } : {}),
+        collectionId: id,
+      });
+
+      if (!parseResult.success) {
+        const firstIssue = parseResult.error.issues[0];
+        const field = firstIssue?.path.join('.') ?? undefined;
+        const message = firstIssue?.message ?? 'Validation failed';
+        throw validationError(message, field);
+      }
+
+      const params = parseResult.data as ModelSearchParams;
       const result = await searchService.searchModels(params);
 
       return reply.status(200).send({

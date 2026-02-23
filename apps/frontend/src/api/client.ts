@@ -112,3 +112,51 @@ export async function postForm<T>(
     xhr.send(formData);
   });
 }
+
+export async function putRaw<T>(
+  path: string,
+  data: Blob,
+  onProgress?: (pct: number) => void
+): Promise<ApiResponse<T>> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', `${BASE_URL}${path}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+    if (onProgress) {
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      });
+    }
+
+    xhr.addEventListener('load', () => {
+      try {
+        const body: ApiResponse<T> = JSON.parse(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(body);
+        } else {
+          const firstError = body.errors?.[0];
+          reject(
+            new ApiRequestError(
+              xhr.status,
+              firstError?.code ?? 'UNKNOWN_ERROR',
+              firstError?.message ?? `Upload failed with status ${xhr.status}`,
+              firstError?.field ?? null
+            )
+          );
+        }
+      } catch {
+        reject(new ApiRequestError(xhr.status, 'PARSE_ERROR', 'Failed to parse response'));
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      reject(new ApiRequestError(0, 'NETWORK_ERROR', 'Network request failed'));
+    });
+
+    xhr.send(data);
+  });
+}

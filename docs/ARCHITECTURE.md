@@ -54,10 +54,11 @@ The system follows a monorepo structure with a React frontend, a Fastify backend
 │         │           ┌──────▼───────┐                     │
 │         └──────────→│StorageService│                     │
 │                     └──────────────┘                     │
-│  ┌──────────────┐                                        │
-│  │ JobService    │  BullMQ + Redis                       │
-│  │ (queue mgmt)  │                                       │
-│  └──────────────┘                                        │
+│  ┌──────────────┐  ┌──────────────┐                      │
+│  │ JobService    │  │UploadService │  BullMQ + Redis      │
+│  │ (queue mgmt)  │  │(chunked      │                      │
+│  └──────────────┘  │ upload sess) │                      │
+│                     └──────────────┘                     │
 └──────────────────────┬──────────────────────────────────┘
                        │
           ┌────────────▼────────────┐
@@ -161,6 +162,14 @@ Collections are an organizational structure, not metadata. A model's relationshi
 
 **MVP scope:** Single-user local auth with email and password. Session-based. The User schema reserves columns for future OIDC/OAuth integration but the wiring is not built in MVP.
 
+### UploadService
+
+**Owns:** Chunked upload session management. Tracks in-flight upload sessions in memory, stores individual chunks to a temporary directory, and assembles them into a single file for handoff to IngestionService.
+
+**Does not own:** Ingestion pipeline, storage, database.
+
+**Behavior:** `initUpload` creates a session with a UUID, a temporary chunks directory, and a 2-hour expiry. `receiveChunk` writes each binary chunk to disk by index, enabling per-chunk retry (re-uploading a chunk index overwrites the previous write). `assembleFile` concatenates all chunks in order, verifies the assembled size matches the declared `totalSize`, cleans up the temporary directory, and returns the path for IngestionService to consume. Expired sessions are purged on a 10-minute interval.
+
 ### JobService
 
 **Owns:** BullMQ queue management, job creation, status tracking, retry logic, progress reporting.
@@ -179,9 +188,11 @@ Collections are an organizational structure, not metadata. A model's relationshi
 
 **View builders:**
 - `buildModelCard(model)` → compact payload for grid/list views
+- `buildModelCardsFromRows(rows, modelIds)` → batch assembly for SearchService results
 - `buildModelDetail(model)` → full payload for detail page
 - `buildFileTree(modelFiles)` → nested tree structure from flat relative paths
-- `buildCollectionDetail(collection)` → collection with metadata and model count
+- `buildCollectionDetail(collection)` → collection with children and model count
+- `buildCollectionList(userId, params)` → all collections for a user, with optional depth expansion
 - `buildMetadataFieldList(fields)` → field definitions with value counts
 
 ---
@@ -203,10 +214,13 @@ Collections are an organizational structure, not metadata. A model's relationshi
 | GET | /models | Browse/search with filters | SearchService → PresenterService |
 | GET | /models/:id | Model detail | ModelService → PresenterService |
 | GET | /models/:id/files | File tree | ModelService → PresenterService |
-| POST | /models/upload | Upload zip | IngestionService → JobService |
+| POST | /models/upload | Upload zip (≤100 MB) | IngestionService → JobService |
+| POST | /models/upload/init | Initiate chunked upload session | UploadService |
+| PUT | /models/upload/:uploadId/chunk/:index | Upload a single chunk | UploadService |
+| POST | /models/upload/:uploadId/complete | Assemble chunks, start ingestion | UploadService → IngestionService → JobService |
 | POST | /models/import | Folder import | IngestionService → JobService |
 | GET | /models/:id/status | Processing status | JobService |
-| PATCH | /models/:id | Update model | ModelService |
+| PATCH | /models/:id | Update model | ModelService → PresenterService |
 | DELETE | /models/:id | Delete model + files | ModelService → StorageService |
 
 **Collections**
@@ -216,7 +230,7 @@ Collections are an organizational structure, not metadata. A model's relationshi
 | GET | /collections/:id | Single collection | CollectionService → PresenterService |
 | GET | /collections/:id/models | Models in collection | SearchService → PresenterService |
 | POST | /collections | Create | CollectionService |
-| PATCH | /collections/:id | Update | CollectionService |
+| PATCH | /collections/:id | Update | CollectionService → PresenterService |
 | DELETE | /collections/:id | Delete (not its models) | CollectionService |
 | POST | /collections/:id/models | Add model(s) | CollectionService |
 | DELETE | /collections/:id/models/:modelId | Remove model | CollectionService |
@@ -236,8 +250,14 @@ Collections are an organizational structure, not metadata. A model's relationshi
 |--------|-------|---------|---------------|
 | POST | /auth/login | Authenticate | AuthService |
 | POST | /auth/logout | End session | AuthService |
-| GET | /auth/me | Current user | AuthService → PresenterService |
+| GET | /auth/me | Current user | AuthService |
 | PATCH | /auth/me | Update profile | AuthService |
+
+**Files (Static Serving)**
+| Method | Route | Purpose | Service Chain |
+|--------|-------|---------|---------------|
+| GET | /files/thumbnails/:id.webp | Serve thumbnail | StorageService |
+| GET | /files/models/:modelId/* | Serve model file | StorageService |
 
 **Bulk Operations**
 | Method | Route | Purpose | Service Chain |

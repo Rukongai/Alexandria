@@ -4,8 +4,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import type { Readable } from 'node:stream';
 import type { ImportConfig, ModelSearchParams, UpdateModelRequest } from '@alexandria/shared';
-import { importConfigSchema, modelSearchParamsSchema, updateModelSchema } from '@alexandria/shared';
+import {
+  importConfigSchema,
+  modelSearchParamsSchema,
+  updateModelSchema,
+  uploadInitSchema,
+  chunkIndexParamsSchema,
+  uploadCompleteParamsSchema,
+} from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { ingestionService } from '../services/ingestion.service.js';
@@ -13,6 +21,7 @@ import { modelService } from '../services/model.service.js';
 import { searchService } from '../services/search.service.js';
 import { presenterService } from '../services/presenter.service.js';
 import { storageService } from '../services/storage.service.js';
+import { uploadService } from '../services/upload.service.js';
 import { validationError } from '../utils/errors.js';
 
 export async function modelRoutes(app: FastifyInstance): Promise<void> {
@@ -62,6 +71,86 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /upload/init — initiate a chunked upload session
+  app.post(
+    '/upload/init',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const parseResult = uploadInitSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        const firstIssue = parseResult.error.issues[0];
+        throw validationError(
+          firstIssue?.message ?? 'Validation failed',
+          firstIssue?.path.join('.') ?? undefined,
+        );
+      }
+
+      const { filename, totalSize, totalChunks } = parseResult.data;
+      const userId = request.user!.id;
+
+      if (!filename.toLowerCase().endsWith('.zip')) {
+        throw validationError('Only .zip files are supported');
+      }
+
+      const result = uploadService.initUpload(filename, totalSize, totalChunks, userId);
+      return reply.status(201).send({ data: result, meta: null, errors: null });
+    },
+  );
+
+  // PUT /upload/:uploadId/chunk/:index — receive a single chunk
+  app.put(
+    '/upload/:uploadId/chunk/:index',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const parseResult = chunkIndexParamsSchema.safeParse(request.params);
+      if (!parseResult.success) {
+        const firstIssue = parseResult.error.issues[0];
+        throw validationError(
+          firstIssue?.message ?? 'Validation failed',
+          firstIssue?.path.join('.') ?? undefined,
+        );
+      }
+
+      const { uploadId, index } = parseResult.data;
+      const userId = request.user!.id;
+
+      const result = await uploadService.receiveChunk(
+        uploadId,
+        index,
+        request.body as Readable,
+        userId,
+      );
+      return reply.status(200).send({ data: result, meta: null, errors: null });
+    },
+  );
+
+  // POST /upload/:uploadId/complete — assemble chunks and start ingestion
+  app.post(
+    '/upload/:uploadId/complete',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const parseResult = uploadCompleteParamsSchema.safeParse(request.params);
+      if (!parseResult.success) {
+        const firstIssue = parseResult.error.issues[0];
+        throw validationError(
+          firstIssue?.message ?? 'Validation failed',
+          firstIssue?.path.join('.') ?? undefined,
+        );
+      }
+
+      const { uploadId } = parseResult.data;
+      const userId = request.user!.id;
+
+      const { tempFilePath, originalFilename } = await uploadService.assembleFile(uploadId, userId);
+      const { modelId, jobId } = await ingestionService.handleUpload(
+        { tempFilePath, originalFilename },
+        userId,
+      );
+
+      return reply.status(202).send({ data: { modelId, jobId }, meta: null, errors: null });
+    },
+  );
+
   // POST /upload — accept a zip file, enqueue ingestion
   app.post(
     '/upload',
@@ -83,6 +172,11 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const tempFilePath = path.join(tempDir, `upload_${crypto.randomUUID()}_${originalFilename}`);
       const writeStream = fs.createWriteStream(tempFilePath);
       await pipeline(data.file, writeStream);
+
+      if (data.file.truncated) {
+        fs.unlinkSync(tempFilePath);
+        throw validationError('File exceeds the maximum allowed size (100MB)');
+      }
 
       const userId = request.user!.id;
       const { modelId, jobId } = await ingestionService.handleUpload(
