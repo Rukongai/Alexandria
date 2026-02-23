@@ -1,10 +1,13 @@
 import { Skeleton } from '../ui/skeleton';
+import { useDisplayPreferences } from '../../hooks/use-display-preferences';
 
 export function ModelCardSkeleton() {
+  const { cardAspectRatio } = useDisplayPreferences();
+
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border bg-card shadow">
       {/* Thumbnail */}
-      <Skeleton className="aspect-[4/3] w-full rounded-none" />
+      <Skeleton className="w-full rounded-none" style={{ aspectRatio: cardAspectRatio }} />
       {/* Body */}
       <div className="flex flex-col gap-2 p-3">
         <Skeleton className="h-4 w-3/4" />
