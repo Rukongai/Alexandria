@@ -12,6 +12,8 @@ export interface IStorageService {
   retrieveStream(filePath: string): NodeJS.ReadableStream;
   delete(filePath: string): Promise<void>;
   exists(filePath: string): Promise<boolean>;
+  getStorageRoot(): string;
+  resolveStoragePath(filePath: string): string;
 }
 
 export class StorageService implements IStorageService {
@@ -19,6 +21,14 @@ export class StorageService implements IStorageService {
 
   constructor(storagePath: string = config.storagePath) {
     this.root = storagePath;
+  }
+
+  getStorageRoot(): string {
+    return path.resolve(this.root);
+  }
+
+  resolveStoragePath(filePath: string): string {
+    return this.resolve(filePath);
   }
 
   private resolve(filePath: string): string {

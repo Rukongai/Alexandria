@@ -79,7 +79,90 @@ async function computeHashAndSize(
   return { hash: hash.digest('hex'), sizeBytes };
 }
 
+export interface DiscoveredModel {
+  /** Directory name that matched {model} in the pattern */
+  name: string;
+  /** Absolute path to the model's root directory */
+  sourcePath: string;
+  /** Collection name extracted from pattern, if any */
+  collectionName: string | null;
+  /** Metadata key-value pairs extracted from pattern (slug → directory name) */
+  metadata: Record<string, string>;
+}
+
 export class FileProcessingService {
+  /**
+   * Walk a source directory matching against a parsed import pattern.
+   * Returns a list of discovered models with their metadata/collection context.
+   *
+   * The pattern segments define the meaning of each directory level:
+   *   {Collection}       → the directory name becomes a collection assignment
+   *   {metadata.<slug>}  → the directory name becomes a metadata value
+   *   {model}            → the directory name becomes the model name; everything below is model content
+   */
+  async walkDirectoryForImport(
+    sourcePath: string,
+    parsedPattern: import('@alexandria/shared').ParsedPatternSegment[],
+  ): Promise<DiscoveredModel[]> {
+    const discovered: DiscoveredModel[] = [];
+    await this.walkPatternLevel(sourcePath, parsedPattern, 0, null, {}, discovered);
+    return discovered;
+  }
+
+  private async walkPatternLevel(
+    currentPath: string,
+    pattern: import('@alexandria/shared').ParsedPatternSegment[],
+    depth: number,
+    collectionName: string | null,
+    metadata: Record<string, string>,
+    results: DiscoveredModel[],
+  ): Promise<void> {
+    if (depth >= pattern.length) return;
+
+    const segment = pattern[depth];
+    let entries: import('node:fs').Dirent[];
+
+    try {
+      entries = await fsPromises.readdir(currentPath, { withFileTypes: true });
+    } catch {
+      return; // directory not accessible, skip
+    }
+
+    const dirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.'));
+
+    for (const dir of dirs) {
+      const dirPath = path.join(currentPath, dir.name);
+
+      if (segment.type === 'model') {
+        // This directory is a model root
+        results.push({
+          name: dir.name,
+          sourcePath: dirPath,
+          collectionName,
+          metadata: { ...metadata },
+        });
+      } else if (segment.type === 'collection') {
+        await this.walkPatternLevel(
+          dirPath,
+          pattern,
+          depth + 1,
+          dir.name,
+          metadata,
+          results,
+        );
+      } else if (segment.type === 'metadata' && segment.metadataSlug) {
+        await this.walkPatternLevel(
+          dirPath,
+          pattern,
+          depth + 1,
+          collectionName,
+          { ...metadata, [segment.metadataSlug]: dir.name },
+          results,
+        );
+      }
+    }
+  }
+
   async processZip(zipPath: string, extractDir: string): Promise<FileManifest> {
     await fsPromises.mkdir(extractDir, { recursive: true });
 
@@ -157,7 +240,7 @@ export class FileProcessingService {
     }
   }
 
-  private async scanDirectory(dir: string, rootDir: string): Promise<FileManifestEntry[]> {
+  async scanDirectory(dir: string, rootDir: string): Promise<FileManifestEntry[]> {
     const entries: FileManifestEntry[] = [];
     const items = await fsPromises.readdir(dir, { withFileTypes: true });
 

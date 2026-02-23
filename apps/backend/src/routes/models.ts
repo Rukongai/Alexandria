@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import type { ImportConfig } from '@alexandria/shared';
+import { importConfigSchema } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
+import { validate } from '../middleware/validate.js';
 import { ingestionService } from '../services/ingestion.service.js';
 import { modelService } from '../services/model.service.js';
 import { validationError } from '../utils/errors.js';
@@ -39,6 +42,20 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       );
 
       return reply.status(202).send({ data: { modelId, jobId }, meta: null, errors: null });
+    },
+  );
+
+  // POST /import — start folder import
+  app.post(
+    '/import',
+    { preHandler: [requireAuth, validate(importConfigSchema)] },
+    async (request, reply) => {
+      const body = request.body as ImportConfig;
+      const userId = request.user!.id;
+
+      const { jobId } = await ingestionService.handleFolderImport(body, userId);
+
+      return reply.status(202).send({ data: { jobId }, meta: null, errors: null });
     },
   );
 
