@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { UploadCloud, FileArchive, X } from 'lucide-react';
+import { SUPPORTED_ARCHIVE_EXTENSIONS } from '@alexandria/shared';
 import { uploadModel } from '../../api/models';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
@@ -19,9 +20,8 @@ export function DropZone() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const selectFile = useCallback((file: File) => {
-    const ARCHIVE_EXTENSIONS = ['.zip', '.rar', '.7z', '.tar.gz', '.tgz'];
     const lower = file.name.toLowerCase();
-    if (!ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+    if (!SUPPORTED_ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
       setState({ phase: 'error', file, message: 'Only .zip, .rar, .7z, and .tar.gz archives are supported.' });
       return;
     }

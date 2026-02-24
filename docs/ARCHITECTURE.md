@@ -12,8 +12,8 @@ The system follows a monorepo structure with a React frontend, a Fastify backend
 
 ### Core Principles
 
-- **Zip-as-entity**: An uploaded zip defines one model. All contents belong to that single entry. No splitting.
-- **Structure preservation**: Internal folder hierarchy within zips is first-class data. Relative paths are preserved and navigable.
+- **Archive-as-entity**: An uploaded archive (zip, rar, 7z, tar.gz) defines one model. All contents belong to that single entry. No splitting.
+- **Structure preservation**: Internal folder hierarchy within archives is first-class data. Relative paths are preserved and navigable.
 - **Managed storage**: After import/upload, Alexandria owns all files in its managed storage root. External file references do not exist at runtime.
 - **Metadata unification**: All model attributes (tags, artist, year, custom fields) are conceptually metadata. Some fields have optimized backing storage for query performance. The API treats them uniformly.
 - **Server-side assembly**: The backend does the heavy lifting of data shaping. PresenterService assembles view-ready payloads. The frontend receives clean, ready-to-render data.
@@ -88,7 +88,7 @@ Two entry paths:
 
 **Does not own:** File storage, thumbnail generation, database record persistence.
 
-**Behavior:** Given a zip file or directory path, produces a structured manifest describing what was found: files with their relative paths, classified types, sizes, and any metadata extractable from filenames or structure. This manifest is what IngestionService uses to create ModelFile records and route files to storage.
+**Behavior:** Given an archive file (zip, rar, 7z, tar.gz) or directory path, produces a structured manifest describing what was found: files with their relative paths, classified types, sizes, and any metadata extractable from filenames or structure. This manifest is what IngestionService uses to create ModelFile records and route files to storage.
 
 Uses the **PatternParser** utility (located in `utils/pattern-parser.ts`) — a pure function that takes a user-defined hierarchy pattern string (e.g., `{Collection}/{metadata.Artist}/{model}`), validates it, and returns a structured representation. Validation rules: pattern must end with `{model}`, segments must be `{Collection}` or `{metadata.<fieldSlug>}`, and `{model}` cannot appear in the middle.
 
@@ -214,7 +214,7 @@ Collections are an organizational structure, not metadata. A model's relationshi
 | GET | /models | Browse/search with filters | SearchService → PresenterService |
 | GET | /models/:id | Model detail | ModelService → PresenterService |
 | GET | /models/:id/files | File tree | ModelService → PresenterService |
-| POST | /models/upload | Upload zip (≤100 MB) | IngestionService → JobService |
+| POST | /models/upload | Upload archive (zip/rar/7z/tar.gz, ≤100 MB) | IngestionService → JobService |
 | POST | /models/upload/init | Initiate chunked upload session | UploadService |
 | PUT | /models/upload/:uploadId/chunk/:index | Upload a single chunk | UploadService |
 | POST | /models/upload/:uploadId/complete | Assemble chunks, start ingestion | UploadService → IngestionService → JobService |
@@ -272,8 +272,8 @@ Collections are an organizational structure, not metadata. A model's relationshi
 
 Decisions recorded here are intentional and should not be reversed without explicit discussion and an update to this document.
 
-### D1: Zip-as-atomic-entity
-A zip upload creates exactly one Model. No splitting, no multi-model extraction. The zip boundary is the model boundary.
+### D1: Archive-as-atomic-entity
+An archive upload (zip, rar, 7z, tar.gz) creates exactly one Model. No splitting, no multi-model extraction. The archive boundary is the model boundary.
 
 ### D2: Managed storage only
 After import/upload, all files live in Alexandria's managed storage. No runtime references to external file locations. Import strategies (hardlink, copy, move) determine how files enter managed storage, but once imported, StorageService is the sole authority.

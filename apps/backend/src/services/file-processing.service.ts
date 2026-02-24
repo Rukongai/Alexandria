@@ -270,7 +270,10 @@ export class FileProcessingService {
       file: archivePath,
       cwd: extractDir,
       follow: false,
-      filter: (filePath) => {
+      filter: (filePath, entry) => {
+        // Reject symlinks and hard links to prevent symlink attacks
+        // entry.type is only present on ReadEntry (not Stats), so use 'in' guard
+        if ('type' in entry && (entry.type === 'SymbolicLink' || entry.type === 'Link')) return false;
         // Guard path traversal
         const resolved = path.resolve(extractDir, filePath);
         if (!resolved.startsWith(extractRoot + path.sep) && resolved !== extractRoot) {
@@ -295,15 +298,22 @@ export class FileProcessingService {
       filepath: archivePath,
       targetPath: extractDir,
     });
-    const { files } = extractor.extract();
-    for (const file of files) {
-      const fileName: string = file.fileHeader.name;
-      // Skip directories, hidden files, __MACOSX, and path traversal
-      if (file.fileHeader.flags.directory) continue;
-      if (isHidden(fileName) || isMacos(fileName)) continue;
-      const resolved = path.resolve(extractDir, fileName);
-      if (!resolved.startsWith(extractRoot + path.sep) && resolved !== extractRoot) continue;
-    }
+    const { files } = extractor.extract({
+      // Filter is evaluated BEFORE extraction — prevents unsafe entries from being written
+      files: (fileHeader) => {
+        const fileName = fileHeader.name;
+        // Skip directories
+        if (fileHeader.flags.directory) return false;
+        // Skip hidden files and __MACOSX entries
+        if (isHidden(fileName) || isMacos(fileName)) return false;
+        // Guard path traversal
+        const resolved = path.resolve(extractDir, fileName);
+        if (!resolved.startsWith(extractRoot + path.sep) && resolved !== extractRoot) return false;
+        return true;
+      },
+    });
+    // Consume the generator to trigger disk writes for accepted entries
+    for (const _file of files) { /* extraction happens during iteration */ }
   }
 
   private async process7z(archivePath: string, extractDir: string): Promise<FileManifest> {
@@ -315,12 +325,31 @@ export class FileProcessingService {
   }
 
   private extract7z(archivePath: string, extractDir: string): Promise<void> {
+    const extractRoot = path.resolve(extractDir);
+    // Track files reported by 7z that land outside the extract root (path traversal guard)
+    const outsideFiles: string[] = [];
+
     return new Promise((resolve, reject) => {
       const stream = Seven.extractFull(archivePath, extractDir, {
         $bin: path7za,
         recursive: true,
       });
-      stream.on('end', resolve);
+
+      stream.on('data', (entry: { file?: string }) => {
+        if (entry.file) {
+          const absPath = path.resolve(extractDir, entry.file);
+          if (!absPath.startsWith(extractRoot + path.sep) && absPath !== extractRoot) {
+            outsideFiles.push(absPath);
+          }
+        }
+      });
+
+      stream.on('end', () => {
+        // Best-effort cleanup of any path-traversal files extracted outside the root
+        const cleanups = outsideFiles.map((p) => fsPromises.rm(p, { force: true }).catch(() => {}));
+        Promise.all(cleanups).then(() => resolve()).catch(resolve);
+      });
+
       stream.on('error', reject);
     });
   }

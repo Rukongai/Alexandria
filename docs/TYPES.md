@@ -55,7 +55,7 @@ interface Model {
   updatedAt: string;
 }
 
-type ModelSourceType = 'zip_upload' | 'folder_import' | 'manual';
+type ModelSourceType = 'zip_upload' | 'archive_upload' | 'folder_import' | 'manual';
 type ModelStatus = 'processing' | 'ready' | 'error';
 ```
 
