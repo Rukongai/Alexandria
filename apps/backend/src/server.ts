@@ -13,12 +13,18 @@ async function main(): Promise<void> {
       migrationsFolder: new URL('./db/migrations', import.meta.url).pathname,
     });
     app.log.info({ service: 'Server' }, 'Database migrations complete');
-    await runSeed();
-    app.log.info({ service: 'Server' }, 'Database seed complete');
   } catch (err) {
     app.log.error({ service: 'Server', err }, 'Database migration failed');
     await pool.end();
     process.exit(1);
+  }
+
+  // Seed default data — non-fatal if it fails (data may already exist)
+  try {
+    await runSeed(app.log);
+    app.log.info({ service: 'Server' }, 'Database seed complete');
+  } catch (err) {
+    app.log.warn({ service: 'Server', err }, 'Database seed failed — continuing startup');
   }
 
   try {
