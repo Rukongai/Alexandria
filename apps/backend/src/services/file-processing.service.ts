@@ -16,7 +16,10 @@ import {
 } from '@alexandria/shared';
 import { detectArchiveExtension } from '../utils/archive.js';
 import { validationError } from '../utils/errors.js';
+import { createLogger } from '../utils/logger.js';
 import type { IStorageService } from './storage.service.js';
+
+const logger = createLogger('FileProcessingService');
 
 export interface FileManifestEntry {
   filename: string;
@@ -193,7 +196,7 @@ export class FileProcessingService {
     }
   }
 
-  async processZip(zipPath: string, extractDir: string): Promise<FileManifest> {
+  private async processZip(zipPath: string, extractDir: string): Promise<FileManifest> {
     await fsPromises.mkdir(extractDir, { recursive: true });
 
     await this.extractZip(zipPath, extractDir);
@@ -345,6 +348,14 @@ export class FileProcessingService {
       });
 
       stream.on('end', () => {
+        if (outsideFiles.length > 0) {
+          // node-7z has no pre-extraction filter, so traversal files are written then removed.
+          // Log a warning so operators can detect malicious archives.
+          logger.warn(
+            { archivePath, outsideFiles },
+            '7z archive contained path-traversal entries — cleaning up',
+          );
+        }
         // Best-effort cleanup of any path-traversal files extracted outside the root
         const cleanups = outsideFiles.map((p) => fsPromises.rm(p, { force: true }).catch(() => {}));
         Promise.all(cleanups).then(() => resolve()).catch(resolve);
@@ -375,7 +386,10 @@ export class FileProcessingService {
     for (const item of items) {
       const fullPath = path.join(dir, item.name);
 
-      if (item.isDirectory()) {
+      if (item.isSymbolicLink()) {
+        // Skip symlinks — defense-in-depth against any extractor that leaks them through
+        continue;
+      } else if (item.isDirectory()) {
         const nested = await this.scanDirectory(fullPath, rootDir);
         entries.push(...nested);
       } else if (item.isFile()) {

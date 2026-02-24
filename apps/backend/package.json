@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "postinstall": "node -e \"require('fs').chmodSync(require('7zip-bin').path7za, 0o755)\"",
+    "postinstall": "node --input-type=commonjs -e \"require('fs').chmodSync(require('7zip-bin').path7za, 0o755)\"",
     "dev": "node --env-file=../../.env --import=tsx/esm --watch src/server.ts",
     "start": "node dist/server.js",
     "test": "vitest run",

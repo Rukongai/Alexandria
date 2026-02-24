@@ -65,7 +65,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'model.stl', content: 'solid test\nendsolid test\n' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries).toHaveLength(1);
     expect(manifest.entries[0].fileType).toBe('stl');
@@ -78,7 +78,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'photo.jpg', content: 'fake-jpg-data' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('image');
     expect(manifest.entries[0].mimeType).toBe('image/jpeg');
@@ -90,7 +90,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'photo.jpeg', content: 'fake-jpeg-data' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('image');
   });
@@ -101,7 +101,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'photo.png', content: 'fake-png-data' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('image');
     expect(manifest.entries[0].mimeType).toBe('image/png');
@@ -113,7 +113,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'photo.webp', content: 'fake-webp-data' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('image');
     expect(manifest.entries[0].mimeType).toBe('image/webp');
@@ -125,7 +125,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'scan.tif', content: 'fake-tif-data' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('image');
     expect(manifest.entries[0].mimeType).toBe('image/tiff');
@@ -137,7 +137,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'scan.tiff', content: 'fake-tiff-data' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('image');
     expect(manifest.entries[0].mimeType).toBe('image/tiff');
@@ -149,7 +149,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'readme.pdf', content: '%PDF-1.4 fake' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('document');
     expect(manifest.entries[0].mimeType).toBe('application/pdf');
@@ -161,7 +161,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'notes.txt', content: 'some notes' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('document');
     expect(manifest.entries[0].mimeType).toBe('text/plain');
@@ -173,7 +173,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'README.md', content: '# Hello' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('document');
     expect(manifest.entries[0].mimeType).toBe('text/markdown');
@@ -185,7 +185,7 @@ describe('FileProcessingService – file type classification', () => {
 
     await createTestZip(zipPath, [{ name: 'data.bin', content: 'binary data' }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     expect(manifest.entries[0].fileType).toBe('other');
     expect(manifest.entries[0].mimeType).toBe('application/octet-stream');
@@ -204,7 +204,7 @@ describe('FileProcessingService – hash computation', () => {
 
     await createTestZip(zipPath, [{ name: 'hello.txt', content }]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     const expectedHash = crypto.createHash('sha256').update(content).digest('hex');
     expect(manifest.entries[0].hash).toBe(expectedHash);
@@ -225,7 +225,7 @@ describe('FileProcessingService – file filtering', () => {
       { name: '.DS_Store', content: 'hidden' },
     ]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     const names = manifest.entries.map((e) => e.filename);
     expect(names).toContain('visible.stl');
@@ -242,7 +242,7 @@ describe('FileProcessingService – file filtering', () => {
       { name: '__MACOSX/._model.stl', content: 'mac metadata' },
     ]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     const names = manifest.entries.map((e) => e.filename);
     expect(names).toContain('model.stl');
@@ -255,7 +255,7 @@ describe('FileProcessingService – file filtering', () => {
 // Full manifest correctness
 // ---------------------------------------------------------------------------
 
-describe('FileProcessingService – processZip manifest', () => {
+describe('FileProcessingService – processArchive (zip) manifest', () => {
   it('should extract zip and produce correct manifest with multiple file types', async () => {
     const stlContent = 'solid cube\nendsolid cube\n';
     const imageContent = 'fake-png-bytes';
@@ -272,7 +272,7 @@ describe('FileProcessingService – processZip manifest', () => {
       { name: '__MACOSX/._model.stl', content: 'skip me too' },
     ]);
 
-    const manifest = await service.processZip(zipPath, extractDir);
+    const manifest = await service.processArchive(zipPath, extractDir);
 
     // Only the three non-hidden, non-MACOSX files should appear
     expect(manifest.entries).toHaveLength(3);
