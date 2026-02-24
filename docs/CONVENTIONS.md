@@ -129,7 +129,7 @@ Service methods follow a verb-noun pattern that communicates intent:
 - **delete**: remove an entity — `deleteModel`, `deleteCollection`
 - **build**: assemble a response shape (PresenterService) — `buildModelCard`, `buildFileTree`
 - **assign/remove**: manage relationships — `assignMetadata`, `removeModelFromCollection`
-- **process**: execute a pipeline step — `processZip`, `processFolder`
+- **process**: execute a pipeline step — `processArchive`, `processFolder`
 
 ---
 

@@ -499,6 +499,34 @@ interface CollectionListParams {
 
 ---
 
+## Shared Constants
+
+Defined in `packages/shared/src/constants/index.ts` and available to both frontend and backend via `@alexandria/shared`.
+
+### Archive Formats
+
+```typescript
+const SUPPORTED_ARCHIVE_EXTENSIONS = ['.tar.gz', '.tgz', '.zip', '.rar', '.7z'] as const;
+type SupportedArchiveExtension = typeof SUPPORTED_ARCHIVE_EXTENSIONS[number];
+// = '.tar.gz' | '.tgz' | '.zip' | '.rar' | '.7z'
+```
+
+`SUPPORTED_ARCHIVE_EXTENSIONS` is used by the upload validation schema (`uploadInitSchema`) and by the backend `detectArchiveExtension()` utility. The frontend `DropZone` component imports this constant directly so the accepted file type list stays in sync with the backend without duplication.
+
+The array is ordered longest-match first so that `.tar.gz` is detected before `.gz` during suffix matching. New archive formats must be added to this constant; no other change is required in the upload path.
+
+### Other File Classification Constants
+
+```typescript
+const SUPPORTED_IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'] as const;
+const SUPPORTED_DOCUMENT_FORMATS = ['pdf', 'txt', 'md'] as const;
+const STL_EXTENSIONS = ['stl'] as const;
+```
+
+These drive `FileType` classification during ingestion. They are extension lists without a leading dot (unlike `SUPPORTED_ARCHIVE_EXTENSIONS`, which includes the dot).
+
+---
+
 ## Type Relationship Map
 
 ```
