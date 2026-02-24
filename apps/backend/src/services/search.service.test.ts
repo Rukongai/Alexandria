@@ -319,23 +319,25 @@ function onlyTestModels(cards: ModelCard[]): ModelCard[] {
 // ---------------------------------------------------------------------------
 
 describe('browse all models', () => {
-  it('should return all test models with default sort (createdAt desc) when no filters applied', async () => {
+  it('should return only ready models with default sort (createdAt desc) when no filters applied', async () => {
     const result = await searchService.searchModels({ pageSize: 100 });
 
     const ours = onlyTestModels(result.models);
-    expect(ours).toHaveLength(6);
-
+    // Default filter excludes error/processing — only 4 ready models returned.
     // Default sort is createdAt desc — later-created models come first.
-    // Our models were created in order 0..5, so reverse order in results.
+    // Ready models in creation order: Alpha(0), Beta(1), Gamma(2), Epsilon(4).
+    expect(ours).toHaveLength(4);
+    expect(ours.every((m) => m.status === 'ready')).toBe(true);
+
     const ourIds = ours.map((m) => m.id);
-    expect(ourIds[0]).toBe(modelIds[5]); // Zeta (created last)
-    expect(ourIds[5]).toBe(modelIds[0]); // Alpha (created first)
+    expect(ourIds[0]).toBe(modelIds[4]); // Epsilon (newest ready)
+    expect(ourIds[3]).toBe(modelIds[0]); // Alpha (oldest ready)
   });
 
   it('should include total count reflecting all matching rows', async () => {
     const result = await searchService.searchModels({ pageSize: 100 });
-    // total >= 6 because the test DB may have other models
-    expect(result.total).toBeGreaterThanOrEqual(6);
+    // total >= 4 because the test DB may have other ready models
+    expect(result.total).toBeGreaterThanOrEqual(4);
     expect(typeof result.total).toBe('number');
   });
 
@@ -637,11 +639,12 @@ describe('status filtering', () => {
     expect(ours[0].id).toBe(modelIds[5]); // Zeta Processing Model
   });
 
-  it('should return all statuses when status filter is omitted', async () => {
+  it('should return only ready models when status filter is omitted', async () => {
     const result = await searchService.searchModels({ pageSize: 100 });
     const ours = onlyTestModels(result.models);
-    // All 6 test models regardless of status
-    expect(ours).toHaveLength(6);
+    // Default browse excludes processing/error models — only 4 ready models
+    expect(ours).toHaveLength(4);
+    expect(ours.every((m) => m.status === 'ready')).toBe(true);
   });
 });
 
@@ -741,61 +744,61 @@ describe('sorting', () => {
     const result = await searchService.searchModels({
       sort: 'createdAt',
       sortDir: 'asc',
+      status: 'ready',
       pageSize: 100,
     });
 
     const ours = onlyTestModels(result.models);
-    // Inserted in order 0..5, so ascending is 0, 1, 2, 3, 4, 5
-    expect(ours[0].id).toBe(modelIds[0]); // Alpha (oldest)
-    expect(ours[5].id).toBe(modelIds[5]); // Zeta (newest)
+    // Ready models in creation order: Alpha(0), Beta(1), Gamma(2), Epsilon(4)
+    expect(ours[0].id).toBe(modelIds[0]); // Alpha (oldest ready)
+    expect(ours[3].id).toBe(modelIds[4]); // Epsilon (newest ready)
   });
 
   it('should sort by createdAt descending (newest first)', async () => {
     const result = await searchService.searchModels({
       sort: 'createdAt',
       sortDir: 'desc',
+      status: 'ready',
       pageSize: 100,
     });
 
     const ours = onlyTestModels(result.models);
-    // Inserted in order 0..5, so descending is 5, 4, 3, 2, 1, 0
-    expect(ours[0].id).toBe(modelIds[5]); // Zeta (newest)
-    expect(ours[5].id).toBe(modelIds[0]); // Alpha (oldest)
+    // Ready models in reverse creation order: Epsilon(4), Gamma(2), Beta(1), Alpha(0)
+    expect(ours[0].id).toBe(modelIds[4]); // Epsilon (newest ready)
+    expect(ours[3].id).toBe(modelIds[0]); // Alpha (oldest ready)
   });
 
   it('should sort by totalSizeBytes descending (largest first)', async () => {
     const result = await searchService.searchModels({
       sort: 'totalSizeBytes',
       sortDir: 'desc',
+      status: 'ready',
       pageSize: 100,
     });
 
     const ours = onlyTestModels(result.models);
-    // Sizes: Alpha=1M, Beta=2M, Gamma=3M, Delta=500K, Epsilon=4M, Zeta=100K
-    // Descending: Epsilon(4M), Gamma(3M), Beta(2M), Alpha(1M), Delta(500K), Zeta(100K)
+    // Ready model sizes: Alpha=1M, Beta=2M, Gamma=3M, Epsilon=4M
+    // Descending: Epsilon(4M), Gamma(3M), Beta(2M), Alpha(1M)
     expect(ours[0].id).toBe(modelIds[4]); // Epsilon 4M
     expect(ours[1].id).toBe(modelIds[2]); // Gamma 3M
     expect(ours[2].id).toBe(modelIds[1]); // Beta 2M
     expect(ours[3].id).toBe(modelIds[0]); // Alpha 1M
-    expect(ours[4].id).toBe(modelIds[3]); // Delta 500K
-    expect(ours[5].id).toBe(modelIds[5]); // Zeta 100K
   });
 
   it('should sort by totalSizeBytes ascending (smallest first)', async () => {
     const result = await searchService.searchModels({
       sort: 'totalSizeBytes',
       sortDir: 'asc',
+      status: 'ready',
       pageSize: 100,
     });
 
     const ours = onlyTestModels(result.models);
-    // Ascending: Zeta(100K), Delta(500K), Alpha(1M), Beta(2M), Gamma(3M), Epsilon(4M)
-    expect(ours[0].id).toBe(modelIds[5]); // Zeta 100K
-    expect(ours[1].id).toBe(modelIds[3]); // Delta 500K
-    expect(ours[2].id).toBe(modelIds[0]); // Alpha 1M
-    expect(ours[3].id).toBe(modelIds[1]); // Beta 2M
-    expect(ours[4].id).toBe(modelIds[2]); // Gamma 3M
-    expect(ours[5].id).toBe(modelIds[4]); // Epsilon 4M
+    // Ready model sizes ascending: Alpha(1M), Beta(2M), Gamma(3M), Epsilon(4M)
+    expect(ours[0].id).toBe(modelIds[0]); // Alpha 1M
+    expect(ours[1].id).toBe(modelIds[1]); // Beta 2M
+    expect(ours[2].id).toBe(modelIds[2]); // Gamma 3M
+    expect(ours[3].id).toBe(modelIds[4]); // Epsilon 4M
   });
 });
 

@@ -141,9 +141,11 @@ export class PostgresSearchService implements ISearchService {
       }
     }
 
-    // Status filter
+    // Status filter — default to 'ready' to exclude processing/error models
     if (params.status) {
       conditions.push(sql`${models.status} = ${params.status}`);
+    } else {
+      conditions.push(sql`${models.status} = 'ready'`);
     }
 
     // File type filter — EXISTS subquery
