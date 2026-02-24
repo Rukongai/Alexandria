@@ -75,9 +75,17 @@ const DEFAULT_FIELDS = [
   },
 ] as const;
 
+interface SeedLogger {
+  info(obj: object, msg: string): void;
+}
+
+const consoleLogger: SeedLogger = {
+  info: (_obj, msg) => console.log(msg),
+};
+
 // Exported for use by server.ts on startup — does not close the pool.
-export async function runSeed(): Promise<void> {
-  console.log('Seeding database...');
+export async function runSeed(logger: SeedLogger = consoleLogger): Promise<void> {
+  logger.info({ service: 'Seed' }, 'Seeding database...');
 
   // --- Admin user ---
   const passwordHash = await argon2.hash(ADMIN_PASSWORD);
@@ -92,7 +100,7 @@ export async function runSeed(): Promise<void> {
     })
     .onConflictDoNothing({ target: users.email });
 
-  console.log(`Admin user ready: ${ADMIN_EMAIL}`);
+  logger.info({ service: 'Seed' }, `Admin user ready: ${ADMIN_EMAIL}`);
 
   // --- Default metadata field definitions ---
   // Insert all default fields; skip any that already exist (idempotent by slug unique constraint)
@@ -103,9 +111,12 @@ export async function runSeed(): Promise<void> {
       .onConflictDoNothing({ target: metadataFieldDefinitions.slug });
   }
 
-  console.log(`Default metadata fields ready: ${DEFAULT_FIELDS.map((f) => f.name).join(', ')}`);
+  logger.info(
+    { service: 'Seed' },
+    `Default metadata fields ready: ${DEFAULT_FIELDS.map((f) => f.name).join(', ')}`,
+  );
 
-  console.log('Seed complete.');
+  logger.info({ service: 'Seed' }, 'Seed complete.');
 }
 
 // Standalone script entrypoint — only runs when executed directly, not when imported

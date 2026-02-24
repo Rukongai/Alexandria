@@ -20,6 +20,20 @@ The system follows a monorepo structure with a React frontend, a Fastify backend
 
 ---
 
+## Startup Sequence
+
+When the backend process starts (`server.ts`), it runs three steps before accepting traffic:
+
+1. **Migrations** — Drizzle applies any pending SQL migrations from `apps/backend/src/db/migrations/`. If migration fails, the process exits with a non-zero code.
+2. **Seed** — `runSeed()` inserts the default admin user and default metadata field definitions using `ON CONFLICT DO NOTHING`. This is idempotent and safe to run on every startup. If the seed fails (e.g., a constraint violation on a partially seeded DB), it logs a warning and continues rather than crashing. Seed credentials are controlled by `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables.
+3. **Listen** — Fastify binds to the configured `HOST:PORT` and begins accepting requests.
+
+In Docker Compose, the `backend` service declares `depends_on` with `condition: service_healthy` for both Postgres and Redis, so both infrastructure services are ready before the backend starts.
+
+The `runSeed` function is also exported for use as a standalone CLI script (`npm run db:seed`). When invoked as a script, it closes the database pool on completion; when called from `server.ts`, it does not — the pool remains open for the lifetime of the server.
+
+---
+
 ## Component Map
 
 ```
@@ -142,7 +156,7 @@ Uses the **PatternParser** utility (located in `utils/pattern-parser.ts`) — a 
 
 No other service knows about this routing. To every consumer, tags are just another metadata field. If a future field type (e.g., Artist) needs optimized storage, MetadataService adds the optimization internally without API changes.
 
-**Default fields** seeded on first run: Artist (text), Year (number), NSFW (boolean), URL (url), Pre-supported (boolean). These have `isDefault: true` and cannot be deleted.
+**Default fields** seeded on startup: Artist (text), Year (number), NSFW (boolean), URL (url), Pre-supported (boolean). These have `isDefault: true` and cannot be deleted.
 
 ### CollectionService
 
