@@ -1,8 +1,8 @@
 import * as React from 'react';
 import { Pencil, X, Plus, Check } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { MetadataValue, MetadataFieldDetail, MetadataFieldType, SetModelMetadataRequest } from '@alexandria/shared';
-import { setModelMetadata, getFields } from '../../api/metadata';
+import type { MetadataValue, MetadataFieldDetail, MetadataFieldType, MetadataFieldValue, SetModelMetadataRequest } from '@alexandria/shared';
+import { setModelMetadata, getFields, getFieldValues } from '../../api/metadata';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -165,6 +165,37 @@ function EnumMultiSelect({
   );
 }
 
+function TextFieldEditor({ field, value, onChange }: {
+  field: EditableField;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const { data: values } = useQuery<MetadataFieldValue[]>({
+    queryKey: ['field-values', field.fieldSlug],
+    queryFn: () => getFieldValues(field.fieldSlug),
+    staleTime: 60_000,
+  });
+  const datalistId = `meta-values-${field.fieldSlug}`;
+  return (
+    <>
+      <Input
+        list={datalistId}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 text-sm"
+      />
+      {values && values.length > 0 && (
+        <datalist id={datalistId}>
+          {values.map((v) => (
+            <option key={v.value} value={v.value} />
+          ))}
+        </datalist>
+      )}
+    </>
+  );
+}
+
 function MetadataDisplayValue({ field }: { field: MetadataValue }) {
   if (field.type === 'multi_enum' || field.type === 'enum') {
     const tags = Array.isArray(field.value) ? field.value : [field.value];
@@ -291,6 +322,16 @@ function EditFieldValue({
         value={value as string}
         onChange={(e) => onChange(e.target.value)}
         className="h-7 text-sm"
+      />
+    );
+  }
+
+  if (field.type === 'text') {
+    return (
+      <TextFieldEditor
+        field={field}
+        value={value as string}
+        onChange={onChange}
       />
     );
   }

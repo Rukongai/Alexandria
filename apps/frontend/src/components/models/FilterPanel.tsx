@@ -35,11 +35,35 @@ function FieldFilterSection({
   const { data: values, isLoading } = useQuery<MetadataFieldValue[]>({
     queryKey: ['field-values', field.slug],
     queryFn: () => getFieldValues(field.slug),
-    enabled: field.type === 'multi_enum' || field.type === 'enum',
+    enabled: field.type === 'multi_enum' || field.type === 'enum' || field.type === 'text',
     staleTime: 60_000,
   });
 
   function renderFieldInput() {
+    // text fields render immediately — datalist is progressive enhancement
+    if (field.type === 'text') {
+      const currentValue = metadataFilters[field.slug] ?? '';
+      const datalistId = `field-values-${field.slug}`;
+      return (
+        <div className="mt-2">
+          <Input
+            list={datalistId}
+            value={currentValue}
+            onChange={(e) => onSetMetaFilter(field.slug, e.target.value || undefined)}
+            placeholder={`Filter by ${field.name.toLowerCase()}...`}
+            className="h-8 text-sm"
+          />
+          {values && values.length > 0 && (
+            <datalist id={datalistId}>
+              {values.map((v) => (
+                <option key={v.value} value={v.value} />
+              ))}
+            </datalist>
+          )}
+        </div>
+      );
+    }
+
     if (isLoading) {
       return (
         <div className="space-y-2 mt-2">
@@ -113,7 +137,7 @@ function FieldFilterSection({
       );
     }
 
-    // text / number / url / date — free text input
+    // number / url / date — free text input
     const currentValue = metadataFilters[field.slug] ?? '';
     return (
       <div className="mt-2">
