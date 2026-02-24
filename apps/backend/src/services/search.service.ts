@@ -168,15 +168,16 @@ export class PostgresSearchService implements ISearchService {
     }
 
     // Tags filter — ALL semantics (model must have every listed tag)
+    // Matches by tag name (case-insensitive) because listFieldValues returns tag names as values.
     if (params.tags) {
-      const tagSlugs = params.tags.split(',').map((s) => s.trim()).filter(Boolean);
-      if (tagSlugs.length > 0) {
-        for (const slug of tagSlugs) {
+      const tagNames = params.tags.split(',').map((s) => s.trim()).filter(Boolean);
+      if (tagNames.length > 0) {
+        for (const name of tagNames) {
           conditions.push(
             sql`${models.id} IN (
               SELECT mt.model_id FROM model_tags mt
               INNER JOIN tags t ON t.id = mt.tag_id
-              WHERE t.slug = ${slug}
+              WHERE lower(t.name) = lower(${name})
             )`,
           );
         }
