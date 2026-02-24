@@ -39,6 +39,9 @@ COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.
 COPY --from=builder /app/apps/backend/dist ./apps/backend/dist
 COPY --from=builder /app/apps/backend/package.json ./apps/backend/package.json
 
+# Copy migrations (SQL files are not compiled, must be copied separately)
+COPY --from=builder /app/apps/backend/src/db/migrations ./apps/backend/dist/db/migrations
+
 COPY --from=builder /app/package.json ./package.json
 
 EXPOSE 3000
