@@ -291,9 +291,7 @@ afterAll(async () => {
   }
 
   // Delete test tags
-  const tagIdValues = Object.entries(tagIds)
-    .filter(([k]) => !k.startsWith('slug_'))
-    .map(([, v]) => v);
+  const tagIdValues = Object.values(tagIds);
   if (tagIdValues.length > 0) {
     await db.delete(tags).where(inArray(tags.id, tagIdValues));
   }

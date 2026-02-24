@@ -480,7 +480,7 @@ interface BulkDeleteRequest {
 // GET /models query parameters
 interface ModelSearchParams {
   q?: string;                    // full-text search query
-  tags?: string;                 // comma-separated tag slugs
+  tags?: string;                 // comma-separated tag names (case-insensitive)
   collectionId?: string;
   metadataFilters?: Record<string, string>; // dynamic metadata filters keyed by field slug
   fileType?: FileType;           // filter by presence of file type
