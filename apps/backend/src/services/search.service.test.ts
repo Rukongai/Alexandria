@@ -169,8 +169,6 @@ beforeAll(async () => {
     // Key by the base slug prefix for easier reference
     const key = tagDef.slug.split('-').slice(0, -1).join('-'); // strip timestamp
     tagIds[key] = tag.id;
-    // Store the slug so tests can reference it
-    tagIds[`slug_${key}`] = tagDef.slug;
   }
 
   // Assign tags:
@@ -438,9 +436,8 @@ describe('text search', () => {
 
 describe('metadata filtering', () => {
   it('should filter by single tag and return only models with that tag', async () => {
-    const dragonSlug = tagIds['slug_dragon'];
     const result = await searchService.searchModels({
-      tags: dragonSlug,
+      tags: 'Dragon',
       pageSize: 100,
     });
 
@@ -457,10 +454,8 @@ describe('metadata filtering', () => {
   });
 
   it('should filter by multiple tags with ALL semantics', async () => {
-    const dragonSlug = tagIds['slug_dragon'];
-    const fantasySlug = tagIds['slug_fantasy'];
     const result = await searchService.searchModels({
-      tags: `${dragonSlug},${fantasySlug}`,
+      tags: 'Dragon,Fantasy',
       pageSize: 100,
     });
 
@@ -673,13 +668,11 @@ describe('combined filters', () => {
   });
 
   it('should combine tag filter with status filter', async () => {
-    const dragonSlug = tagIds['slug_dragon'];
-
     // Dragon tag: model[0] (ready) and model[4] (ready)
     // Status = ready: model[0], [1], [2], [4]
     // Intersection: model[0] and model[4]
     const result = await searchService.searchModels({
-      tags: dragonSlug,
+      tags: 'Dragon',
       status: 'ready',
       pageSize: 100,
     });

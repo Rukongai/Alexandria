@@ -32,11 +32,11 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const rawQuery = request.query as Record<string, unknown>;
 
-      // Extract metadata.* keys into a metadataFilters record
+      // Extract meta_* keys into a metadataFilters record (frontend uses meta_ prefix)
       const metadataFilters: Record<string, string> = {};
       for (const [key, val] of Object.entries(rawQuery)) {
-        if (key.startsWith('metadata.') && typeof val === 'string') {
-          const fieldSlug = key.slice('metadata.'.length);
+        if (key.startsWith('meta_') && typeof val === 'string') {
+          const fieldSlug = key.slice('meta_'.length);
           if (fieldSlug) {
             metadataFilters[fieldSlug] = val;
           }
