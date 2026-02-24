@@ -40,7 +40,7 @@ The session mechanism uses `@fastify/cookie` with signed cookies. The cookie val
 
 ### Upload Limits
 
-For single-request uploads (`POST /models/upload`), zip files are capped at 100 MB. For larger files, use the chunked upload protocol (`POST /models/upload/init` + chunk PUTs + `POST /models/upload/:uploadId/complete`), which supports files up to 5 GB with 10 MB chunks and per-chunk retry.
+For single-request uploads (`POST /models/upload`), archive files are capped at 100 MB. For larger files, use the chunked upload protocol (`POST /models/upload/init` + chunk PUTs + `POST /models/upload/:uploadId/complete`), which supports files up to 5 GB with 10 MB chunks and per-chunk retry.
 
 ---
 
@@ -288,11 +288,11 @@ Each item in `data` is a `ModelCard`.
 
 ### POST /models/upload
 
-Upload a zip file to create a new model. The upload is accepted immediately and processed asynchronously. Returns a `modelId` and `jobId` to track progress.
+Upload an archive file to create a new model. The upload is accepted immediately and processed asynchronously. Returns a `modelId` and `jobId` to track progress.
 
 **Auth required:** Yes
 
-**Request:** `multipart/form-data` with a single file field. The file must have a `.zip` extension and must be 100 MB or smaller.
+**Request:** `multipart/form-data` with a single file field. The file must have a supported archive extension (`.zip`, `.rar`, `.7z`, `.tar.gz`, or `.tgz`) and must be 100 MB or smaller.
 
 **Response (202):**
 
@@ -331,7 +331,7 @@ Initiate a chunked upload session. Returns an `uploadId` used to upload individu
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `filename` | string | Required; 1–512 characters; must end with `.zip` |
+| `filename` | string | Required; 1–512 characters; must end with a supported archive extension (`.zip`, `.rar`, `.7z`, `.tar.gz`, or `.tgz`) |
 | `totalSize` | integer | Required; positive; maximum 5 GB |
 | `totalChunks` | integer | Required; positive; maximum 1000 |
 
@@ -439,7 +439,7 @@ Start a folder import. Discovers models by walking a directory on the server's f
 }
 ```
 
-Unlike zip upload, this response does not include a `modelId` because the import may create multiple models.
+Unlike archive upload, this response does not include a `modelId` because the import may create multiple models.
 
 ---
 
@@ -491,7 +491,7 @@ Retrieve the full detail payload for a model.
     "description": "A highly detailed dragon bust for display printing.",
     "thumbnailUrl": "/files/thumbnails/uuid.webp",
     "metadata": [...],
-    "sourceType": "zip_upload",
+    "sourceType": "archive_upload",
     "originalFilename": "dragon-bust.zip",
     "fileCount": 4,
     "totalSizeBytes": 8388608,
@@ -515,7 +515,7 @@ Retrieve the full detail payload for a model.
 }
 ```
 
-`data` is a `ModelDetail`. `images` contains only files of type `image`, ordered by creation time. `collections` lists the collections this model belongs to as `CollectionSummary` objects.
+`data` is a `ModelDetail`. `images` contains only files of type `image`, ordered by creation time. `collections` lists the collections this model belongs to as `CollectionSummary` objects. `sourceType` is one of `zip_upload` (legacy), `archive_upload` (zip, rar, 7z, or tar.gz upload), `folder_import`, or `manual`.
 
 ---
 

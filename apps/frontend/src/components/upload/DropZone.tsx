@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { UploadCloud, FileArchive, X } from 'lucide-react';
+import { SUPPORTED_ARCHIVE_EXTENSIONS } from '@alexandria/shared';
 import { uploadModel } from '../../api/models';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
@@ -19,8 +20,9 @@ export function DropZone() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const selectFile = useCallback((file: File) => {
-    if (!file.name.endsWith('.zip')) {
-      setState({ phase: 'error', file, message: 'Only .zip files are supported.' });
+    const lower = file.name.toLowerCase();
+    if (!SUPPORTED_ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+      setState({ phase: 'error', file, message: 'Only .zip, .rar, .7z, and .tar.gz archives are supported.' });
       return;
     }
     setState({ phase: 'selected', file });
@@ -84,7 +86,7 @@ export function DropZone() {
         )}
         role="button"
         tabIndex={0}
-        aria-label="Upload zip file"
+        aria-label="Upload archive file"
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click();
         }}
@@ -97,14 +99,14 @@ export function DropZone() {
         />
         <div className="text-center space-y-1">
           <p className="text-base font-medium text-foreground">
-            Drag &amp; drop a zip file here, or click to browse
+            Drag &amp; drop an archive here, or click to browse
           </p>
-          <p className="text-sm text-muted-foreground">Only .zip archives are supported</p>
+          <p className="text-sm text-muted-foreground">Supports .zip, .rar, .7z, and .tar.gz archives</p>
         </div>
         <input
           ref={inputRef}
           type="file"
-          accept=".zip,application/zip"
+          accept=".zip,.rar,.7z,.tar.gz,.tgz,application/zip,application/x-rar-compressed,application/x-7z-compressed,application/x-tar"
           className="sr-only"
           onChange={handleInputChange}
           tabIndex={-1}

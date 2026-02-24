@@ -1,4 +1,4 @@
-export type ModelSourceType = 'zip_upload' | 'folder_import' | 'manual';
+export type ModelSourceType = 'zip_upload' | 'archive_upload' | 'folder_import' | 'manual';
 export type ModelStatus = 'processing' | 'ready' | 'error';
 export type FileType = 'stl' | 'image' | 'document' | 'other';
 

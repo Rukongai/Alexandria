@@ -4,13 +4,22 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import yauzl from 'yauzl';
+import * as tar from 'tar';
+import { createExtractorFromFile } from 'node-unrar-js';
+import Seven from 'node-7z';
+import { path7za } from '7zip-bin';
 import type { FileType } from '@alexandria/shared';
 import {
   SUPPORTED_IMAGE_FORMATS,
   SUPPORTED_DOCUMENT_FORMATS,
   STL_EXTENSIONS,
 } from '@alexandria/shared';
+import { detectArchiveExtension } from '../utils/archive.js';
+import { validationError } from '../utils/errors.js';
+import { createLogger } from '../utils/logger.js';
 import type { IStorageService } from './storage.service.js';
+
+const logger = createLogger('FileProcessingService');
 
 export interface FileManifestEntry {
   filename: string;
@@ -164,7 +173,30 @@ export class FileProcessingService {
     }
   }
 
-  async processZip(zipPath: string, extractDir: string): Promise<FileManifest> {
+  /**
+   * Dispatch archive extraction to the correct per-format handler based on the filename extension.
+   */
+  async processArchive(archivePath: string, extractDir: string): Promise<FileManifest> {
+    const ext = detectArchiveExtension(path.basename(archivePath));
+    if (!ext) {
+      throw validationError('Unsupported archive format');
+    }
+    switch (ext) {
+      case '.zip':
+        return this.processZip(archivePath, extractDir);
+      case '.tar.gz':
+      case '.tgz':
+        return this.processTarGz(archivePath, extractDir);
+      case '.rar':
+        return this.processRar(archivePath, extractDir);
+      case '.7z':
+        return this.process7z(archivePath, extractDir);
+      default:
+        throw validationError('Unsupported archive format');
+    }
+  }
+
+  private async processZip(zipPath: string, extractDir: string): Promise<FileManifest> {
     await fsPromises.mkdir(extractDir, { recursive: true });
 
     await this.extractZip(zipPath, extractDir);
@@ -227,6 +259,112 @@ export class FileProcessingService {
     });
   }
 
+  private async processTarGz(archivePath: string, extractDir: string): Promise<FileManifest> {
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await this.extractTarGz(archivePath, extractDir);
+    const entries = await this.scanDirectory(extractDir, extractDir);
+    const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
+    return { entries, totalSizeBytes };
+  }
+
+  private async extractTarGz(archivePath: string, extractDir: string): Promise<void> {
+    const extractRoot = path.resolve(extractDir);
+    await tar.extract({
+      file: archivePath,
+      cwd: extractDir,
+      follow: false,
+      filter: (filePath, entry) => {
+        // Reject symlinks and hard links to prevent symlink attacks
+        // entry.type is only present on ReadEntry (not Stats), so use 'in' guard
+        if ('type' in entry && (entry.type === 'SymbolicLink' || entry.type === 'Link')) return false;
+        // Guard path traversal
+        const resolved = path.resolve(extractDir, filePath);
+        if (!resolved.startsWith(extractRoot + path.sep) && resolved !== extractRoot) {
+          return false;
+        }
+        return !isHidden(filePath) && !isMacos(filePath);
+      },
+    });
+  }
+
+  private async processRar(archivePath: string, extractDir: string): Promise<FileManifest> {
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await this.extractRar(archivePath, extractDir);
+    const entries = await this.scanDirectory(extractDir, extractDir);
+    const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
+    return { entries, totalSizeBytes };
+  }
+
+  private async extractRar(archivePath: string, extractDir: string): Promise<void> {
+    const extractRoot = path.resolve(extractDir);
+    const extractor = await createExtractorFromFile({
+      filepath: archivePath,
+      targetPath: extractDir,
+    });
+    const { files } = extractor.extract({
+      // Filter is evaluated BEFORE extraction — prevents unsafe entries from being written
+      files: (fileHeader) => {
+        const fileName = fileHeader.name;
+        // Skip directories
+        if (fileHeader.flags.directory) return false;
+        // Skip hidden files and __MACOSX entries
+        if (isHidden(fileName) || isMacos(fileName)) return false;
+        // Guard path traversal
+        const resolved = path.resolve(extractDir, fileName);
+        if (!resolved.startsWith(extractRoot + path.sep) && resolved !== extractRoot) return false;
+        return true;
+      },
+    });
+    // Consume the generator to trigger disk writes for accepted entries
+    for (const _file of files) { /* extraction happens during iteration */ }
+  }
+
+  private async process7z(archivePath: string, extractDir: string): Promise<FileManifest> {
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await this.extract7z(archivePath, extractDir);
+    const entries = await this.scanDirectory(extractDir, extractDir);
+    const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
+    return { entries, totalSizeBytes };
+  }
+
+  private extract7z(archivePath: string, extractDir: string): Promise<void> {
+    const extractRoot = path.resolve(extractDir);
+    // Track files reported by 7z that land outside the extract root (path traversal guard)
+    const outsideFiles: string[] = [];
+
+    return new Promise((resolve, reject) => {
+      const stream = Seven.extractFull(archivePath, extractDir, {
+        $bin: path7za,
+        recursive: true,
+      });
+
+      stream.on('data', (entry: { file?: string }) => {
+        if (entry.file) {
+          const absPath = path.resolve(extractDir, entry.file);
+          if (!absPath.startsWith(extractRoot + path.sep) && absPath !== extractRoot) {
+            outsideFiles.push(absPath);
+          }
+        }
+      });
+
+      stream.on('end', () => {
+        if (outsideFiles.length > 0) {
+          // node-7z has no pre-extraction filter, so traversal files are written then removed.
+          // Log a warning so operators can detect malicious archives.
+          logger.warn(
+            { archivePath, outsideFiles },
+            '7z archive contained path-traversal entries — cleaning up',
+          );
+        }
+        // Best-effort cleanup of any path-traversal files extracted outside the root
+        const cleanups = outsideFiles.map((p) => fsPromises.rm(p, { force: true }).catch(() => {}));
+        Promise.all(cleanups).then(() => resolve()).catch(resolve);
+      });
+
+      stream.on('error', reject);
+    });
+  }
+
   async copyManifestToStorage(
     extractDir: string,
     modelId: string,
@@ -248,7 +386,10 @@ export class FileProcessingService {
     for (const item of items) {
       const fullPath = path.join(dir, item.name);
 
-      if (item.isDirectory()) {
+      if (item.isSymbolicLink()) {
+        // Skip symlinks — defense-in-depth against any extractor that leaks them through
+        continue;
+      } else if (item.isDirectory()) {
         const nested = await this.scanDirectory(fullPath, rootDir);
         entries.push(...nested);
       } else if (item.isFile()) {

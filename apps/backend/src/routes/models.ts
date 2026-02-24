@@ -16,6 +16,7 @@ import {
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { detectArchiveExtension } from '../utils/archive.js';
 import { ingestionService } from '../services/ingestion.service.js';
 import { modelService } from '../services/model.service.js';
 import { searchService } from '../services/search.service.js';
@@ -88,8 +89,8 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const { filename, totalSize, totalChunks } = parseResult.data;
       const userId = request.user!.id;
 
-      if (!filename.toLowerCase().endsWith('.zip')) {
-        throw validationError('Only .zip files are supported');
+      if (!detectArchiveExtension(filename)) {
+        throw validationError('Only .zip, .rar, .7z, and .tar.gz archives are supported');
       }
 
       const result = uploadService.initUpload(filename, totalSize, totalChunks, userId);
@@ -163,8 +164,8 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const originalFilename = data.filename;
-      if (!originalFilename.toLowerCase().endsWith('.zip')) {
-        throw validationError('Only .zip files are supported');
+      if (!detectArchiveExtension(originalFilename)) {
+        throw validationError('Only .zip, .rar, .7z, and .tar.gz archives are supported');
       }
 
       // Save upload to a temp file so the ingestion worker can access it later

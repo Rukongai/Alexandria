@@ -5,6 +5,9 @@ export const SUPPORTED_IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'tif', 'ti
 export const SUPPORTED_DOCUMENT_FORMATS = ['pdf', 'txt', 'md'] as const;
 export const STL_EXTENSIONS = ['stl'] as const;
 
+export const SUPPORTED_ARCHIVE_EXTENSIONS = ['.tar.gz', '.tgz', '.zip', '.rar', '.7z'] as const;
+export type SupportedArchiveExtension = typeof SUPPORTED_ARCHIVE_EXTENSIONS[number];
+
 export const THUMBNAIL_SIZES = {
   grid: { width: 400, height: 400 },
   detail: { width: 800, height: 800 },
