@@ -61,6 +61,7 @@ export interface ModelRow {
   previewImageFileId?: string | null;
   previewCropX?: number | null;
   previewCropY?: number | null;
+  previewCropScale?: number | null;
 }
 
 /** Minimal model-file row shape needed for file-tree building. */
@@ -100,6 +101,7 @@ export class PresenterService implements IPresenterService {
       thumbnailUrl,
       previewCropX: model.previewCropX ?? null,
       previewCropY: model.previewCropY ?? null,
+      previewCropScale: model.previewCropScale ?? null,
       metadata,
     };
   }
@@ -157,6 +159,7 @@ export class PresenterService implements IPresenterService {
         thumbnailUrl: thumbnailUrlByModel.get(row.id) ?? null,
         previewCropX: row.previewCropX ?? null,
         previewCropY: row.previewCropY ?? null,
+        previewCropScale: row.previewCropScale ?? null,
         metadata,
       };
     });
@@ -271,6 +274,7 @@ export class PresenterService implements IPresenterService {
       previewImageFileId: model.previewImageFileId ?? null,
       previewCropX: model.previewCropX ?? null,
       previewCropY: model.previewCropY ?? null,
+      previewCropScale: model.previewCropScale ?? null,
       metadata,
       sourceType: model.sourceType as ModelSourceType,
       originalFilename: model.originalFilename,

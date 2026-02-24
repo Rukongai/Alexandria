@@ -262,6 +262,7 @@ export class PostgresSearchService implements ISearchService {
         previewImageFileId: models.previewImageFileId,
         previewCropX: models.previewCropX,
         previewCropY: models.previewCropY,
+        previewCropScale: models.previewCropScale,
         // Include the sort value in the result so we can encode the cursor
         sortValue: sortColumnSql,
       })

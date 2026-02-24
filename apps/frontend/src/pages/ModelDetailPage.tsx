@@ -73,6 +73,7 @@ export function ModelDetailPage() {
               previewImageFileId={model.previewImageFileId}
               previewCropX={model.previewCropX}
               previewCropY={model.previewCropY}
+              previewCropScale={model.previewCropScale}
               modelId={model.id}
             />
             <FileTree tree={fileTree} />

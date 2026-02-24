@@ -150,6 +150,7 @@ export class ModelService {
       previewImageFileId: string | null;
       previewCropX: number | null;
       previewCropY: number | null;
+      previewCropScale: number | null;
       updatedAt: Date;
     }> = {
       updatedAt: new Date(),
@@ -159,6 +160,7 @@ export class ModelService {
     if (data.previewImageFileId !== undefined) updateValues.previewImageFileId = data.previewImageFileId;
     if (data.previewCropX !== undefined) updateValues.previewCropX = data.previewCropX;
     if (data.previewCropY !== undefined) updateValues.previewCropY = data.previewCropY;
+    if (data.previewCropScale !== undefined) updateValues.previewCropScale = data.previewCropScale;
 
     const [updated] = await db
       .update(models)

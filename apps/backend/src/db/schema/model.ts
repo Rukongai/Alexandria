@@ -52,6 +52,9 @@ export const models = pgTable(
     // Applied via object-position on the card thumbnail image.
     previewCropX: real('preview_crop_x'),
     previewCropY: real('preview_crop_y'),
+    // Zoom multiplier applied on top of object-fit:cover (1.0 = no extra zoom, >1.0 = zoom in).
+    // Applied via transform: scale() on the card thumbnail image.
+    previewCropScale: real('preview_crop_scale'),
   },
   (table) => [
     // Fast lookup by slug for URL-based access

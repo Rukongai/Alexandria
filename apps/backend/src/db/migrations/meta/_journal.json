@@ -29,6 +29,13 @@
       "when": 1771990000000,
       "tag": "0003_add_preview_crop",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1772000000000,
+      "tag": "0004_add_preview_crop_scale",
+      "breakpoints": true
     }
   ]
 }

@@ -10,6 +10,7 @@ interface ImageGalleryProps {
   previewImageFileId: string | null;
   previewCropX: number | null;
   previewCropY: number | null;
+  previewCropScale: number | null;
   modelId: string;
 }
 
@@ -18,6 +19,7 @@ export function ImageGallery({
   previewImageFileId,
   previewCropX,
   previewCropY,
+  previewCropScale,
   modelId,
 }: ImageGalleryProps) {
   const [selectedIndex, setSelectedIndex] = React.useState(0);
@@ -217,6 +219,7 @@ export function ImageGallery({
           isCurrentCover={cropModalImage.id === previewImageFileId}
           initialCropX={cropModalImage.id === previewImageFileId ? previewCropX : null}
           initialCropY={cropModalImage.id === previewImageFileId ? previewCropY : null}
+          initialCropScale={cropModalImage.id === previewImageFileId ? previewCropScale : null}
           onClose={() => setCropModalImage(null)}
           onSaved={handleCropSaved}
         />
