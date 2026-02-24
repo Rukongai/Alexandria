@@ -75,7 +75,7 @@ export function UploadProgress({ modelId }: UploadProgressProps) {
   if (status.status === 'ready') {
     return (
       <div className="space-y-2">
-        <div className="flex items-center gap-2 text-sm text-emerald-600">
+        <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-500">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           <span>Model is ready.</span>
         </div>

@@ -20,7 +20,7 @@ interface FileNodeProps {
 function FileIcon({ fileType }: { fileType?: FileType }) {
   switch (fileType) {
     case 'stl':
-      return <Box className="h-4 w-4 text-amber-600 flex-shrink-0" />;
+      return <Box className="h-4 w-4 text-amber-600 dark:text-amber-500 flex-shrink-0" />;
     case 'image':
       return <Image className="h-4 w-4 text-blue-500 flex-shrink-0" />;
     case 'document':
