@@ -11,6 +11,7 @@ import { collectionService } from './collection.service.js';
 import { storageService } from './storage.service.js';
 import { createImportStrategy } from './import-strategy.service.js';
 import { parsePattern } from '../utils/pattern-parser.js';
+import { stripArchiveExtension } from '../utils/archive.js';
 import { generateSlug } from '../utils/slug.js';
 import { createLogger } from '../utils/logger.js';
 import { AppError, validationError } from '../utils/errors.js';
@@ -22,14 +23,14 @@ export class IngestionService {
     file: { tempFilePath: string; originalFilename: string },
     userId: string,
   ): Promise<{ modelId: string; jobId: string }> {
-    const name = file.originalFilename.replace(/\.zip$/i, '');
+    const name = stripArchiveExtension(file.originalFilename);
     const slug = generateSlug(name);
 
     const { id: modelId } = await modelService.createModel({
       name,
       slug,
       userId,
-      sourceType: 'zip_upload',
+      sourceType: 'archive_upload',
       status: 'processing',
       originalFilename: file.originalFilename,
     });
@@ -65,10 +66,10 @@ export class IngestionService {
       await job.updateProgress(0);
       logger.info({ modelId, jobId }, 'Processing started');
 
-      // Step 1: Extract zip and classify files
-      const manifest = await fileProcessingService.processZip(tempFilePath, extractDir);
+      // Step 1: Extract archive and classify files
+      const manifest = await fileProcessingService.processArchive(tempFilePath, extractDir);
       await job.updateProgress(20);
-      logger.info({ modelId, jobId, fileCount: manifest.entries.length }, 'Zip extracted');
+      logger.info({ modelId, jobId, fileCount: manifest.entries.length }, 'Archive extracted');
 
       // Step 2: Copy files to managed storage (delegated to FileProcessingService)
       await fileProcessingService.copyManifestToStorage(

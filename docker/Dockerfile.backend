@@ -1,8 +1,8 @@
 FROM node:22-slim AS base
 WORKDIR /app
 
-# Install build tools for native modules (argon2)
-RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+# Install build tools for native modules (argon2) and runtime libs for 7zip-bin
+RUN apt-get update && apt-get install -y python3 make g++ libstdc++6 && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace root files
 COPY package.json package-lock.json turbo.json tsconfig.base.json ./

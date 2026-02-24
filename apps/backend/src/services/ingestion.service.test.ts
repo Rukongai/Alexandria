@@ -26,7 +26,7 @@ vi.mock('./job.service.js', () => ({
 
 vi.mock('./file-processing.service.js', () => ({
   fileProcessingService: {
-    processZip: vi.fn(),
+    processArchive: vi.fn(),
     copyManifestToStorage: vi.fn().mockResolvedValue(undefined),
   },
   FileProcessingService: vi.fn(),
@@ -76,6 +76,9 @@ import { fileProcessingService } from './file-processing.service.js';
 function makeJob(): any {
   return {
     updateProgress: vi.fn().mockResolvedValue(undefined),
+    opts: { attempts: 3 },
+    attemptsMade: 2,
+    failedReason: null,
   };
 }
 
@@ -110,12 +113,12 @@ describe('IngestionService – handleUpload', () => {
     // Returns both IDs
     expect(result).toEqual({ modelId: 'model-abc', jobId: 'job-xyz' });
 
-    // Model created with status 'processing' and zip_upload source
+    // Model created with status 'processing' and archive_upload source
     expect(modelService.createModel).toHaveBeenCalledOnce();
     expect(modelService.createModel).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'processing',
-        sourceType: 'zip_upload',
+        sourceType: 'archive_upload',
         originalFilename: 'my-model.zip',
         userId: 'user-1',
       }),
@@ -146,6 +149,34 @@ describe('IngestionService – handleUpload', () => {
       expect.objectContaining({ name: 'Cool Model' }),
     );
   });
+
+  it('should strip .rar extension from name when creating model', async () => {
+    vi.mocked(modelService.createModel).mockResolvedValue({ id: 'model-abc' });
+    vi.mocked(jobService.enqueueIngestionJob).mockResolvedValue('job-xyz');
+
+    await service.handleUpload(
+      { tempFilePath: '/tmp/upload.rar', originalFilename: 'Cool Model.rar' },
+      'user-1',
+    );
+
+    expect(modelService.createModel).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Cool Model' }),
+    );
+  });
+
+  it('should strip .tar.gz extension from name when creating model', async () => {
+    vi.mocked(modelService.createModel).mockResolvedValue({ id: 'model-abc' });
+    vi.mocked(jobService.enqueueIngestionJob).mockResolvedValue('job-xyz');
+
+    await service.handleUpload(
+      { tempFilePath: '/tmp/upload.tar.gz', originalFilename: 'Cool Model.tar.gz' },
+      'user-1',
+    );
+
+    expect(modelService.createModel).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Cool Model' }),
+    );
+  });
 });
 
 describe('IngestionService – processIngestionJob', () => {
@@ -157,7 +188,7 @@ describe('IngestionService – processIngestionJob', () => {
   });
 
   it('should set model to error state when pipeline fails', async () => {
-    vi.mocked(fileProcessingService.processZip).mockRejectedValue(new Error('corrupt zip'));
+    vi.mocked(fileProcessingService.processArchive).mockRejectedValue(new Error('corrupt zip'));
     vi.mocked(modelService.updateModelStatus).mockResolvedValue(undefined);
 
     const job = makeJob();
@@ -172,7 +203,7 @@ describe('IngestionService – processIngestionJob', () => {
 
   it('should update model to ready state when pipeline succeeds', async () => {
     const manifest = makeManifest([]);
-    vi.mocked(fileProcessingService.processZip).mockResolvedValue(manifest);
+    vi.mocked(fileProcessingService.processArchive).mockResolvedValue(manifest);
     vi.mocked(modelService.createModelFiles).mockResolvedValue([]);
     vi.mocked(modelService.createThumbnails).mockResolvedValue(undefined);
     vi.mocked(modelService.updateModelStatus).mockResolvedValue(undefined);
@@ -194,7 +225,7 @@ describe('IngestionService – processIngestionJob', () => {
 
   it('should report progress through the pipeline steps', async () => {
     const manifest = makeManifest([]);
-    vi.mocked(fileProcessingService.processZip).mockResolvedValue(manifest);
+    vi.mocked(fileProcessingService.processArchive).mockResolvedValue(manifest);
     vi.mocked(modelService.createModelFiles).mockResolvedValue([]);
     vi.mocked(modelService.createThumbnails).mockResolvedValue(undefined);
     vi.mocked(modelService.updateModelStatus).mockResolvedValue(undefined);

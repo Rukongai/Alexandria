@@ -4,12 +4,18 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import yauzl from 'yauzl';
+import * as tar from 'tar';
+import { createExtractorFromFile } from 'node-unrar-js';
+import Seven from 'node-7z';
+import { path7za } from '7zip-bin';
 import type { FileType } from '@alexandria/shared';
 import {
   SUPPORTED_IMAGE_FORMATS,
   SUPPORTED_DOCUMENT_FORMATS,
   STL_EXTENSIONS,
 } from '@alexandria/shared';
+import { detectArchiveExtension } from '../utils/archive.js';
+import { validationError } from '../utils/errors.js';
 import type { IStorageService } from './storage.service.js';
 
 export interface FileManifestEntry {
@@ -164,6 +170,29 @@ export class FileProcessingService {
     }
   }
 
+  /**
+   * Dispatch archive extraction to the correct per-format handler based on the filename extension.
+   */
+  async processArchive(archivePath: string, extractDir: string): Promise<FileManifest> {
+    const ext = detectArchiveExtension(path.basename(archivePath));
+    if (!ext) {
+      throw validationError('Unsupported archive format');
+    }
+    switch (ext) {
+      case '.zip':
+        return this.processZip(archivePath, extractDir);
+      case '.tar.gz':
+      case '.tgz':
+        return this.processTarGz(archivePath, extractDir);
+      case '.rar':
+        return this.processRar(archivePath, extractDir);
+      case '.7z':
+        return this.process7z(archivePath, extractDir);
+      default:
+        throw validationError('Unsupported archive format');
+    }
+  }
+
   async processZip(zipPath: string, extractDir: string): Promise<FileManifest> {
     await fsPromises.mkdir(extractDir, { recursive: true });
 
@@ -224,6 +253,75 @@ export class FileProcessingService {
         zipfile.on('end', () => resolve());
         zipfile.on('error', reject);
       });
+    });
+  }
+
+  private async processTarGz(archivePath: string, extractDir: string): Promise<FileManifest> {
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await this.extractTarGz(archivePath, extractDir);
+    const entries = await this.scanDirectory(extractDir, extractDir);
+    const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
+    return { entries, totalSizeBytes };
+  }
+
+  private async extractTarGz(archivePath: string, extractDir: string): Promise<void> {
+    const extractRoot = path.resolve(extractDir);
+    await tar.extract({
+      file: archivePath,
+      cwd: extractDir,
+      follow: false,
+      filter: (filePath) => {
+        // Guard path traversal
+        const resolved = path.resolve(extractDir, filePath);
+        if (!resolved.startsWith(extractRoot + path.sep) && resolved !== extractRoot) {
+          return false;
+        }
+        return !isHidden(filePath) && !isMacos(filePath);
+      },
+    });
+  }
+
+  private async processRar(archivePath: string, extractDir: string): Promise<FileManifest> {
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await this.extractRar(archivePath, extractDir);
+    const entries = await this.scanDirectory(extractDir, extractDir);
+    const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
+    return { entries, totalSizeBytes };
+  }
+
+  private async extractRar(archivePath: string, extractDir: string): Promise<void> {
+    const extractRoot = path.resolve(extractDir);
+    const extractor = await createExtractorFromFile({
+      filepath: archivePath,
+      targetPath: extractDir,
+    });
+    const { files } = extractor.extract();
+    for (const file of files) {
+      const fileName: string = file.fileHeader.name;
+      // Skip directories, hidden files, __MACOSX, and path traversal
+      if (file.fileHeader.flags.directory) continue;
+      if (isHidden(fileName) || isMacos(fileName)) continue;
+      const resolved = path.resolve(extractDir, fileName);
+      if (!resolved.startsWith(extractRoot + path.sep) && resolved !== extractRoot) continue;
+    }
+  }
+
+  private async process7z(archivePath: string, extractDir: string): Promise<FileManifest> {
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await this.extract7z(archivePath, extractDir);
+    const entries = await this.scanDirectory(extractDir, extractDir);
+    const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
+    return { entries, totalSizeBytes };
+  }
+
+  private extract7z(archivePath: string, extractDir: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const stream = Seven.extractFull(archivePath, extractDir, {
+        $bin: path7za,
+        recursive: true,
+      });
+      stream.on('end', resolve);
+      stream.on('error', reject);
     });
   }
 
