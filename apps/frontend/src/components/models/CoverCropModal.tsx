@@ -1,10 +1,9 @@
 import * as React from 'react';
-import { X, Move } from 'lucide-react';
+import { X } from 'lucide-react';
 import type { ImageFile } from '@alexandria/shared';
 import { updateModel } from '../../api/models';
 import { toast } from '../../hooks/use-toast';
 import { useDisplayPreferences } from '../../hooks/use-display-preferences';
-import { cn } from '../../lib/utils';
 
 interface CoverCropModalProps {
   image: ImageFile;
@@ -15,8 +14,6 @@ interface CoverCropModalProps {
   onClose: () => void;
   onSaved: () => void;
 }
-
-const FRAME_W = 560;
 
 /** Parse '4/3', '3/4', '1/1', '2/3' → numeric ratio (width / height). */
 function parseRatio(ratio: string): number {
@@ -34,112 +31,102 @@ export function CoverCropModal({
   onSaved,
 }: CoverCropModalProps) {
   const { cardAspectRatio } = useDisplayPreferences();
-  const ratio = parseRatio(cardAspectRatio);
-  const FRAME_H = Math.round(FRAME_W / ratio);
+  const cardRatio = parseRatio(cardAspectRatio);
 
-  // Track natural image dimensions
-  const [naturalSize, setNaturalSize] = React.useState<{ w: number; h: number } | null>(null);
+  const imgRef = React.useRef<HTMLImageElement>(null);
 
-  // Derived display dimensions (image scaled to cover the frame)
-  const displaySize = React.useMemo(() => {
-    if (!naturalSize) return null;
-    const scaleX = FRAME_W / naturalSize.w;
-    const scaleY = FRAME_H / naturalSize.h;
-    const scale = Math.max(scaleX, scaleY);
-    return { w: naturalSize.w * scale, h: naturalSize.h * scale };
-  }, [naturalSize, FRAME_W, FRAME_H]);
+  // Dimensions of the image as rendered in the modal (px)
+  const [displaySize, setDisplaySize] = React.useState<{ w: number; h: number } | null>(null);
 
-  // Overflow (how many px the image extends beyond the frame on each axis)
+  // Frame size — computed from display size and card ratio (matches object-fit:cover region)
+  const frameSize = React.useMemo(() => {
+    if (!displaySize) return null;
+    const imageRatio = displaySize.w / displaySize.h;
+    if (imageRatio > cardRatio) {
+      // Image wider than card frame → frame fills height
+      const h = displaySize.h;
+      const w = h * cardRatio;
+      return { w, h };
+    } else {
+      // Image taller (or equal) to card frame → frame fills width
+      const w = displaySize.w;
+      const h = w / cardRatio;
+      return { w, h };
+    }
+  }, [displaySize, cardRatio]);
+
+  // Overflow: how much the image extends beyond the frame on each axis
   const overflow = React.useMemo(() => {
-    if (!displaySize) return { x: 0, y: 0 };
+    if (!displaySize || !frameSize) return { x: 0, y: 0 };
     return {
-      x: displaySize.w - FRAME_W,
-      y: displaySize.h - FRAME_H,
+      x: displaySize.w - frameSize.w,
+      y: displaySize.h - frameSize.h,
     };
-  }, [displaySize, FRAME_W, FRAME_H]);
+  }, [displaySize, frameSize]);
 
-  // Current pixel offset of the image top-left relative to the frame top-left.
-  // Clamped to [-overflowX, 0] and [-overflowY, 0].
-  const [offset, setOffset] = React.useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  // Frame position (top-left corner, in px relative to image top-left)
+  const [framePos, setFramePos] = React.useState<{ left: number; top: number }>({ left: 0, top: 0 });
 
-  // Initialise offset from stored crop values once we know the display size
+  // Initialise frame position from saved crop values once we have display dimensions
   const initialised = React.useRef(false);
   React.useEffect(() => {
-    if (displaySize && !initialised.current) {
+    if (displaySize && frameSize && !initialised.current) {
       initialised.current = true;
-      const cropX = initialCropX ?? 50;
-      const cropY = initialCropY ?? 50;
-      const ox = overflow.x > 0 ? -(cropX / 100) * overflow.x : 0;
-      const oy = overflow.y > 0 ? -(cropY / 100) * overflow.y : 0;
-      setOffset({ x: ox, y: oy });
+      const cx = initialCropX ?? 50;
+      const cy = initialCropY ?? 50;
+      setFramePos({
+        left: (cx / 100) * overflow.x,
+        top: (cy / 100) * overflow.y,
+      });
     }
-  }, [displaySize, initialCropX, initialCropY, overflow]);
+  }, [displaySize, frameSize, initialCropX, initialCropY, overflow]);
 
-  // Current crop percentages (0–100)
-  const cropValues = React.useMemo(() => {
-    const cropX = overflow.x > 0 ? (-offset.x / overflow.x) * 100 : 50;
-    const cropY = overflow.y > 0 ? (-offset.y / overflow.y) * 100 : 50;
-    return { x: Math.round(cropX * 10) / 10, y: Math.round(cropY * 10) / 10 };
-  }, [offset, overflow]);
+  // Current crop percentages derived from frame position
+  const cropValues = React.useMemo(() => ({
+    x: overflow.x > 0 ? (framePos.left / overflow.x) * 100 : 50,
+    y: overflow.y > 0 ? (framePos.top  / overflow.y) * 100 : 50,
+  }), [framePos, overflow]);
 
-  // Drag state
-  const dragging = React.useRef(false);
-  const dragStart = React.useRef<{ mx: number; my: number; ox: number; oy: number }>({
-    mx: 0,
-    my: 0,
-    ox: 0,
-    oy: 0,
-  });
-
-  function clampOffset(ox: number, oy: number) {
+  function clamp(left: number, top: number) {
     return {
-      x: Math.min(0, Math.max(-overflow.x, ox)),
-      y: Math.min(0, Math.max(-overflow.y, oy)),
+      left: Math.max(0, Math.min(left, overflow.x)),
+      top:  Math.max(0, Math.min(top,  overflow.y)),
     };
   }
 
   function handleMouseDown(e: React.MouseEvent) {
     e.preventDefault();
-    dragging.current = true;
-    dragStart.current = { mx: e.clientX, my: e.clientY, ox: offset.x, oy: offset.y };
+    const startMx = e.clientX;
+    const startMy = e.clientY;
+    const startLeft = framePos.left;
+    const startTop  = framePos.top;
 
     function onMove(ev: MouseEvent) {
-      if (!dragging.current) return;
-      const dx = ev.clientX - dragStart.current.mx;
-      const dy = ev.clientY - dragStart.current.my;
-      setOffset(clampOffset(dragStart.current.ox + dx, dragStart.current.oy + dy));
+      setFramePos(clamp(startLeft + ev.clientX - startMx, startTop + ev.clientY - startMy));
     }
-
     function onUp() {
-      dragging.current = false;
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     }
-
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
   }
 
-  // Touch support
   function handleTouchStart(e: React.TouchEvent) {
     const touch = e.touches[0];
-    dragging.current = true;
-    dragStart.current = { mx: touch.clientX, my: touch.clientY, ox: offset.x, oy: offset.y };
+    const startMx = touch.clientX;
+    const startMy = touch.clientY;
+    const startLeft = framePos.left;
+    const startTop  = framePos.top;
 
     function onMove(ev: TouchEvent) {
-      if (!dragging.current) return;
       const t = ev.touches[0];
-      const dx = t.clientX - dragStart.current.mx;
-      const dy = t.clientY - dragStart.current.my;
-      setOffset(clampOffset(dragStart.current.ox + dx, dragStart.current.oy + dy));
+      setFramePos(clamp(startLeft + t.clientX - startMx, startTop + t.clientY - startMy));
     }
-
     function onEnd() {
-      dragging.current = false;
       window.removeEventListener('touchmove', onMove);
       window.removeEventListener('touchend', onEnd);
     }
-
     window.addEventListener('touchmove', onMove, { passive: false });
     window.addEventListener('touchend', onEnd);
   }
@@ -151,8 +138,8 @@ export function CoverCropModal({
     try {
       await updateModel(modelId, {
         previewImageFileId: image.id,
-        previewCropX: cropValues.x,
-        previewCropY: cropValues.y,
+        previewCropX: Math.round(cropValues.x * 10) / 10,
+        previewCropY: Math.round(cropValues.y * 10) / 10,
       });
       onSaved();
       onClose();
@@ -172,96 +159,127 @@ export function CoverCropModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // Preview card dimensions (scaled down for the live preview)
-  const PREVIEW_W = 180;
-  const PREVIEW_H = Math.round(PREVIEW_W / ratio);
+  // Live preview dimensions
+  const PREVIEW_W = 160;
+  const PREVIEW_H = Math.round(PREVIEW_W / cardRatio);
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="Crop cover image"
     >
       <div
-        className="relative bg-card border border-border rounded-2xl shadow-2xl flex flex-col gap-5 p-6 max-w-3xl w-full max-h-[95vh] overflow-y-auto"
+        className="relative bg-card border border-border rounded-2xl shadow-2xl flex flex-col w-full max-w-xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between px-5 pt-5 pb-3">
           <div>
             <h2 className="text-base font-semibold text-foreground">
               {isCurrentCover ? 'Edit Cover Framing' : 'Set Cover Image'}
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Drag the image to choose what shows in library cards
+              Drag the frame to choose what shows in library cards
             </p>
           </div>
           <button
             onClick={onClose}
-            className="h-8 w-8 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            className="h-8 w-8 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors flex-shrink-0"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Crop area + live preview side by side */}
-        <div className="flex flex-col sm:flex-row gap-6 items-start">
-          {/* Crop area */}
-          <div className="flex flex-col gap-2 items-center flex-1">
-            <p className="text-xs text-muted-foreground self-start flex items-center gap-1">
-              <Move className="h-3 w-3" />
-              Drag to reframe
-            </p>
-            <div
-              className="relative overflow-hidden rounded-lg border-2 border-primary select-none"
-              style={{ width: FRAME_W, height: FRAME_H, maxWidth: '100%', cursor: 'grab' }}
-              onMouseDown={handleMouseDown}
-              onTouchStart={handleTouchStart}
-            >
-              {/* Drag instruction overlay when no image loaded yet */}
-              {!naturalSize && (
-                <div className="absolute inset-0 flex items-center justify-center bg-muted">
-                  <span className="text-sm text-muted-foreground">Loading…</span>
-                </div>
-              )}
-              <img
-                src={`/api${image.originalUrl}`}
-                alt={image.filename}
-                draggable={false}
-                onLoad={(e) => {
-                  const img = e.currentTarget;
-                  setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
-                }}
-                style={{
-                  position: 'absolute',
-                  width: displaySize?.w ?? 'auto',
-                  height: displaySize?.h ?? 'auto',
-                  left: offset.x,
-                  top: offset.y,
-                  userSelect: 'none',
-                  pointerEvents: 'none',
-                }}
-              />
-              {/* Frame border overlay */}
-              <div className="absolute inset-0 pointer-events-none ring-2 ring-primary rounded-lg" />
-            </div>
-          </div>
+        {/* Image + crop overlay */}
+        <div className="px-5">
+          <div
+            className="relative overflow-hidden rounded-lg bg-muted select-none"
+            style={{ lineHeight: 0 }}
+          >
+            {/* The full image at natural aspect ratio */}
+            <img
+              ref={imgRef}
+              src={`/api${image.originalUrl}`}
+              alt={image.filename}
+              draggable={false}
+              className="w-full h-auto block"
+              onLoad={() => {
+                const img = imgRef.current!;
+                setDisplaySize({ w: img.offsetWidth, h: img.offsetHeight });
+              }}
+            />
 
-          {/* Live card preview */}
-          <div className="flex flex-col gap-2 items-center flex-shrink-0">
-            <p className="text-xs text-muted-foreground self-start">Card preview</p>
+            {/* Crop frame overlay — shown once we have display dimensions */}
+            {frameSize && (
+              <div
+                className="absolute"
+                style={{
+                  left: framePos.left,
+                  top:  framePos.top,
+                  width:  frameSize.w,
+                  height: frameSize.h,
+                  cursor: 'move',
+                  // box-shadow dims everything outside the frame; parent overflow:hidden clips it
+                  boxShadow: '0 0 0 9999px rgba(0,0,0,0.55)',
+                  border: '2px solid rgba(255,255,255,0.9)',
+                  borderRadius: 2,
+                  outline: '1px solid rgba(255,255,255,0.25)',
+                  outlineOffset: 3,
+                }}
+                onMouseDown={handleMouseDown}
+                onTouchStart={handleTouchStart}
+              >
+                {/* Rule-of-thirds grid lines */}
+                <div className="absolute inset-0 pointer-events-none" style={{ opacity: 0.35 }}>
+                  <div className="absolute top-1/3 left-0 right-0 h-px bg-white" />
+                  <div className="absolute top-2/3 left-0 right-0 h-px bg-white" />
+                  <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white" />
+                  <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white" />
+                </div>
+
+                {/* Corner handles */}
+                {['top-left','top-right','bottom-left','bottom-right'].map((pos) => (
+                  <div
+                    key={pos}
+                    className="absolute"
+                    style={{
+                      width: 12, height: 12,
+                      background: 'white',
+                      borderRadius: 2,
+                      ...(pos.includes('top')    ? { top: -5 }    : { bottom: -5 }),
+                      ...(pos.includes('left')   ? { left: -5 }   : { right: -5 }),
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Loading placeholder */}
+            {!displaySize && (
+              <div className="absolute inset-0 flex items-center justify-center bg-muted">
+                <span className="text-sm text-muted-foreground">Loading…</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Live card preview + actions */}
+        <div className="px-5 pt-4 pb-5 flex flex-col gap-4">
+          {/* Preview row */}
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground flex-shrink-0">Card preview</span>
             <div
-              className={cn(
-                'rounded-lg overflow-hidden border border-border bg-muted shadow',
-              )}
+              className="rounded-lg overflow-hidden border border-border bg-muted shadow-sm flex-shrink-0"
               style={{ width: PREVIEW_W, height: PREVIEW_H }}
             >
-              {naturalSize ? (
+              {displaySize ? (
                 <img
                   src={`/api${image.originalUrl}`}
-                  alt="Preview"
+                  alt="Card preview"
                   draggable={false}
                   className="w-full h-full object-cover"
                   style={{
@@ -270,31 +288,31 @@ export function CoverCropModal({
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
-                  <span className="text-xs text-muted-foreground">Loading…</span>
+                  <span className="text-xs text-muted-foreground">…</span>
                 </div>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">
+            <span className="text-xs text-muted-foreground tabular-nums">
               {Math.round(cropValues.x)}% · {Math.round(cropValues.y)}%
-            </p>
+            </span>
           </div>
-        </div>
 
-        {/* Actions */}
-        <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
-          <button
-            onClick={onClose}
-            className="h-9 px-4 rounded-lg border border-input bg-background text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving || !naturalSize}
-            className="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
-          >
-            {saving ? 'Saving…' : 'Set Cover'}
-          </button>
+          {/* Actions */}
+          <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
+            <button
+              onClick={onClose}
+              className="h-9 px-4 rounded-lg border border-input bg-background text-sm font-medium hover:bg-accent hover:text-accent-foreground transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving || !displaySize}
+              className="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
+            >
+              {saving ? 'Saving…' : 'Set Cover'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
