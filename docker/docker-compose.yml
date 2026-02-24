@@ -2,9 +2,9 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: alexandria
-      POSTGRES_PASSWORD: alexandria
-      POSTGRES_DB: alexandria
+      POSTGRES_USER: ${POSTGRES_USER:-alexandria}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alexandria}
+      POSTGRES_DB: ${POSTGRES_DB:-alexandria}
     ports:
       - "5433:5432"
     volumes:
@@ -32,10 +32,10 @@ services:
     ports:
       - "3001:3000"
     environment:
-      DATABASE_URL: postgresql://alexandria:alexandria@postgres:5432/alexandria
+      DATABASE_URL: postgresql://${POSTGRES_USER:-alexandria}:${POSTGRES_PASSWORD:-alexandria}@postgres:5432/${POSTGRES_DB:-alexandria}
       REDIS_URL: redis://redis:6379
       STORAGE_PATH: /data/storage
-      SESSION_SECRET: dev-session-secret-change-me
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
       PORT: "3000"
       HOST: "0.0.0.0"
       NODE_ENV: production
