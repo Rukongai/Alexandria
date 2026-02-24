@@ -2,6 +2,8 @@
 
 A self-hosted personal library for managing 3D printing model collections. Think of it as Plex for 3D printing files — upload your zip archives, and Alexandria handles processing, thumbnail generation, metadata, organization, and search.
 
+![Alexandria preview](docs/preview.png)
+
 ---
 
 ## Features
