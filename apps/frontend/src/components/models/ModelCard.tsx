@@ -95,12 +95,27 @@ export function ModelCard({ model, selectable, selected, onToggleSelect }: Model
       {/* Thumbnail area */}
       <div className="relative overflow-hidden bg-muted" style={{ aspectRatio: cardAspectRatio }}>
         {thumbnailSrc ? (
-          <img
-            src={thumbnailSrc}
-            alt={model.name}
-            className="h-full w-full object-cover transition-transform group-hover:scale-105"
-            loading="lazy"
-          />
+          // Wrapper carries the hover-scale; img carries the crop transform separately
+          <div className="absolute inset-0 transition-transform group-hover:scale-105">
+            <img
+              src={thumbnailSrc}
+              alt={model.name}
+              className="h-full w-full object-cover"
+              loading="lazy"
+              style={{
+                objectPosition:
+                  model.previewCropX != null && model.previewCropY != null
+                    ? `${model.previewCropX}% ${model.previewCropY}%`
+                    : undefined,
+                ...(model.previewCropScale != null && model.previewCropScale > 1.0
+                  ? {
+                      transform: `scale(${model.previewCropScale})`,
+                      transformOrigin: `${model.previewCropX ?? 50}% ${model.previewCropY ?? 50}%`,
+                    }
+                  : {}),
+              }}
+            />
+          </div>
         ) : (
           <div className="flex h-full w-full items-center justify-center">
             <Package className="h-12 w-12 text-muted-foreground/40" />

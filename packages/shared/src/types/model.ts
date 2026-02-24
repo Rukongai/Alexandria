@@ -15,6 +15,9 @@ export interface Model {
   fileCount: number;
   fileHash: string | null;
   previewImageFileId: string | null;
+  previewCropX: number | null;
+  previewCropY: number | null;
+  previewCropScale: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +50,9 @@ export interface ModelCard {
   name: string;
   slug: string;
   thumbnailUrl: string | null;
+  previewCropX: number | null;
+  previewCropY: number | null;
+  previewCropScale: number | null;
   metadata: import('./metadata').MetadataValue[];
   fileCount: number;
   totalSizeBytes: number;
@@ -61,6 +67,9 @@ export interface ModelDetail {
   description: string | null;
   thumbnailUrl: string | null;
   previewImageFileId: string | null;
+  previewCropX: number | null;
+  previewCropY: number | null;
+  previewCropScale: number | null;
   metadata: import('./metadata').MetadataValue[];
   sourceType: ModelSourceType;
   originalFilename: string | null;
@@ -93,6 +102,9 @@ export interface UpdateModelRequest {
   name?: string;
   description?: string | null;
   previewImageFileId?: string | null;
+  previewCropX?: number | null;
+  previewCropY?: number | null;
+  previewCropScale?: number | null;
 }
 
 export interface JobStatus {
