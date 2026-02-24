@@ -2,6 +2,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { buildApp } from './app.js';
 import { config } from './config/index.js';
 import { db, pool } from './db/index.js';
+import { runSeed } from './db/seed.js';
 
 async function main(): Promise<void> {
   const app = await buildApp();
@@ -12,6 +13,8 @@ async function main(): Promise<void> {
       migrationsFolder: new URL('./db/migrations', import.meta.url).pathname,
     });
     app.log.info({ service: 'Server' }, 'Database migrations complete');
+    await runSeed();
+    app.log.info({ service: 'Server' }, 'Database seed complete');
   } catch (err) {
     app.log.error({ service: 'Server', err }, 'Database migration failed');
     await pool.end();

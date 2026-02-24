@@ -75,7 +75,8 @@ const DEFAULT_FIELDS = [
   },
 ] as const;
 
-async function seed() {
+// Exported for use by server.ts on startup — does not close the pool.
+export async function runSeed(): Promise<void> {
   console.log('Seeding database...');
 
   // --- Admin user ---
@@ -105,10 +106,18 @@ async function seed() {
   console.log(`Default metadata fields ready: ${DEFAULT_FIELDS.map((f) => f.name).join(', ')}`);
 
   console.log('Seed complete.');
-  await pool.end();
 }
 
-seed().catch((err) => {
-  console.error('Seed failed:', err);
-  process.exit(1);
-});
+// Standalone script entrypoint — only runs when executed directly, not when imported
+import { fileURLToPath } from 'node:url';
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const run = async () => {
+    await runSeed();
+    await pool.end();
+  };
+  run().catch((err) => {
+    console.error('Seed failed:', err);
+    process.exit(1);
+  });
+}
