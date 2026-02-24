@@ -60,14 +60,12 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.frontend
     ports:
-      - "5173:5173"
-    environment:
-      VITE_API_URL: http://backend:3000
+      - "80:80"
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:5173/').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))\""]
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
