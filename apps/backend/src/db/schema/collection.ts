@@ -1,6 +1,6 @@
 import { pgTable, uuid, varchar, text, timestamp, primaryKey, index, type AnyPgColumn } from 'drizzle-orm/pg-core';
-import { users } from './user';
-import { models } from './model';
+import { users } from './user.js';
+import { models } from './model.js';
 
 // Collections table — hierarchical organizational structure for models (per D8).
 // Collections are not metadata — they represent "where you put a model", not "what it is".
