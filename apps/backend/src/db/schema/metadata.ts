@@ -10,7 +10,7 @@ import {
   index,
   unique,
 } from 'drizzle-orm/pg-core';
-import { models } from './model';
+import { models } from './model.js';
 
 // MetadataFieldDefinitions table — configurable field schema for model metadata.
 // Default fields (isDefault: true) are seeded and cannot be deleted.

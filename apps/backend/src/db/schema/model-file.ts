@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, bigint, timestamp, index } from 'drizzle-orm/pg-core';
-import { models } from './model';
+import { models } from './model.js';
 
 // ModelFiles table — individual files belonging to a model.
 // ON DELETE CASCADE: When a model is deleted, all its files are deleted automatically.

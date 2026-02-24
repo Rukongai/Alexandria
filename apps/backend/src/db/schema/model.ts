@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, bigint, integer, real, timestamp, index, customType } from 'drizzle-orm/pg-core';
-import { users } from './user';
+import { users } from './user.js';
 
 // Custom tsvector type — Drizzle does not ship a native tsvector column type.
 // This is a thin wrapper that maps the column to PostgreSQL's tsvector type.

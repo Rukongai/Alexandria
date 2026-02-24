@@ -1,7 +1,7 @@
 import argon2 from 'argon2';
-import { db, pool } from './index';
-import { users } from './schema/user';
-import { metadataFieldDefinitions } from './schema/metadata';
+import { db, pool } from './index.js';
+import { users } from './schema/user.js';
+import { metadataFieldDefinitions } from './schema/metadata.js';
 
 // Default admin credentials — override via environment variables
 const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || 'admin@alexandria.local';

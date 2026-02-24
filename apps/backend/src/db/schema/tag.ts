@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, primaryKey, index } from 'drizzle-orm/pg-core';
-import { models } from './model';
+import { models } from './model.js';
 
 // Tags table — optimized storage for multi_enum metadata (per D3).
 // Tags are conceptually just another metadata field at the API level.
