@@ -1,4 +1,4 @@
-FROM node:22-slim AS base
+FROM node:22-slim AS builder
 WORKDIR /app
 
 # Install build tools for native modules (argon2) and runtime libs for 7zip-bin
@@ -18,11 +18,29 @@ RUN npm ci
 COPY packages/shared/ packages/shared/
 COPY apps/backend/ apps/backend/
 
-# Build shared package
+# Build shared package then backend
 RUN npm run build --workspace=packages/shared
+RUN npm run build --workspace=apps/backend
 
-# Expose port
+FROM node:22-slim AS production
+WORKDIR /app
+
+# Install runtime lib needed by 7zip-bin native binary
+RUN apt-get update && apt-get install -y libstdc++6 && rm -rf /var/lib/apt/lists/*
+
+# Copy root node_modules (includes workspace symlinks for @alexandria/shared)
+COPY --from=builder /app/node_modules ./node_modules
+
+# Copy shared package (symlink target for node_modules/@alexandria/shared)
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.json
+
+# Copy compiled backend
+COPY --from=builder /app/apps/backend/dist ./apps/backend/dist
+COPY --from=builder /app/apps/backend/package.json ./apps/backend/package.json
+
+COPY --from=builder /app/package.json ./package.json
+
 EXPOSE 3000
 
-# Run with tsx for development
-CMD ["npx", "tsx", "apps/backend/src/server.ts"]
+CMD ["node", "apps/backend/dist/server.js"]
