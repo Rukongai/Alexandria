@@ -177,7 +177,7 @@ export function BulkActions({ selectedIds, onClear, onDeleted }: BulkActionsProp
           <Button
             size="sm"
             variant="ghost"
-            className="text-background hover:text-background hover:bg-white/10"
+            className="text-background hover:text-background hover:bg-black/10 dark:hover:bg-white/10"
             onClick={() => setActivePanel(activePanel === 'tag' ? null : 'tag')}
           >
             <Tag className="h-4 w-4 mr-1.5" />
@@ -199,7 +199,7 @@ export function BulkActions({ selectedIds, onClear, onDeleted }: BulkActionsProp
           <Button
             size="sm"
             variant="ghost"
-            className="text-background hover:text-background hover:bg-white/10"
+            className="text-background hover:text-background hover:bg-black/10 dark:hover:bg-white/10"
             onClick={() => setActivePanel(activePanel === 'collection' ? null : 'collection')}
           >
             <FolderPlus className="h-4 w-4 mr-1.5" />

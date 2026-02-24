@@ -366,6 +366,14 @@ Use React's built-in state management (useState, useReducer, useContext) unless 
 
 API data caching and synchronization: use React Query (TanStack Query) for server state management. This handles caching, refetching, pagination, and optimistic updates.
 
+### Theming
+
+Dark mode is implemented via a `dark` class on `<html>`. `ThemeProvider` (`src/hooks/use-theme.ts`) manages the active theme (`'light' | 'dark' | 'system'`), persists it to `localStorage`, and applies or removes the `dark` class on `document.documentElement`. When theme is `'system'`, it follows `prefers-color-scheme`.
+
+Color tokens are defined as CSS custom properties in `src/index.css`. shadcn/ui components consume these tokens automatically. Hardcoded Tailwind color utilities (e.g., `bg-gray-800`) must use explicit `dark:` variants — they do not pick up the CSS variable system.
+
+`ThemeProvider` must wrap the app root in `main.tsx` for `useTheme` to be available anywhere in the tree.
+
 ---
 
 ## Testing Conventions
