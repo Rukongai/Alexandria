@@ -45,7 +45,7 @@ function TagPanel({ selectedIds, onClose, onDone }: TagPopoverProps) {
   });
 
   return (
-    <div className="bg-popover border rounded-lg shadow-lg p-4 w-72 flex flex-col gap-3">
+    <div className="bg-popover text-popover-foreground border rounded-lg shadow-lg p-4 w-72 flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">Add Tag</span>
         <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -108,7 +108,7 @@ function CollectionPicker({ selectedIds, onClose, onDone }: CollectionPickerProp
   });
 
   return (
-    <div className="bg-popover border rounded-lg shadow-lg p-4 w-64 flex flex-col gap-3">
+    <div className="bg-popover text-popover-foreground border rounded-lg shadow-lg p-4 w-64 flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">Add to Collection</span>
         <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">

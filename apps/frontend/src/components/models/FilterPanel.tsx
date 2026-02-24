@@ -160,7 +160,7 @@ export function FilterPanel({
   const { data: fields, isLoading } = useQuery<MetadataFieldDetail[]>({
     queryKey: ['metadata-fields'],
     queryFn: getFields,
-    staleTime: 60_000,
+    staleTime: 10_000,
   });
 
   const filterableFields = fields?.filter((f) => f.isFilterable) ?? [];
