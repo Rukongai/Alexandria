@@ -38,7 +38,7 @@ services:
       SESSION_SECRET: dev-session-secret-change-me
       PORT: "3000"
       HOST: "0.0.0.0"
-      NODE_ENV: development
+      NODE_ENV: production
     volumes:
       - storagedata:/data/storage
     depends_on:
