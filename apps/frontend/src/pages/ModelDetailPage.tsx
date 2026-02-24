@@ -71,6 +71,8 @@ export function ModelDetailPage() {
             <ImageGallery
               images={model.images}
               previewImageFileId={model.previewImageFileId}
+              previewCropX={model.previewCropX}
+              previewCropY={model.previewCropY}
               modelId={model.id}
             />
             <FileTree tree={fileTree} />

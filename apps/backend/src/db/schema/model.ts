@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, bigint, integer, timestamp, index, customType } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, bigint, integer, real, timestamp, index, customType } from 'drizzle-orm/pg-core';
 import { users } from './user';
 
 // Custom tsvector type — Drizzle does not ship a native tsvector column type.
@@ -48,6 +48,10 @@ export const models = pgTable(
     // Note: Drizzle-level .references() is omitted here to avoid the circular import
     // between model.ts and model-file.ts; the FK constraint lives in the migration SQL.
     previewImageFileId: uuid('preview_image_file_id'),
+    // CSS object-position crop values (0–100). null = no crop set (browser defaults to 50% 50%).
+    // Applied via object-position on the card thumbnail image.
+    previewCropX: real('preview_crop_x'),
+    previewCropY: real('preview_crop_y'),
   },
   (table) => [
     // Fast lookup by slug for URL-based access

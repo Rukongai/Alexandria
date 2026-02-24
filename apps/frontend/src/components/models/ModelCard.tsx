@@ -100,6 +100,11 @@ export function ModelCard({ model, selectable, selected, onToggleSelect }: Model
             alt={model.name}
             className="h-full w-full object-cover transition-transform group-hover:scale-105"
             loading="lazy"
+            style={
+              model.previewCropX != null && model.previewCropY != null
+                ? { objectPosition: `${model.previewCropX}% ${model.previewCropY}%` }
+                : undefined
+            }
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center">

@@ -1,34 +1,37 @@
 import * as React from 'react';
-import { ChevronLeft, ChevronRight, X, Package, Star } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Package, Star, Crop } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ImageFile } from '@alexandria/shared';
 import { cn } from '../../lib/utils';
-import { updateModel } from '../../api/models';
-import { toast } from '../../hooks/use-toast';
+import { CoverCropModal } from './CoverCropModal';
 
 interface ImageGalleryProps {
   images: ImageFile[];
   previewImageFileId: string | null;
+  previewCropX: number | null;
+  previewCropY: number | null;
   modelId: string;
 }
 
-export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalleryProps) {
+export function ImageGallery({
+  images,
+  previewImageFileId,
+  previewCropX,
+  previewCropY,
+  modelId,
+}: ImageGalleryProps) {
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const [lightboxOpen, setLightboxOpen] = React.useState(false);
-  const [settingCoverId, setSettingCoverId] = React.useState<string | null>(null);
+  const [cropModalImage, setCropModalImage] = React.useState<ImageFile | null>(null);
   const queryClient = useQueryClient();
 
-  async function handleSetCover(imageId: string) {
-    setSettingCoverId(imageId);
-    try {
-      await updateModel(modelId, { previewImageFileId: imageId });
-      await queryClient.invalidateQueries({ queryKey: ['model', modelId] });
-      await queryClient.invalidateQueries({ queryKey: ['models'] });
-    } catch {
-      toast({ title: 'Failed to set cover image', variant: 'destructive' });
-    } finally {
-      setSettingCoverId(null);
-    }
+  function handleOpenCropModal(image: ImageFile) {
+    setCropModalImage(image);
+  }
+
+  function handleCropSaved() {
+    queryClient.invalidateQueries({ queryKey: ['model', modelId] });
+    queryClient.invalidateQueries({ queryKey: ['models'] });
   }
 
   React.useEffect(() => {
@@ -58,6 +61,7 @@ export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalle
   }
 
   const selected = images[selectedIndex];
+  const isSelectedCover = selected.id === previewImageFileId;
 
   return (
     <>
@@ -69,22 +73,29 @@ export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalle
           className="w-full aspect-video object-contain cursor-zoom-in"
           onClick={() => setLightboxOpen(true)}
         />
-        {selected.id === previewImageFileId && (
+        {isSelectedCover && (
           <div className="absolute top-2 left-2 flex items-center gap-1 bg-amber-500/90 text-white text-xs font-medium rounded-full px-2 py-0.5 pointer-events-none">
             <Star className="h-3 w-3 fill-white" />
             Cover
           </div>
         )}
-        {selected.id !== previewImageFileId && (
-          <button
-            onClick={(e) => { e.stopPropagation(); handleSetCover(selected.id); }}
-            disabled={settingCoverId === selected.id}
-            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-black/60 hover:bg-black/80 text-white text-xs font-medium rounded-full px-2.5 py-1"
-          >
-            <Star className="h-3 w-3" />
-            {settingCoverId === selected.id ? 'Setting…' : 'Set Preview'}
-          </button>
-        )}
+        {/* Set Preview / Edit Framing button */}
+        <button
+          onClick={(e) => { e.stopPropagation(); handleOpenCropModal(selected); }}
+          className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-black/60 hover:bg-black/80 text-white text-xs font-medium rounded-full px-2.5 py-1"
+        >
+          {isSelectedCover ? (
+            <>
+              <Crop className="h-3 w-3" />
+              Edit Framing
+            </>
+          ) : (
+            <>
+              <Star className="h-3 w-3" />
+              Set Preview
+            </>
+          )}
+        </button>
         {images.length > 1 && (
           <>
             <button
@@ -196,6 +207,19 @@ export function ImageGallery({ images, previewImageFileId, modelId }: ImageGalle
             )}
           </div>
         </div>
+      )}
+
+      {/* Crop Modal */}
+      {cropModalImage && (
+        <CoverCropModal
+          image={cropModalImage}
+          modelId={modelId}
+          isCurrentCover={cropModalImage.id === previewImageFileId}
+          initialCropX={cropModalImage.id === previewImageFileId ? previewCropX : null}
+          initialCropY={cropModalImage.id === previewImageFileId ? previewCropY : null}
+          onClose={() => setCropModalImage(null)}
+          onSaved={handleCropSaved}
+        />
       )}
     </>
   );
