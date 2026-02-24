@@ -6,9 +6,9 @@ export const modelSearchParamsSchema = z.object({
   tags: z.string().optional().refine(
     (val) => {
       if (val === undefined) return true;
-      return val.split(',').every((slug) => slug.trim().length > 0);
+      return val.split(',').every((name) => name.trim().length > 0);
     },
-    { message: 'tags must be a comma-separated list of non-empty slugs' },
+    { message: 'tags must be a comma-separated list of non-empty tag names' },
   ),
 
   collectionId: z.string().uuid().optional(),
