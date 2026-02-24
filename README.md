@@ -59,18 +59,19 @@ cd alexandria
 
 # Start all services (Postgres, Redis, backend, frontend)
 docker compose -f docker/docker-compose.yml up --build
-
-# Seed the database (first time only)
-docker compose -f docker/docker-compose.yml exec backend npm run db:seed
 ```
+
+On first startup, the backend automatically runs database migrations and seeds the default admin account and metadata fields. No manual seeding step is required.
 
 Services are available at:
 
-- Frontend: http://localhost:5173
+- Frontend: http://localhost:80
 - Backend API: http://localhost:3001
 - Postgres: localhost:5433 (user: `alexandria`, password: `alexandria`, db: `alexandria`)
 
-Default login after seeding: `admin@alexandria.local` / `changeme`
+Default login: `admin@alexandria.local` / `changeme`
+
+To use a custom admin account, set `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` in your environment before the first startup. The seed is idempotent — it uses `ON CONFLICT DO NOTHING`, so re-running it does not overwrite existing data.
 
 ---
 
@@ -162,7 +163,7 @@ All backend variables have development defaults and can be set in the environmen
 | `HOST` | `0.0.0.0` | Host the backend binds to |
 | `NODE_ENV` | `development` | Affects log level and cookie security |
 
-Seed-only variables (read by `npm run db:seed`):
+Seed variables (read on every startup and by `npm run db:seed`):
 
 | Variable | Default | Description |
 |---|---|---|
