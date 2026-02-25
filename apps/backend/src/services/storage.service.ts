@@ -5,6 +5,20 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { config } from '../config/index.js';
 import { storageError } from '../utils/errors.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('StorageService');
+
+export function sanitizePathSegment(value: string): string {
+  // Strip path separators, null bytes, and other illegal filesystem characters
+  // eslint-disable-next-line no-control-regex
+  let sanitized = value.replace(/[/\\\x00<>:"|?*]/g, '_');
+  // Collapse consecutive underscores
+  sanitized = sanitized.replace(/_+/g, '_');
+  // Trim leading/trailing underscores
+  sanitized = sanitized.replace(/^_+|_+$/g, '');
+  return sanitized || '_unknown';
+}
 
 export interface IStorageService {
   store(filePath: string, data: Buffer | NodeJS.ReadableStream): Promise<void>;
@@ -14,6 +28,13 @@ export interface IStorageService {
   exists(filePath: string): Promise<boolean>;
   getStorageRoot(): string;
   resolveStoragePath(filePath: string): string;
+  resolveModelPath(
+    libraryName: string,
+    modelName: string,
+    metadataValues: Record<string, string>,
+    pathTemplate: string,
+    rootPath: string,
+  ): string;
 }
 
 export class StorageService implements IStorageService {
@@ -29,6 +50,46 @@ export class StorageService implements IStorageService {
 
   resolveStoragePath(filePath: string): string {
     return this.resolve(filePath);
+  }
+
+  resolveModelPath(
+    libraryName: string,
+    modelName: string,
+    metadataValues: Record<string, string>,
+    pathTemplate: string,
+    rootPath: string,
+  ): string {
+    const resolvedTemplate = pathTemplate.replace(/\{([^}]+)\}/g, (match, token: string) => {
+      if (token === 'library') {
+        return sanitizePathSegment(libraryName);
+      }
+      if (token === 'model') {
+        return sanitizePathSegment(modelName);
+      }
+      if (token.startsWith('metadata.')) {
+        const slug = token.slice('metadata.'.length);
+        const value = metadataValues[slug];
+        if (value === undefined || value === null || value === '') {
+          logger.warn(
+            { service: 'StorageService', slug, libraryName, modelName },
+            `Missing metadata value for token {${token}}, using fallback '_unknown'`,
+          );
+          return '_unknown';
+        }
+        return sanitizePathSegment(value);
+      }
+      // Unknown token — return as-is (sanitized)
+      return sanitizePathSegment(match);
+    });
+
+    const resolvedAbsolute = path.resolve(rootPath, resolvedTemplate);
+    const resolvedRoot = path.resolve(rootPath);
+
+    if (!resolvedAbsolute.startsWith(resolvedRoot + path.sep) && resolvedAbsolute !== resolvedRoot) {
+      throw storageError('Resolved path escapes storage root');
+    }
+
+    return resolvedAbsolute;
   }
 
   private resolve(filePath: string): string {

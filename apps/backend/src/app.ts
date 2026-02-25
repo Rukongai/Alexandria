@@ -11,6 +11,7 @@ import { metadataFieldRoutes, modelMetadataRoute } from './routes/metadata.js';
 import { bulkRoutes } from './routes/bulk.js';
 import { collectionRoutes } from './routes/collections.js';
 import { fileRoutes } from './routes/files.js';
+import { libraryRoutes } from './routes/libraries.js';
 import { startIngestionWorker } from './workers/ingestion.worker.js';
 
 export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
@@ -65,6 +66,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   await app.register(bulkRoutes, { prefix: '/bulk' });
   await app.register(collectionRoutes, { prefix: '/collections' });
   await app.register(fileRoutes, { prefix: '/files' });
+  await app.register(libraryRoutes, { prefix: '/libraries' });
 
   // Start background workers
   startIngestionWorker();

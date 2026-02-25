@@ -298,6 +298,16 @@ logger.info(`Processing started for model ${modelId} in job ${jobId}`);
 - Join tables have composite primary keys on both foreign keys.
 - Indexes: created explicitly for foreign keys, slug fields, and any column used in WHERE clauses or JOINs. The schema file documents why each index exists.
 
+### Migrations
+
+Migration SQL files live in `apps/backend/src/db/migrations/`. **Every new migration file must also be registered in `apps/backend/src/db/migrations/meta/_journal.json`** — Drizzle's auto-migration runner reads only this journal to determine which migrations are pending. A SQL file that exists on disk but is not in the journal will never be applied.
+
+When adding a migration:
+1. Create the SQL file (e.g., `0006_my_change.sql`)
+2. Add the corresponding entry to `_journal.json` with the correct `idx`, `tag` (filename without `.sql`), and a `when` timestamp
+
+Migrations are forward-only. No down migrations in this project.
+
 ### Slug Generation
 
 Slugs are generated from names using a consistent utility function:

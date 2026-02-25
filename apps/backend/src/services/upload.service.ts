@@ -20,6 +20,8 @@ interface UploadSession {
   receivedChunks: Set<number>;
   chunksDir: string;
   userId: string;
+  libraryId: string;
+  metadata?: Record<string, string>;
   createdAt: Date;
   expiresAt: Date;
 }
@@ -37,6 +39,8 @@ export class UploadService {
     totalSize: number,
     totalChunks: number,
     userId: string,
+    libraryId: string,
+    metadata?: Record<string, string>,
   ): { uploadId: string; expiresAt: string } {
     const uploadId = crypto.randomUUID();
     const chunksDir = path.join(os.tmpdir(), `alexandria_chunks_${uploadId}`);
@@ -53,14 +57,21 @@ export class UploadService {
       receivedChunks: new Set(),
       chunksDir,
       userId,
+      libraryId,
+      metadata,
       createdAt: now,
       expiresAt,
     };
 
     this.sessions.set(uploadId, session);
-    logger.info({ uploadId, filename, totalSize, totalChunks }, 'Upload session created');
+    logger.info({ uploadId, filename, totalSize, totalChunks, libraryId }, 'Upload session created');
 
     return { uploadId, expiresAt: expiresAt.toISOString() };
+  }
+
+  getSessionInfo(uploadId: string, userId: string): { libraryId: string; metadata?: Record<string, string> } {
+    const session = this._getSession(uploadId, userId);
+    return { libraryId: session.libraryId, metadata: session.metadata };
   }
 
   async receiveChunk(

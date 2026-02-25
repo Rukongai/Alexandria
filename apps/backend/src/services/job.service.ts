@@ -8,6 +8,9 @@ export interface IngestionJobPayload {
   tempFilePath: string;
   originalFilename: string;
   userId: string;
+  libraryId: string;
+  modelSlug: string;
+  metadata?: Record<string, string>;
 }
 
 export interface FolderImportJobPayload {
@@ -15,6 +18,7 @@ export interface FolderImportJobPayload {
   pattern: string;
   strategy: ImportStrategy;
   userId: string;
+  libraryId: string;
 }
 
 const INGESTION_QUEUE = 'ingestion';

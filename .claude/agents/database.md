@@ -29,6 +29,7 @@ Read all existing schema files in `apps/backend/src/db/schema/` and the current 
 - Generate migrations using Drizzle Kit after schema changes.
 - Review generated SQL before committing — Drizzle Kit occasionally produces suboptimal migrations.
 - Each migration is forward-only. No down migrations in this project.
+- **Always register new migrations in `apps/backend/src/db/migrations/meta/_journal.json`.** Drizzle's auto-migration runner only applies migrations listed in this journal. A SQL file that exists on disk but is missing from the journal will never be executed, causing `relation does not exist` errors at runtime. After creating a migration file, add the corresponding `{ idx, version, when, tag, breakpoints }` entry to the journal.
 
 ## Seed Data
 

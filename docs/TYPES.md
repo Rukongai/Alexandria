@@ -51,6 +51,7 @@ interface Model {
   fileCount: number;
   fileHash: string | null;
   previewImageFileId: string | null; // user-selected cover image; null = first-image fallback
+  libraryId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -165,6 +166,20 @@ interface Collection {
 ```
 
 Join table `collection_models`: `{ collectionId: string, modelId: string }`
+
+### Library
+
+```typescript
+interface Library {
+  id: string;
+  name: string;
+  slug: string;
+  rootPath: string;
+  pathTemplate: string;
+  createdAt: string;
+  updatedAt: string;
+}
+```
 
 ---
 
@@ -314,6 +329,18 @@ interface CollectionDetail {
   updatedAt: string;
 }
 ```
+
+### Library Response Types
+
+```typescript
+interface LibrarySummary {
+  id: string;
+  name: string;
+  slug: string;
+}
+```
+
+`LibraryDetail` was removed as it was identical to `Library` — the `Library` domain type is returned directly for full detail responses.
 
 ### Auth Response Types
 
@@ -474,6 +501,22 @@ interface BulkDeleteRequest {
 }
 ```
 
+### Library Requests
+
+```typescript
+interface CreateLibraryRequest {
+  name: string;
+  rootPath: string;  // absolute filesystem path
+  pathTemplate: string;  // e.g. "{library}/{metadata.artist}/{model}"
+}
+
+interface UpdateLibraryRequest {
+  name?: string;
+  rootPath?: string;
+  pathTemplate?: string;
+}
+```
+
 ### Query Parameters
 
 ```typescript
@@ -539,8 +582,10 @@ User ──owns──→ Model ──has many──→ ModelFile ──has many�
   │               ├──has many──→ model_tags ──references──→ Tag
   │               │             (optimized metadata storage)
   │               │
-  │               └──many to many──→ Collection ──self-references──→ Collection
-  │                   (via collection_models)     (via parentCollectionId)
+  │               ├──many to many──→ Collection ──self-references──→ Collection
+  │               │   (via collection_models)     (via parentCollectionId)
+  │               │
+  │               └──belongs to (optional)──→ Library
   │
   └──owns──→ Collection
 ```

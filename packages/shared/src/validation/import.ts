@@ -5,4 +5,7 @@ export const importConfigSchema = z.object({
   pattern: z.string().min(1, 'Pattern is required'),
   strategy: z.enum(['hardlink', 'copy', 'move']),
   deleteAfterUpload: z.boolean().optional(),
+  libraryId: z.string().uuid(),
 });
+
+export type ImportConfig = z.infer<typeof importConfigSchema>;

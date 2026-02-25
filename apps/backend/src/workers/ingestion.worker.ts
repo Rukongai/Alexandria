@@ -18,7 +18,7 @@ export function startIngestionWorker(): void {
   ingestionWorker = new Worker(
     INGESTION_QUEUE,
     async (job: Job<IngestionJobPayload>) => {
-      const { modelId, tempFilePath, userId } = job.data;
+      const { modelId, tempFilePath, userId, libraryId, modelSlug, metadata } = job.data;
 
       logger.info({ jobId: job.id, modelId }, 'Ingestion job started');
 
@@ -28,6 +28,9 @@ export function startIngestionWorker(): void {
         tempFilePath,
         userId,
         job,
+        libraryId,
+        modelSlug,
+        metadata,
       );
 
       logger.info({ jobId: job.id, modelId }, 'Ingestion job completed');

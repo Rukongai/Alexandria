@@ -1,5 +1,6 @@
 import { pgTable, uuid, varchar, text, bigint, integer, real, timestamp, index, customType } from 'drizzle-orm/pg-core';
 import { users } from './user.js';
+import { libraries } from './library.js';
 
 // Custom tsvector type — Drizzle does not ship a native tsvector column type.
 // This is a thin wrapper that maps the column to PostgreSQL's tsvector type.
@@ -55,6 +56,11 @@ export const models = pgTable(
     // Zoom multiplier applied on top of object-fit:cover (1.0 = no extra zoom, >1.0 = zoom in).
     // Applied via transform: scale() on the card thumbnail image.
     previewCropScale: real('preview_crop_scale'),
+    // Library this model belongs to. Nullable — existing models have no library
+    // assignment; new models can be assigned to a library during or after import.
+    // ON DELETE SET NULL: if the library is deleted, models are orphaned (library_id
+    // becomes NULL) rather than deleted.
+    libraryId: uuid('library_id').references(() => libraries.id, { onDelete: 'set null' }),
   },
   (table) => [
     // Fast lookup by slug for URL-based access
@@ -69,6 +75,8 @@ export const models = pgTable(
     index('models_search_vector_idx').using('gin', table.searchVector),
     // FK index: resolve which model owns a preview image file (ON DELETE SET NULL lookup)
     index('models_preview_image_file_id_idx').on(table.previewImageFileId),
+    // FK index: list all models belonging to a library (library browse view, ON DELETE SET NULL lookup)
+    index('models_library_id_idx').on(table.libraryId),
   ],
 );
 

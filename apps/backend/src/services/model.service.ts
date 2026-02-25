@@ -12,6 +12,7 @@ export interface CreateModelData {
   sourceType: ModelSourceType;
   status: ModelStatus;
   originalFilename?: string;
+  libraryId?: string;
 }
 
 export interface CreateModelFileData {
@@ -49,6 +50,7 @@ export class ModelService {
         sourceType: data.sourceType,
         status: data.status,
         originalFilename: data.originalFilename ?? null,
+        libraryId: data.libraryId ?? null,
       })
       .returning({ id: models.id });
 

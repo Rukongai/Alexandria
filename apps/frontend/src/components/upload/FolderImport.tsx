@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { FolderOpen, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
+import { getLibraries } from '../../api/libraries';
 import { getFields } from '../../api/metadata';
 import { importFolder } from '../../api/models';
-import type { ImportStrategy } from '@alexandria/shared';
+import type { ImportStrategy, Library } from '@alexandria/shared';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
+import { Select } from '../ui/select';
 import {
   PatternBuilder,
   createDefaultSegments,
@@ -48,7 +50,14 @@ export function FolderImport() {
   const [sourcePath, setSourcePath] = useState('');
   const [segments, setSegments] = useState<Segment[]>(createDefaultSegments);
   const [strategy, setStrategy] = useState<ImportStrategy>('hardlink');
+  const [selectedLibraryId, setSelectedLibraryId] = useState('');
   const [importState, setImportState] = useState<ImportState>({ phase: 'idle' });
+
+  const { data: libraries = [], isLoading: librariesLoading } = useQuery<Library[]>({
+    queryKey: ['libraries'],
+    queryFn: () => getLibraries().then(r => r.data),
+    staleTime: 60_000,
+  });
 
   const { data: fields = [] } = useQuery<MetadataFieldDetail[]>({
     queryKey: ['metadata-fields'],
@@ -62,6 +71,7 @@ export function FolderImport() {
   const canSubmit =
     sourcePath.trim().length > 0 &&
     isValidPattern &&
+    selectedLibraryId.length > 0 &&
     importState.phase !== 'submitting';
 
   const handleSubmit = async () => {
@@ -72,6 +82,7 @@ export function FolderImport() {
         sourcePath: sourcePath.trim(),
         pattern,
         strategy,
+        libraryId: selectedLibraryId,
       });
       setImportState({ phase: 'submitted', modelId });
     } catch (err: unknown) {
@@ -85,11 +96,58 @@ export function FolderImport() {
     setSourcePath('');
     setSegments(createDefaultSegments());
     setStrategy('hardlink');
+    setSelectedLibraryId('');
     setImportState({ phase: 'idle' });
   };
 
+  // Loading state
+  if (librariesLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="h-8 w-8 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+      </div>
+    );
+  }
+
+  // No libraries — blocking gate
+  if (!librariesLoading && libraries.length === 0) {
+    return (
+      <div className="rounded-xl border border-amber-500/40 bg-amber-50 dark:bg-amber-950/20 p-6 flex items-start gap-3">
+        <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-300">No libraries configured</p>
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            You need to create a library before importing models.
+          </p>
+          <Link
+            to="/libraries"
+            className="inline-block text-sm font-medium text-primary hover:underline"
+          >
+            Go to Libraries
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
+      {/* Library selector */}
+      <div className="space-y-1.5">
+        <Label htmlFor="folder-library-select">Library</Label>
+        <Select
+          id="folder-library-select"
+          value={selectedLibraryId}
+          onChange={e => setSelectedLibraryId(e.target.value)}
+          disabled={importState.phase === 'submitting'}
+        >
+          <option value="" disabled>Select a library</option>
+          {libraries.map(lib => (
+            <option key={lib.id} value={lib.id}>{lib.name}</option>
+          ))}
+        </Select>
+      </div>
+
       {/* Source path */}
       <div className="space-y-1.5">
         <Label htmlFor="source-path">Source folder path (on server)</Label>

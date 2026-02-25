@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutGrid, FolderOpen, Upload, Settings, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LayoutGrid, FolderOpen, Upload, Settings, BookOpen, Database, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 interface NavItem {
@@ -11,6 +11,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: 'Library', to: '/', icon: LayoutGrid },
   { label: 'Collections', to: '/collections', icon: FolderOpen },
+  { label: 'Libraries', to: '/libraries', icon: Database },
   { label: 'Upload', to: '/upload', icon: Upload },
   { label: 'Settings', to: '/settings', icon: Settings },
 ];

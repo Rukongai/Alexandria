@@ -168,6 +168,14 @@ No other service knows about this routing. To every consumer, tags are just anot
 
 Collections are an organizational structure, not metadata. A model's relationship to a collection is about where you put it, not what it is. This is why collections remain a separate entity while Artist and Tags moved into the metadata system.
 
+### LibraryService
+
+**Owns:** Library CRUD — creating, reading, updating, and deleting Library records. Admin-managed.
+
+**Does not own:** File I/O, model ingestion, path resolution execution.
+
+**Behavior:** Provides CRUD operations for Library entities. Libraries are admin-managed storage hierarchies with configurable path templates. Library names are unique. Updating rootPath or pathTemplate does not retroactively re-path already-stored models (known MVP limitation).
+
 ### AuthService
 
 **Owns:** User CRUD, password hashing, authentication, session creation and validation.
@@ -280,6 +288,16 @@ Collections are an organizational structure, not metadata. A model's relationshi
 | POST | /bulk/collection | Add/remove models from collections | CollectionService |
 | POST | /bulk/delete | Delete multiple models | ModelService → StorageService |
 
+**Libraries**
+| Method | Route | Purpose | Service Chain |
+|--------|-------|---------|---------------|
+| GET | /libraries | List all libraries | LibraryService |
+| POST | /libraries | Create library | LibraryService |
+| GET | /libraries/:id | Library detail | LibraryService |
+| PATCH | /libraries/:id | Update library | LibraryService |
+| DELETE | /libraries/:id | Delete library | LibraryService |
+| GET | /libraries/:id/models | Model IDs in library | LibraryService |
+
 ---
 
 ## Decision Log
@@ -321,3 +339,6 @@ All API responses use `{ data, meta, errors }`. No raw arrays, no inconsistent s
 
 ### D12: Services never format HTTP responses
 Services throw typed errors or return domain data. Routes and middleware handle HTTP status codes and envelope formatting. Services have no knowledge of HTTP.
+
+### D13: Libraries are admin-managed storage namespaces
+Libraries own the physical storage layout for model files. They are not user-scoped — a single library can hold models from any user. Library path templates control where files physically live on disk. The `{library}` token in a path template resolves to the library's name at import time; renaming a library after models are stored does not re-path existing files. This is a known MVP limitation that may be addressed in a future phase alongside Issue #43 (library ACL and per-user collection scoping).

@@ -42,8 +42,33 @@ vi.mock('./thumbnail.service.js', () => ({
 vi.mock('./storage.service.js', () => ({
   storageService: {
     store: vi.fn(),
+    getStorageRoot: vi.fn().mockReturnValue('/storage'),
+    resolveModelPath: vi.fn().mockReturnValue('/storage/main-library/dragon-bust-a3f2'),
   },
   StorageService: vi.fn(),
+}));
+
+vi.mock('./library.service.js', () => ({
+  libraryService: {
+    getLibraryById: vi.fn().mockResolvedValue({
+      id: 'lib-1',
+      name: 'Main Library',
+      slug: 'main-library',
+      pathTemplate: '{library}/{model}',
+      rootPath: '/storage',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }),
+  },
+  LibraryService: vi.fn(),
+}));
+
+vi.mock('./metadata.service.js', () => ({
+  metadataService: {
+    setModelMetadata: vi.fn().mockResolvedValue(undefined),
+    getModelMetadata: vi.fn().mockResolvedValue([]),
+  },
+  MetadataService: vi.fn(),
 }));
 
 // node:fs is used for createReadStream inside processIngestionJob
@@ -108,6 +133,7 @@ describe('IngestionService – handleUpload', () => {
     const result = await service.handleUpload(
       { tempFilePath: '/tmp/upload.zip', originalFilename: 'my-model.zip' },
       'user-1',
+      'lib-1',
     );
 
     // Returns both IDs
@@ -143,6 +169,7 @@ describe('IngestionService – handleUpload', () => {
     await service.handleUpload(
       { tempFilePath: '/tmp/upload.zip', originalFilename: 'Cool Model.zip' },
       'user-1',
+      'lib-1',
     );
 
     expect(modelService.createModel).toHaveBeenCalledWith(
@@ -157,6 +184,7 @@ describe('IngestionService – handleUpload', () => {
     await service.handleUpload(
       { tempFilePath: '/tmp/upload.rar', originalFilename: 'Cool Model.rar' },
       'user-1',
+      'lib-1',
     );
 
     expect(modelService.createModel).toHaveBeenCalledWith(
@@ -171,6 +199,7 @@ describe('IngestionService – handleUpload', () => {
     await service.handleUpload(
       { tempFilePath: '/tmp/upload.tar.gz', originalFilename: 'Cool Model.tar.gz' },
       'user-1',
+      'lib-1',
     );
 
     expect(modelService.createModel).toHaveBeenCalledWith(
@@ -194,7 +223,7 @@ describe('IngestionService – processIngestionJob', () => {
     const job = makeJob();
 
     await expect(
-      service.processIngestionJob('job-1', 'model-1', '/tmp/bad.zip', 'user-1', job),
+      service.processIngestionJob('job-1', 'model-1', '/tmp/bad.zip', 'user-1', job, 'lib-1', 'model-1'),
     ).rejects.toThrow('corrupt zip');
 
     // Must update the model to 'error' when the pipeline throws
@@ -210,7 +239,7 @@ describe('IngestionService – processIngestionJob', () => {
 
     const job = makeJob();
 
-    await service.processIngestionJob('job-1', 'model-1', '/tmp/model.zip', 'user-1', job);
+    await service.processIngestionJob('job-1', 'model-1', '/tmp/model.zip', 'user-1', job, 'lib-1', 'model-1');
 
     // Final status update must set model to 'ready'
     expect(modelService.updateModelStatus).toHaveBeenCalledWith(
@@ -232,7 +261,7 @@ describe('IngestionService – processIngestionJob', () => {
 
     const job = makeJob();
 
-    await service.processIngestionJob('job-1', 'model-1', '/tmp/model.zip', 'user-1', job);
+    await service.processIngestionJob('job-1', 'model-1', '/tmp/model.zip', 'user-1', job, 'lib-1', 'model-1');
 
     // Progress calls: 0, 20, 50, 75, 100
     expect(job.updateProgress).toHaveBeenCalledWith(0);

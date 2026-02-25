@@ -54,6 +54,8 @@ const MAX_CHUNK_RETRIES = 3;
 
 export async function uploadModel(
   file: File,
+  libraryId: string,
+  metadata?: Record<string, string>,
   onProgress?: (pct: number) => void
 ): Promise<{ modelId: string }> {
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
@@ -61,7 +63,7 @@ export async function uploadModel(
   // 1. Initiate chunked upload session
   const initResponse = await post<{ uploadId: string; expiresAt: string }>(
     '/models/upload/init',
-    { filename: file.name, totalSize: file.size, totalChunks },
+    { filename: file.name, totalSize: file.size, totalChunks, libraryId, ...(metadata ? { metadata } : {}) },
   );
   const { uploadId } = initResponse.data;
 

@@ -33,6 +33,9 @@ Read `docs/ARCHITECTURE.md`, `docs/CONVENTIONS.md`, and `docs/TYPES.md` first. T
 - Logging: are log entries structured with service context?
 - Database: are column and table names `snake_case`?
 
+**Migration hygiene:**
+- For every `.sql` file in `apps/backend/src/db/migrations/`, verify there is a matching entry in `apps/backend/src/db/migrations/meta/_journal.json`. A migration file with no journal entry will never be applied by the auto-migration runner — this causes runtime `relation does not exist` errors that are hard to trace.
+
 **Structural concerns:**
 - Are there utility functions that should be service methods or vice versa?
 - Are there files that don't have a clear home in the documented project structure?
