@@ -367,12 +367,12 @@ export class FileProcessingService {
 
   async copyManifestToStorage(
     extractDir: string,
-    modelId: string,
     manifest: FileManifest,
     storage: IStorageService,
+    getStoragePath: (relativePath: string) => string,
   ): Promise<void> {
     for (const entry of manifest.entries) {
-      const storagePath = `models/${modelId}/${entry.relativePath}`;
+      const storagePath = getStoragePath(entry.relativePath);
       const sourcePath = path.join(extractDir, entry.relativePath);
       const readStream = fs.createReadStream(sourcePath);
       await storage.store(storagePath, readStream);

@@ -11,6 +11,8 @@ export const uploadInitSchema = z.object({
   ),
   totalSize: z.number().int().positive().max(5 * 1024 * 1024 * 1024), // 5GB
   totalChunks: z.number().int().positive().max(1000),
+  libraryId: z.string().uuid(),
+  metadata: z.record(z.string()).optional(),
 });
 
 export const chunkIndexParamsSchema = z.object({

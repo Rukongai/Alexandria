@@ -9,6 +9,7 @@ import { modelService } from './model.service.js';
 import { metadataService } from './metadata.service.js';
 import { collectionService } from './collection.service.js';
 import { storageService } from './storage.service.js';
+import { libraryService } from './library.service.js';
 import { createImportStrategy } from './import-strategy.service.js';
 import { parsePattern } from '../utils/pattern-parser.js';
 import { stripArchiveExtension } from '../utils/archive.js';
@@ -22,6 +23,8 @@ export class IngestionService {
   async handleUpload(
     file: { tempFilePath: string; originalFilename: string },
     userId: string,
+    libraryId: string,
+    metadata?: Record<string, string>,
   ): Promise<{ modelId: string; jobId: string }> {
     const name = stripArchiveExtension(file.originalFilename);
     const slug = generateSlug(name);
@@ -33,7 +36,12 @@ export class IngestionService {
       sourceType: 'archive_upload',
       status: 'processing',
       originalFilename: file.originalFilename,
+      libraryId,
     });
+
+    if (metadata && Object.keys(metadata).length > 0) {
+      await metadataService.setModelMetadata(modelId, metadata);
+    }
 
     let jobId: string;
     try {
@@ -42,6 +50,9 @@ export class IngestionService {
         tempFilePath: file.tempFilePath,
         originalFilename: file.originalFilename,
         userId,
+        libraryId,
+        modelSlug: slug,
+        metadata,
       });
     } catch (err) {
       logger.error({ modelId, error: String(err) }, 'Failed to enqueue ingestion job');
@@ -59,6 +70,9 @@ export class IngestionService {
     tempFilePath: string,
     userId: string,
     job: Job<IngestionJobPayload>,
+    libraryId: string,
+    modelSlug: string,
+    metadata?: Record<string, string>,
   ): Promise<void> {
     const extractDir = `${tempFilePath}_extracted`;
 
@@ -71,12 +85,25 @@ export class IngestionService {
       await job.updateProgress(20);
       logger.info({ modelId, jobId, fileCount: manifest.entries.length }, 'Archive extracted');
 
-      // Step 2: Copy files to managed storage (delegated to FileProcessingService)
+      // Step 2: Resolve library-aware storage path for this model
+      const library = await libraryService.getLibraryById(libraryId);
+      const metadataValues = await metadataService.getModelMetadata(modelId);
+      const metadataMap = Object.fromEntries(metadataValues.map((v) => [v.fieldSlug, String(v.value)]));
+      const storageRoot = storageService.getStorageRoot();
+      const absoluteModelDir = storageService.resolveModelPath(
+        library.name,
+        modelSlug,
+        metadataMap,
+        library.pathTemplate,
+        storageRoot,
+      );
+
+      // Step 3: Copy files to managed storage using library path
       await fileProcessingService.copyManifestToStorage(
         extractDir,
-        modelId,
         manifest,
         storageService,
+        (relativePath) => path.relative(storageRoot, path.join(absoluteModelDir, relativePath)),
       );
       await job.updateProgress(50);
 
@@ -87,14 +114,14 @@ export class IngestionService {
         fileType: entry.fileType,
         mimeType: entry.mimeType,
         sizeBytes: entry.sizeBytes,
-        storagePath: `models/${modelId}/${entry.relativePath}`,
+        storagePath: path.relative(storageRoot, path.join(absoluteModelDir, entry.relativePath)),
         hash: entry.hash,
       }));
 
-      // Step 3: Insert model file records
+      // Step 4: Insert model file records
       const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
 
-      // Step 4: Generate thumbnails for image files
+      // Step 5: Generate thumbnails for image files
       await job.updateProgress(75);
       await this.generateAndStoreThumbnails(modelId, modelFileInputs, createdFiles, extractDir);
 
@@ -156,7 +183,7 @@ export class IngestionService {
       pattern: importConfig.pattern,
       strategy: importConfig.strategy,
       userId,
-      ...(importConfig.libraryId !== undefined && { libraryId: importConfig.libraryId }),
+      libraryId: importConfig.libraryId,
     });
 
     logger.info({ jobId, sourcePath: importConfig.sourcePath, pattern: importConfig.pattern }, 'Folder import job enqueued');
@@ -266,7 +293,7 @@ export class IngestionService {
     importStrategy: import('./import-strategy.service.js').IImportStrategy,
     userId: string,
     job: Job,
-    libraryId?: string,
+    libraryId: string,
   ): Promise<void> {
     const slug = generateSlug(discovered.name);
 
@@ -277,7 +304,7 @@ export class IngestionService {
       userId,
       sourceType: 'folder_import',
       status: 'processing',
-      ...(libraryId !== undefined && { libraryId }),
+      libraryId,
     });
 
     try {
@@ -288,11 +315,21 @@ export class IngestionService {
       );
       const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
 
+      // Resolve library-aware storage path for this model
+      const library = await libraryService.getLibraryById(libraryId);
+      const storageRoot = storageService.getStorageRoot();
+      const absoluteModelDir = storageService.resolveModelPath(
+        library.name,
+        slug,
+        discovered.metadata,
+        library.pathTemplate,
+        storageRoot,
+      );
+
       // Execute import strategy to copy/link files into managed storage
       for (const entry of entries) {
         const srcFile = path.join(discovered.sourcePath, entry.relativePath);
-        const storagePath = `models/${modelId}/${entry.relativePath}`;
-        const targetPath = storageService.resolveStoragePath(storagePath);
+        const targetPath = path.join(absoluteModelDir, entry.relativePath);
         await importStrategy.execute(srcFile, targetPath);
       }
 
@@ -303,7 +340,7 @@ export class IngestionService {
         fileType: entry.fileType,
         mimeType: entry.mimeType,
         sizeBytes: entry.sizeBytes,
-        storagePath: `models/${modelId}/${entry.relativePath}`,
+        storagePath: path.relative(storageRoot, path.join(absoluteModelDir, entry.relativePath)),
         hash: entry.hash,
       }));
 

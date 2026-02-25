@@ -86,14 +86,14 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      const { filename, totalSize, totalChunks } = parseResult.data;
+      const { filename, totalSize, totalChunks, libraryId, metadata } = parseResult.data;
       const userId = request.user!.id;
 
       if (!detectArchiveExtension(filename)) {
         throw validationError('Only .zip, .rar, .7z, and .tar.gz archives are supported');
       }
 
-      const result = uploadService.initUpload(filename, totalSize, totalChunks, userId);
+      const result = uploadService.initUpload(filename, totalSize, totalChunks, userId, libraryId, metadata);
       return reply.status(201).send({ data: result, meta: null, errors: null });
     },
   );
@@ -142,10 +142,13 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const { uploadId } = parseResult.data;
       const userId = request.user!.id;
 
+      const { libraryId, metadata } = uploadService.getSessionInfo(uploadId, userId);
       const { tempFilePath, originalFilename } = await uploadService.assembleFile(uploadId, userId);
       const { modelId, jobId } = await ingestionService.handleUpload(
         { tempFilePath, originalFilename },
         userId,
+        libraryId,
+        metadata,
       );
 
       return reply.status(202).send({ data: { modelId, jobId }, meta: null, errors: null });
@@ -168,6 +171,14 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
         throw validationError('Only .zip, .rar, .7z, and .tar.gz archives are supported');
       }
 
+      const libraryId = (data.fields?.libraryId as { value: string } | undefined)?.value;
+      if (!libraryId) {
+        throw validationError('libraryId is required', 'libraryId');
+      }
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(libraryId)) {
+        throw validationError('libraryId must be a valid UUID', 'libraryId');
+      }
+
       // Save upload to a temp file so the ingestion worker can access it later
       const tempDir = os.tmpdir();
       const tempFilePath = path.join(tempDir, `upload_${crypto.randomUUID()}_${originalFilename}`);
@@ -183,6 +194,7 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const { modelId, jobId } = await ingestionService.handleUpload(
         { tempFilePath, originalFilename },
         userId,
+        libraryId,
       );
 
       return reply.status(202).send({ data: { modelId, jobId }, meta: null, errors: null });

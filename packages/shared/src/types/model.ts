@@ -120,14 +120,6 @@ export interface JobStatus {
 export type ImportStrategy = 'hardlink' | 'copy' | 'move';
 export type ImportPhase = 'scanning' | 'importing' | 'processing' | 'complete' | 'error';
 
-export interface ImportConfig {
-  sourcePath: string;
-  pattern: string;
-  strategy: ImportStrategy;
-  deleteAfterUpload?: boolean;
-  libraryId?: string;
-}
-
 export interface ParsedPatternSegment {
   type: 'collection' | 'metadata' | 'model';
   metadataSlug?: string;
