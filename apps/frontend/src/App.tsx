@@ -9,6 +9,7 @@ import { CollectionsPage } from './pages/CollectionsPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UploadPage } from './pages/UploadPage';
+import { LibrariesPage } from './pages/LibrariesPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -46,6 +47,7 @@ export default function App() {
         <Route path="collections/:id" element={<CollectionDetailPage />} />
         <Route path="upload" element={<UploadPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="libraries" element={<LibrariesPage />} />
       </Route>
       {/* Catch-all */}
       <Route path="*" element={<Navigate to="/" replace />} />

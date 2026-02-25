@@ -1216,6 +1216,193 @@ Delete multiple models and clean up their storage in a single request. Storage c
 
 ---
 
+## Libraries
+
+Libraries are admin-managed storage namespaces that own the physical storage layout for model files. A library has a root path on the server filesystem and a path template that determines where files are stored within that root.
+
+### GET /libraries
+
+List all libraries.
+
+**Auth required:** Yes
+
+**Response (200):**
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "name": "Main Library",
+      "slug": "main-library-a1b2",
+      "rootPath": "/data/libraries",
+      "pathTemplate": "{library}/{metadata.artist}/{model}",
+      "createdAt": "2026-02-01T12:00:00.000Z",
+      "updatedAt": "2026-02-01T12:00:00.000Z"
+    }
+  ],
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is an array of `Library` objects.
+
+---
+
+### POST /libraries
+
+Create a new library.
+
+**Auth required:** Yes
+
+**Request body:**
+
+```json
+{
+  "name": "Main Library",
+  "rootPath": "/data/libraries",
+  "pathTemplate": "{library}/{metadata.artist}/{model}"
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `name` | string | Required; 1–255 characters; must be unique |
+| `rootPath` | string | Required; absolute filesystem path |
+| `pathTemplate` | string | Required; path template string (see token rules below) |
+
+**Path template token rules:**
+
+- `{library}` must appear before any other variable token.
+- `{model}` must be the final token in the template.
+- Intermediate tokens must use `{metadata.<slug>}` format, where slug is lowercase alphanumeric plus hyphens.
+- Missing metadata values at resolution time are replaced with `_unknown`.
+
+Example: `{library}/{metadata.artist}/{model}` resolves to `Main Library/Maker Name/Dragon Bust`.
+
+**Response (201):**
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "name": "Main Library",
+    "slug": "main-library-a1b2",
+    "rootPath": "/data/libraries",
+    "pathTemplate": "{library}/{metadata.artist}/{model}",
+    "createdAt": "2026-02-01T12:00:00.000Z",
+    "updatedAt": "2026-02-01T12:00:00.000Z"
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is the created `Library` object.
+
+---
+
+### GET /libraries/:id
+
+Retrieve a single library by ID.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — library UUID
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "name": "Main Library",
+    "slug": "main-library-a1b2",
+    "rootPath": "/data/libraries",
+    "pathTemplate": "{library}/{metadata.artist}/{model}",
+    "createdAt": "2026-02-01T12:00:00.000Z",
+    "updatedAt": "2026-02-01T12:00:00.000Z"
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is a `Library` object. Returns `404` if the library does not exist.
+
+---
+
+### PATCH /libraries/:id
+
+Update a library's name, root path, or path template. Changing `rootPath` or `pathTemplate` does not re-path models already stored in the library — this is a known MVP limitation.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — library UUID
+
+**Request body:**
+
+```json
+{
+  "name": "Renamed Library",
+  "rootPath": "/data/new-location",
+  "pathTemplate": "{library}/{model}"
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `name` | string (optional) | 1–255 characters; must be unique |
+| `rootPath` | string (optional) | Absolute filesystem path |
+| `pathTemplate` | string (optional) | Path template string; same token rules as POST |
+
+**Response (200):** Returns the updated `Library` object in the same shape as `GET /libraries/:id`.
+
+---
+
+### DELETE /libraries/:id
+
+Delete a library record. Models assigned to this library are not deleted — their `libraryId` is set to `null`.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — library UUID
+
+**Response (200):**
+
+```json
+{
+  "data": null,
+  "meta": null,
+  "errors": null
+}
+```
+
+---
+
+### GET /libraries/:id/models
+
+List the IDs of all models assigned to a library.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — library UUID
+
+**Response (200):**
+
+```json
+{
+  "data": ["uuid-1", "uuid-2", "uuid-3"],
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is an array of model UUID strings. Full model cards require querying `GET /models` with the relevant filter. PresenterService integration for this endpoint is planned for a future phase.
+
+---
+
 ## Health Check
 
 ### GET /health

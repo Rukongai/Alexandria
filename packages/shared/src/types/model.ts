@@ -8,6 +8,7 @@ export interface Model {
   slug: string;
   description: string | null;
   userId: string;
+  libraryId: string | null;
   sourceType: ModelSourceType;
   status: ModelStatus;
   originalFilename: string | null;
@@ -124,6 +125,7 @@ export interface ImportConfig {
   pattern: string;
   strategy: ImportStrategy;
   deleteAfterUpload?: boolean;
+  libraryId?: string;
 }
 
 export interface ParsedPatternSegment {

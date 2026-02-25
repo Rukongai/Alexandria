@@ -156,6 +156,7 @@ export class IngestionService {
       pattern: importConfig.pattern,
       strategy: importConfig.strategy,
       userId,
+      ...(importConfig.libraryId !== undefined && { libraryId: importConfig.libraryId }),
     });
 
     logger.info({ jobId, sourcePath: importConfig.sourcePath, pattern: importConfig.pattern }, 'Folder import job enqueued');
@@ -165,7 +166,7 @@ export class IngestionService {
   async processFolderImportJob(
     job: Job<FolderImportJobPayload>,
   ): Promise<void> {
-    const { sourcePath, pattern, strategy, userId } = job.data;
+    const { sourcePath, pattern, strategy, userId, libraryId } = job.data;
     const parsedPattern = parsePattern(pattern);
     const importStrategy = createImportStrategy(strategy);
 
@@ -188,7 +189,7 @@ export class IngestionService {
 
       for (const model of discovered) {
         try {
-          await this.processDiscoveredModel(model, importStrategy, userId, job);
+          await this.processDiscoveredModel(model, importStrategy, userId, job, libraryId);
           processed++;
         } catch (err) {
           failed++;
@@ -265,6 +266,7 @@ export class IngestionService {
     importStrategy: import('./import-strategy.service.js').IImportStrategy,
     userId: string,
     job: Job,
+    libraryId?: string,
   ): Promise<void> {
     const slug = generateSlug(discovered.name);
 
@@ -275,6 +277,7 @@ export class IngestionService {
       userId,
       sourceType: 'folder_import',
       status: 'processing',
+      ...(libraryId !== undefined && { libraryId }),
     });
 
     try {

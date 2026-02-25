@@ -15,6 +15,7 @@ export interface FolderImportJobPayload {
   pattern: string;
   strategy: ImportStrategy;
   userId: string;
+  libraryId?: string;
 }
 
 const INGESTION_QUEUE = 'ingestion';

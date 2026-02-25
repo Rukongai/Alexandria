@@ -4,7 +4,7 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { Readable } from 'node:stream';
-import { StorageService } from './storage.service.js';
+import { sanitizePathSegment, StorageService } from './storage.service.js';
 import { AppError } from '../utils/errors.js';
 
 let tmpDir: string;
@@ -135,5 +135,188 @@ describe('StorageService.exists', () => {
   it('should return false for a nested path that does not exist', async () => {
     const result = await service.exists('nested/path/absent.txt');
     expect(result).toBe(false);
+  });
+});
+
+describe('sanitizePathSegment', () => {
+  it('should strip forward slashes', () => {
+    expect(sanitizePathSegment('foo/bar')).toBe('foo_bar');
+  });
+
+  it('should strip backslashes', () => {
+    expect(sanitizePathSegment('foo\\bar')).toBe('foo_bar');
+  });
+
+  it('should strip null bytes', () => {
+    expect(sanitizePathSegment('foo\x00bar')).toBe('foo_bar');
+  });
+
+  it('should strip Windows-illegal characters', () => {
+    expect(sanitizePathSegment('foo<>:"|?*bar')).toBe('foo_bar');
+  });
+
+  it('should collapse consecutive underscores into one', () => {
+    expect(sanitizePathSegment('foo___bar')).toBe('foo_bar');
+  });
+
+  it('should collapse underscores produced by stripping multiple consecutive illegal characters', () => {
+    expect(sanitizePathSegment('foo/\\bar')).toBe('foo_bar');
+  });
+
+  it('should trim leading underscores', () => {
+    expect(sanitizePathSegment('_foo')).toBe('foo');
+  });
+
+  it('should trim trailing underscores', () => {
+    expect(sanitizePathSegment('foo_')).toBe('foo');
+  });
+
+  it('should trim both leading and trailing underscores', () => {
+    expect(sanitizePathSegment('_foo_')).toBe('foo');
+  });
+
+  it('should return _unknown for empty input', () => {
+    expect(sanitizePathSegment('')).toBe('_unknown');
+  });
+
+  it('should return _unknown when all characters are illegal', () => {
+    expect(sanitizePathSegment('/\\\x00<>:"|?*')).toBe('_unknown');
+  });
+
+  it('should return _unknown when input collapses to only underscores', () => {
+    expect(sanitizePathSegment('___')).toBe('_unknown');
+  });
+
+  it('should preserve safe characters unchanged', () => {
+    expect(sanitizePathSegment('My Artist Name')).toBe('My Artist Name');
+  });
+});
+
+describe('StorageService.resolveModelPath', () => {
+  // Uses a fixed rootPath — no real filesystem access needed for these unit tests
+  const rootPath = '/storage/root';
+  let modelService: StorageService;
+
+  beforeEach(() => {
+    modelService = new StorageService(rootPath);
+  });
+
+  it('should resolve {library} token correctly', () => {
+    const result = modelService.resolveModelPath(
+      'My Library',
+      'My Model',
+      {},
+      '{library}/{model}',
+      rootPath,
+    );
+    expect(result).toBe(path.resolve(rootPath, 'My Library', 'My Model'));
+  });
+
+  it('should resolve {model} token correctly', () => {
+    const result = modelService.resolveModelPath(
+      'lib',
+      'Cool Model v2',
+      {},
+      '{library}/{model}',
+      rootPath,
+    );
+    expect(result).toBe(path.resolve(rootPath, 'lib', 'Cool Model v2'));
+  });
+
+  it('should resolve {metadata.<slug>} tokens with matching metadata values', () => {
+    const result = modelService.resolveModelPath(
+      'lib',
+      'model',
+      { artist: 'Van Gogh' },
+      '{library}/{metadata.artist}/{model}',
+      rootPath,
+    );
+    expect(result).toBe(path.resolve(rootPath, 'lib', 'Van Gogh', 'model'));
+  });
+
+  it('should sanitize metadata values when resolving {metadata.<slug>} tokens', () => {
+    const result = modelService.resolveModelPath(
+      'lib',
+      'model',
+      { artist: 'Evil/Artist' },
+      '{library}/{metadata.artist}/{model}',
+      rootPath,
+    );
+    expect(result).toBe(path.resolve(rootPath, 'lib', 'Evil_Artist', 'model'));
+  });
+
+  it('should use _unknown for missing metadata values', () => {
+    const result = modelService.resolveModelPath(
+      'lib',
+      'model',
+      {},
+      '{library}/{metadata.artist}/{model}',
+      rootPath,
+    );
+    expect(result).toBe(path.resolve(rootPath, 'lib', '_unknown', 'model'));
+  });
+
+  it('should use _unknown for empty string metadata values', () => {
+    const result = modelService.resolveModelPath(
+      'lib',
+      'model',
+      { artist: '' },
+      '{library}/{metadata.artist}/{model}',
+      rootPath,
+    );
+    expect(result).toBe(path.resolve(rootPath, 'lib', '_unknown', 'model'));
+  });
+
+  it('should correctly join rootPath with resolved template', () => {
+    const result = modelService.resolveModelPath(
+      'mylib',
+      'mymodel',
+      {},
+      '{library}/{model}',
+      rootPath,
+    );
+    expect(result.startsWith(path.resolve(rootPath))).toBe(true);
+  });
+
+  it('should resolve multiple metadata tokens in one template', () => {
+    const result = modelService.resolveModelPath(
+      'lib',
+      'model',
+      { artist: 'Rembrandt', category: 'painting' },
+      '{library}/{metadata.artist}/{metadata.category}/{model}',
+      rootPath,
+    );
+    expect(result).toBe(path.resolve(rootPath, 'lib', 'Rembrandt', 'painting', 'model'));
+  });
+
+  it('should throw AppError when resolved path escapes rootPath due to traversal in library name', () => {
+    // sanitizePathSegment strips path separators, but double-dots without separators pass through.
+    // A library name of '..' becomes '..' after sanitization (no illegal chars), allowing escape.
+    expect(() =>
+      modelService.resolveModelPath(
+        '..',
+        'model',
+        {},
+        '{library}/{model}',
+        rootPath,
+      ),
+    ).toThrow(AppError);
+  });
+
+  it('should throw AppError with code STORAGE_ERROR on path traversal escape', () => {
+    let thrown: unknown;
+    try {
+      modelService.resolveModelPath(
+        '..',
+        'model',
+        {},
+        '{library}/{model}',
+        rootPath,
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(AppError);
+    expect((thrown as AppError).code).toBe('STORAGE_ERROR');
   });
 });
