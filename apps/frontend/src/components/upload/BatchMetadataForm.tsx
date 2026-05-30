@@ -63,16 +63,22 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
   }
 
   async function handleSubmit() {
+    // collectionId and newCollectionName are mutually exclusive: if an existing
+    // collection is selected, don't also send newCollectionName.
+    const hasExistingCollection = !!form.collectionId && form.collectionId !== '__new__';
     const batchMetadata: BatchUploadMetadata = {
-      ...(form.collectionId && form.collectionId !== '__new__' ? { collectionId: form.collectionId } : {}),
-      ...(form.newCollectionName.trim() ? { newCollectionName: form.newCollectionName.trim() } : {}),
+      ...(hasExistingCollection ? { collectionId: form.collectionId } : {}),
+      ...(!hasExistingCollection && form.newCollectionName.trim()
+        ? { newCollectionName: form.newCollectionName.trim() }
+        : {}),
       ...(form.artist.trim() ? { artist: form.artist.trim() } : {}),
       ...(form.tags.length > 0 ? { tags: form.tags } : {}),
       options: {
         markPreSupported: form.markPreSupported,
         autoThumbnails: form.autoThumbnails,
         markNsfw: form.markNsfw,
-        skipDuplicatesByHash: form.skipDuplicatesByHash,
+        // skipDuplicatesByHash is sent as false — dedup by hash is not yet implemented.
+        skipDuplicatesByHash: false,
       },
     };
 
@@ -224,8 +230,10 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
           <OptionCheck
             id="skip-dupes"
             label="Skip duplicates (by hash)"
-            checked={form.skipDuplicatesByHash}
-            onChange={(v) => setForm((f) => ({ ...f, skipDuplicatesByHash: v }))}
+            checked={false}
+            onChange={() => {}}
+            disabled
+            note="coming soon"
           />
         </div>
       </FormSection>
@@ -292,24 +300,27 @@ function OptionCheck({
   checked,
   onChange,
   note,
+  disabled,
 }: {
   id: string;
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   note?: string;
+  disabled?: boolean;
 }) {
   return (
     <label
       htmlFor={id}
-      className="flex items-center gap-2.5 py-1.5 px-1 cursor-pointer rounded"
+      className={`flex items-center gap-2.5 py-1.5 px-1 rounded ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
     >
       <Checkbox
         id={id}
         checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
+        onChange={(e) => !disabled && onChange(e.target.checked)}
+        disabled={disabled}
       />
-      <span className="text-[12.5px]" style={{ color: checked ? 'var(--ax-fg)' : 'var(--ax-fg-muted)' }}>
+      <span className="text-[12.5px]" style={{ color: checked && !disabled ? 'var(--ax-fg)' : 'var(--ax-fg-muted)' }}>
         {label}
         {note && (
           <span className="ml-1.5 text-[11px]" style={{ color: 'var(--ax-fg-subtle)' }}>

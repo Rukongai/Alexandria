@@ -10,6 +10,7 @@ import type {
   ImportSession,
   BatchUploadMetadata,
   ScanUploadResponse,
+  UploadInitResponse,
 } from '@alexandria/shared';
 import { get, post, patch, del, putRaw } from './client';
 import { buildQueryString } from '../lib/query';
@@ -67,7 +68,7 @@ export async function scanUpload(
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
   // 1. Initiate chunked upload session
-  const initResponse = await post<{ uploadId: string; expiresAt: string }>(
+  const initResponse = await post<UploadInitResponse>(
     '/models/upload/init',
     { filename: file.name, totalSize: file.size, totalChunks },
   );

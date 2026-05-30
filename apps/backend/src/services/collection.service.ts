@@ -84,6 +84,38 @@ export class CollectionService {
   }
 
   /**
+   * Verify that a collection exists, belongs to the given user, and is in the
+   * given library. Throws NOT_FOUND if any check fails — same error shape
+   * regardless of which check failed so callers cannot enumerate other users'
+   * collection IDs.
+   *
+   * Used by handleCommit to gate cross-tenant collection writes before
+   * the commit job is enqueued (so the caller gets a 4xx rather than a
+   * silent non-fatal failure inside the worker).
+   */
+  async requireOwnedCollection(
+    collectionId: string,
+    userId: string,
+    libraryId: string,
+  ): Promise<void> {
+    const [row] = await db
+      .select({ id: collections.id })
+      .from(collections)
+      .where(
+        and(
+          eq(collections.id, collectionId),
+          eq(collections.userId, userId),
+          eq(collections.libraryId, libraryId),
+        ),
+      )
+      .limit(1);
+
+    if (!row) {
+      throw notFound('Collection not found');
+    }
+  }
+
+  /**
    * Add a single model to a collection. Idempotent.
    * Preserved for folder import backward compatibility.
    */

@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import type { FileType } from '@alexandria/shared';
 import { eq, inArray } from 'drizzle-orm';
 import { buildApp } from '../app.js';
 import { db } from '../db/index.js';
@@ -519,7 +520,7 @@ describe('POST /models/import-sessions/:id/commit', () => {
         {
           filename: 'model.stl',
           relativePath: 'model.stl',
-          fileType: 'stl',
+          fileType: 'stl' as FileType,
           mimeType: 'model/stl',
           sizeBytes: fs.statSync(stlPath).size,
           hash: 'abc123test',

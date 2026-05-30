@@ -62,12 +62,18 @@ export class JobService {
 
     this.ingestionQueue = new Queue(INGESTION_QUEUE, { connection, defaultJobOptions });
     this.importQueue = new Queue(IMPORT_QUEUE, { connection, defaultJobOptions });
-    // Scan runs once (no retry — a corrupt archive won't fix itself); commit retries.
+    // Scan runs once — a corrupt archive won't fix itself on retry.
     this.importScanQueue = new Queue(IMPORT_SCAN_QUEUE, {
       connection,
       defaultJobOptions: { attempts: 1 },
     });
-    this.importCommitQueue = new Queue(IMPORT_COMMIT_QUEUE, { connection, defaultJobOptions });
+    // Commit also runs once — retrying processCommitJob re-runs createModelFiles,
+    // which produces duplicate ModelFile rows and double-counts totalSizeBytes.
+    // Idempotent retry support is deferred; for now, attempts: 1 prevents duplication.
+    this.importCommitQueue = new Queue(IMPORT_COMMIT_QUEUE, {
+      connection,
+      defaultJobOptions: { attempts: 1 },
+    });
   }
 
   async enqueueIngestionJob(payload: IngestionJobPayload): Promise<string> {

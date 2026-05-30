@@ -161,6 +161,13 @@ export class IngestionService {
       throw validationError('Import session belongs to a different library');
     }
 
+    // B1: validate collectionId ownership synchronously here, before enqueuing,
+    // so an unauthorized or non-existent collectionId returns a 4xx to the
+    // caller rather than silently failing inside the non-fatal worker catch.
+    if (batchMetadata?.collectionId) {
+      await collectionService.requireOwnedCollection(batchMetadata.collectionId, userId, libraryId);
+    }
+
     const name = stripArchiveExtension(session.originalFilename);
     const slug = generateSlug(name);
     const { id: modelId } = await modelService.createModel({
