@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, primaryKey, index, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { users } from './user.js';
 import { models } from './model.js';
+import { libraries } from './library.js';
 
 // Collections table — hierarchical organizational structure for models (per D8).
 // Collections are not metadata — they represent "where you put a model", not "what it is".
@@ -24,6 +25,9 @@ export const collections = pgTable(
     ),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    // Library this collection belongs to. Nullable during the migration window;
+    // a later migration backfills and flips to NOT NULL.
+    libraryId: uuid('library_id').references(() => libraries.id),
   },
   (table) => [
     // Lookup by slug for URL-based access
@@ -32,6 +36,8 @@ export const collections = pgTable(
     index('collections_user_id_idx').on(table.userId),
     // Traverse the collection tree: find children of a parent
     index('collections_parent_collection_id_idx').on(table.parentCollectionId),
+    // Filter collections belonging to a library (library browse query)
+    index('collections_library_id_idx').on(table.libraryId),
   ],
 );
 
