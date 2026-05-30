@@ -46,16 +46,16 @@ from the start so P5 is mostly UI + invites, not a high-risk query migration.
 shadcn's existing CSS vars at the `--ax-*` vars so all existing components inherit the new design
 with no rewrite, while keeping runtime palette-switching + density.
 
-| Phase | Title | Backend? | Summary |
-|-------|-------|----------|---------|
-| **P0** | Design System Foundation | no | Port tokens, bridge to shadcn, palette/theme/density state, fonts, icon strategy, verification sandbox. **(this spec)** |
-| **P1** | App Shell + Pivot Workspace | thin Library layer | Dark rail + axis picker + main pane/header; Pivot by Collections / Tags / Artists end-to-end; view toggle (grid/list/group), density, thumbnails toggle. Smart axis deferred. |
-| **P2** | Model Detail + 3D Viewer | no | Restyle detail with multi-hierarchy breadcrumb; 3D modal (files already served). |
-| **P3** | Workflow Pages | no | Restyle Upload + global Search. |
-| **P4** | Smart Collections | yes | New entity + rule engine (extends SearchService); Smart pivot axis + composer. |
-| **P5** | Multi-library | yes | Surface the Library layer: All-Libraries home, switcher, `/lib/:id` routing, per-library scoping in UI. |
-| **P6** | Users / Roles / Admin | yes | Multi-user + roles in AuthService; admin pages (libraries, users, bulk edit, auto-tagging). |
-| **P7** | Empty states + polish | no | Empty library, empty collections, final pass. |
+| Phase | Title | Backend? | Status | Summary |
+|-------|-------|----------|--------|---------|
+| **P0** | Design System Foundation | no | Shipped | Port tokens, bridge to shadcn, palette/theme/density state, fonts, icon strategy, verification sandbox. **(this spec)** |
+| **P1** | App Shell + Pivot Workspace | thin Library layer | Shipped | Dark rail + axis picker + main pane/header; Pivot by Collections / Tags / Artists end-to-end; view toggle (grid/list/group), density, thumbnails toggle. Smart axis deferred. |
+| **P2** | Model Detail + 3D Viewer | no | Shipped | Restyle detail with multi-hierarchy breadcrumb; 3D modal (files already served). |
+| **P3** | Workflow Pages | no | Pending | Restyle Upload + global Search. |
+| **P4** | Smart Collections | yes | Pending | New entity + rule engine (extends SearchService); Smart pivot axis + composer. |
+| **P5** | Multi-library | yes | Pending | Surface the Library layer: All-Libraries home, switcher, `/lib/:id` routing, per-library scoping in UI. |
+| **P6** | Users / Roles / Admin | yes | Pending | Multi-user + roles in AuthService; admin pages (libraries, users, bulk edit, auto-tagging). |
+| **P7** | Empty states + polish | no | Pending | Empty library, empty collections, final pass. |
 
 ---
 

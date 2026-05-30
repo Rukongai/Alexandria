@@ -374,6 +374,16 @@ Color tokens are defined as CSS custom properties in `src/index.css`. shadcn/ui 
 
 `ThemeProvider` must wrap the app root in `main.tsx` for `useTheme` to be available anywhere in the tree.
 
+### three.js and the 3D viewer
+
+three.js must never be imported statically outside `ModelViewer3DScene`. That module is the deliberate isolation boundary: it is reached only via `React.lazy(() => import('./ModelViewer3DScene'))` in `ModelViewer3DModal`, which causes Vite to emit the entire three.js bundle as a separate async chunk. Any static import elsewhere pulls the ~924 KB chunk into the critical path.
+
+If new three.js functionality is needed (e.g., an additional loader or post-processing pass), add it inside `ModelViewer3DScene` or in a co-located module that `ModelViewer3DScene` imports directly. Do not import from `three`, `@react-three/fiber`, or `@react-three/drei` anywhere else in the codebase.
+
+### Icon component props: `React.ComponentType` not `React.ElementType`
+
+Installing `@react-three/fiber` augments the global React JSX namespace with three.js element names. This means `React.ElementType` becomes ambiguous for icon props — TypeScript can no longer distinguish a React component from a three.js primitive. Use `React.ComponentType<{ className?: string }>` instead of `React.ElementType` whenever a prop is intended to receive an icon (or any other React component rendered as JSX). This pattern is in use in `ViewSwitch.tsx`, `PivotMain.tsx`, and `PanelTabs.tsx`.
+
 ---
 
 ## Testing Conventions

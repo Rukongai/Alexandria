@@ -46,6 +46,11 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 │   AppShell: PivotRail + <Outlet>                         │
 │   PivotRail: AxisPicker + AxisFacetBody + UserMenu       │
 │   PivotMain: top bar + context header + results grid     │
+│                                                          │
+│   ModelDetailPage: ModelBreadcrumb + ModelHero +         │
+│     ModelDetailPanel (Info/Collections/Files tabs)       │
+│   ModelViewer3DModal → lazy ModelViewer3DScene (three.js)│
+│   lib/model-files.ts: STL path helpers (pure)           │
 └──────────────────────┬──────────────────────────────────┘
                        │ HTTP (JSON, multipart)
 ┌──────────────────────▼──────────────────────────────────┐
@@ -364,6 +369,49 @@ Routes unchanged from P0: `/models/:id`, `/collections`, `/collections/:id`, `/u
 
 ---
 
+## Frontend: Model Detail Page (P2)
+
+The Model Detail page (`pages/ModelDetailPage.tsx`) was fully redesigned in P2. It fetches both `GET /models/:id` and `GET /models/:id/files` in parallel and composes three top-level regions:
+
+1. **Header** — a back link to the library plus `ModelBreadcrumb`, which renders `Library › <Collection> › <Model name>`. The collection crumb is a live navigation link; the model name is the current-page marker. The collection crumb is omitted when the model belongs to no collections.
+
+2. **Hero column** — the existing `ImageGallery` plus a "View in 3D" button. The button is hidden when the model has no STL files. When the model has multiple STLs the button opens the viewer on the first file in tree order; per-file 3D affordances in the file tree open a specific file.
+
+3. **Tabbed right panel** — `ModelDetailPanel` hosts `PanelTabs` (a full-width segmented control) with three tabs: Info (model name, description, metadata), Collections, and Files (the file tree). The panel is `380–420 px` fixed width alongside the hero column at `lg:` breakpoint and stacked on smaller screens.
+
+### ModelBreadcrumb
+
+`components/models/ModelBreadcrumb.tsx` renders the three-level hierarchy breadcrumb. It accepts the model's primary collection (`CollectionSummary | null`) and the model name. The intermediate collection crumb links to `/collections/:id`. Stylistically it mirrors the pivot workspace `Breadcrumb` but uses real navigation links.
+
+### ModelHero
+
+`components/models/ModelHero.tsx` wraps `ImageGallery` and the "View in 3D" action. It receives `stlFiles: StlFileRef[]` collected from the file tree and calls `onOpenViewer(primaryStl)` when the button is clicked.
+
+### ModelDetailPanel and PanelTabs
+
+`components/models/ModelDetailPanel.tsx` is the tabbed right panel. `components/models/PanelTabs.tsx` is the generic full-width segmented control it uses. `PanelTabs` is typed with a string union for tab values and accepts icon components typed as `React.ComponentType<{ className?: string }>` (see the gotcha note in the Conventions doc).
+
+### 3D Viewer
+
+The 3D viewer is an in-browser STL renderer built on `three` + `@react-three/fiber` + `@react-three/drei`. It is composed of two layers:
+
+- `ModelViewer3DModal` — the dialog shell. Manages the active STL selection, a file switcher strip when the model has multiple STLs, and an error boundary around the scene. It loads the scene module via `React.lazy`.
+- `ModelViewer3DScene` — the actual r3f scene: a `Canvas` with ambient and directional lights, `OrbitControls`, and a `Bounds` wrapper that auto-fits the loaded geometry. This is the **only module that imports `three`** — the rest of the app does not touch three.js.
+
+Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate async chunk (~924 KB). The chunk is fetched only when the viewer first opens. Nothing in the critical path is blocked.
+
+### lib/model-files.ts
+
+`lib/model-files.ts` contains three pure helper functions for working with STL files from the file tree:
+
+- `collectStlFiles(tree, modelId)` — walks a `FileTreeNode[]` tree depth-first and returns a `StlFileRef[]` for every STL file. It reconstructs each file's relative path from the tree (since `FileTreeNode` nodes have only a `name`, not a `relativePath`) by accumulating ancestor directory names during the walk.
+- `getPrimaryStl(stls)` — returns the first `StlFileRef` or `null`.
+- `makeStlRef(modelId, segments)` — builds a `StlFileRef` from path segments, including the `/api/files/models/:modelId/:path` URL. This is the single source of truth for STL file URLs in the frontend.
+
+`StlFileRef` is defined in this module: `{ name: string, relativePath: string, url: string }`. It is a frontend-only type and does not exist in shared types.
+
+---
+
 ## API Design
 
 ### Conventions
@@ -482,3 +530,6 @@ The `requireLibrary` preHandler derives `libraryId` from the authenticated sessi
 
 ### D14: Pivot axis is URL state, not query state
 The active pivot axis (`?axis=collections|artists|tags`) is stored in the URL so it survives navigation and is shareable, but it is excluded from the React Query key. The axis controls how the rail and context header look; it does not change the underlying API request. Only the filter values derived from an axis selection (e.g., `collectionId`, `meta_artist`) enter the query key and trigger refetches.
+
+### D15: three.js is isolated in a single lazy-loaded module
+`ModelViewer3DScene` is the only file in the frontend that imports `three`, `@react-three/fiber`, or `@react-three/drei`. All other code reaches it through `ModelViewer3DModal` via `React.lazy`, which causes Vite to emit three.js as a separate async chunk (~924 KB). The chunk is never fetched unless the 3D viewer is opened. This isolation is intentional: adding any static import of three anywhere else in the app would pull the entire bundle into the critical path. If the viewer grows to need additional three.js utilities, they must be added inside `ModelViewer3DScene` or co-located lazy modules — not imported at the app or component level.

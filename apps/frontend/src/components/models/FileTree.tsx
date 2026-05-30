@@ -10,19 +10,25 @@ import {
 import type { FileTreeNode, FileType } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
+import { Model3DIcon } from '../icons';
+import { makeStlRef, type StlFileRef } from '../../lib/model-files';
 
 interface FileNodeProps {
   node: FileTreeNode;
   depth: number;
+  /** Ancestor directory names, used to reconstruct STL relative paths. */
+  pathPrefix: string[];
+  modelId: string;
+  onOpenStl?: (stl: StlFileRef) => void;
   defaultExpanded?: boolean;
 }
 
 function FileIcon({ fileType }: { fileType?: FileType }) {
   switch (fileType) {
     case 'stl':
-      return <Box className="h-4 w-4 text-amber-600 dark:text-amber-500 flex-shrink-0" />;
+      return <Box className="h-4 w-4 text-primary flex-shrink-0" />;
     case 'image':
-      return <Image className="h-4 w-4 text-blue-500 flex-shrink-0" />;
+      return <Image className="h-4 w-4 text-accent-foreground flex-shrink-0" />;
     case 'document':
       return <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0" />;
     default:
@@ -30,7 +36,14 @@ function FileIcon({ fileType }: { fileType?: FileType }) {
   }
 }
 
-function FileNode({ node, depth, defaultExpanded = false }: FileNodeProps) {
+function FileNode({
+  node,
+  depth,
+  pathPrefix,
+  modelId,
+  onOpenStl,
+  defaultExpanded = false,
+}: FileNodeProps) {
   const [expanded, setExpanded] = React.useState(defaultExpanded);
   const paddingLeft = depth * 16;
 
@@ -43,9 +56,9 @@ function FileNode({ node, depth, defaultExpanded = false }: FileNodeProps) {
           style={{ paddingLeft: `${paddingLeft + 8}px` }}
         >
           {expanded ? (
-            <FolderOpen className="h-4 w-4 text-amber-500 flex-shrink-0" />
+            <FolderOpen className="h-4 w-4 text-muted-foreground flex-shrink-0" />
           ) : (
-            <Folder className="h-4 w-4 text-amber-500 flex-shrink-0" />
+            <Folder className="h-4 w-4 text-muted-foreground flex-shrink-0" />
           )}
           <span className="font-medium text-foreground truncate">{node.name}</span>
           {node.children && (
@@ -57,7 +70,14 @@ function FileNode({ node, depth, defaultExpanded = false }: FileNodeProps) {
         {expanded && node.children && (
           <div>
             {node.children.map((child, i) => (
-              <FileNode key={`${child.name}-${i}`} node={child} depth={depth + 1} />
+              <FileNode
+                key={`${child.name}-${i}`}
+                node={child}
+                depth={depth + 1}
+                pathPrefix={[...pathPrefix, node.name]}
+                modelId={modelId}
+                onOpenStl={onOpenStl}
+              />
             ))}
           </div>
         )}
@@ -65,13 +85,27 @@ function FileNode({ node, depth, defaultExpanded = false }: FileNodeProps) {
     );
   }
 
+  const isStl = node.fileType === 'stl';
+  const canView3D = isStl && Boolean(onOpenStl);
+
   return (
     <div
-      className="flex items-center gap-1.5 py-1 px-2 rounded hover:bg-muted/40 text-sm"
+      className="flex items-center gap-1.5 py-1 px-2 rounded hover:bg-muted/40 text-sm group"
       style={{ paddingLeft: `${paddingLeft + 8}px` }}
     >
       <FileIcon fileType={node.fileType} />
       <span className="truncate text-foreground flex-1 min-w-0">{node.name}</span>
+      {canView3D && (
+        <button
+          type="button"
+          onClick={() => onOpenStl!(makeStlRef(modelId, [...pathPrefix, node.name]))}
+          className="flex items-center gap-1 flex-shrink-0 rounded-full px-2 py-0.5 text-xs font-medium text-primary opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-primary/10 transition-all"
+          aria-label={`View ${node.name} in 3D`}
+        >
+          <Model3DIcon className="h-3.5 w-3.5" />
+          3D
+        </button>
+      )}
       {node.sizeBytes !== undefined && (
         <span className="text-xs text-muted-foreground flex-shrink-0 ml-2">
           {formatFileSize(node.sizeBytes)}
@@ -95,9 +129,12 @@ function countFiles(nodes: FileTreeNode[]): number {
 
 interface FileTreeProps {
   tree: FileTreeNode[];
+  modelId: string;
+  /** When provided, STL rows show a "view in 3D" affordance. */
+  onOpenStl?: (stl: StlFileRef) => void;
 }
 
-export function FileTree({ tree }: FileTreeProps) {
+export function FileTree({ tree, modelId, onOpenStl }: FileTreeProps) {
   const totalFiles = countFiles(tree);
 
   return (
@@ -115,6 +152,9 @@ export function FileTree({ tree }: FileTreeProps) {
               key={`${node.name}-${i}`}
               node={node}
               depth={0}
+              pathPrefix={[]}
+              modelId={modelId}
+              onOpenStl={onOpenStl}
               defaultExpanded={true}
             />
           ))

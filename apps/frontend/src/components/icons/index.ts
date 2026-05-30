@@ -18,4 +18,6 @@ export {
   ChevronRight as ChevronRightIcon,
   Plus as AddIcon,
   X as CloseIcon,
+  Box as Model3DIcon,
+  RotateCcw as ResetViewIcon,
 } from 'lucide-react';

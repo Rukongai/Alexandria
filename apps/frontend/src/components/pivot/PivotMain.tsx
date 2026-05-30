@@ -21,7 +21,7 @@ import {
 } from '../icons';
 import type { PivotAxis } from '../../hooks/use-model-filters';
 
-const AXIS_ICONS: Record<PivotAxis, React.ElementType> = {
+const AXIS_ICONS: Record<PivotAxis, React.ComponentType<{ className?: string }>> = {
   collections: CollectionsIcon,
   artists: ArtistIcon,
   tags: TagIcon,
