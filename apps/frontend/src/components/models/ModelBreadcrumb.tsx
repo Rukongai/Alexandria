@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import type { CollectionSummary } from '@alexandria/shared';
 import { LibraryIcon, CollectionsIcon, ChevronRightIcon } from '../icons';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 interface ModelBreadcrumbProps {
   /** The model's primary collection (collections[0]), or null if it has none. */
@@ -18,17 +19,18 @@ interface ModelBreadcrumbProps {
  * intermediate crumbs are real navigation links.
  */
 export function ModelBreadcrumb({ collection, modelName }: ModelBreadcrumbProps) {
+  const libPath = useLibraryPath();
   const crumbs: Array<{
     label: string;
     to?: string;
     icon?: React.ReactNode;
   }> = [
-    { label: 'Library', to: '/', icon: <LibraryIcon className="h-3.5 w-3.5" /> },
+    { label: 'Library', to: libPath('/'), icon: <LibraryIcon className="h-3.5 w-3.5" /> },
     ...(collection
       ? [
           {
             label: collection.name,
-            to: `/collections/${collection.id}`,
+            to: libPath(`/collections/${collection.id}`),
             icon: <CollectionsIcon className="h-3.5 w-3.5" />,
           },
         ]

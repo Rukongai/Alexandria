@@ -290,10 +290,10 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
   // GET /:id/status — poll processing status
   app.get(
     '/:id/status',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const model = await modelService.getModelById(id);
+      const model = await modelService.requireModelInLibrary(id, request.libraryId!);
 
       // If the model is still processing, also check the job queue for progress
       let progress: number | null = null;
@@ -320,12 +320,13 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /:id — model detail
+  // GET /:id — model detail (scoped to the active library)
   app.get(
     '/:id',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+      await modelService.requireModelInLibrary(id, request.libraryId!);
       const detail = await presenterService.buildModelDetail(id);
 
       return reply.status(200).send({ data: detail, meta: null, errors: null });
@@ -335,10 +336,10 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
   // GET /:id/files — file tree for a model
   app.get(
     '/:id/files',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      await modelService.getModelById(id); // verify exists
+      await modelService.requireModelInLibrary(id, request.libraryId!); // verify exists + scope
       const files = await modelService.getModelFiles(id);
       const tree = presenterService.buildFileTree(files);
 

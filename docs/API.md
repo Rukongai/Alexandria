@@ -38,6 +38,17 @@ Requests without a valid session cookie receive a `401 Unauthorized` response.
 
 The session mechanism uses `@fastify/cookie` with signed cookies. The cookie value is the authenticated user's ID, signed with the configured session secret. Cookie attributes: `HttpOnly`, `SameSite=Lax`, `Path=/`.
 
+### Library scoping (multi-library)
+
+Every model, collection, smart collection, and import session belongs to exactly one **library**. A user owns one or more libraries (one marked default). All list/search/detail endpoints are scoped to a single **active library**, resolved server-side as follows:
+
+- If the request carries an **`X-Library-Id`** header, that library is used — but only after an ownership check. An unknown or un-owned id returns `404 NOT_FOUND` (same response whether it does not exist or belongs to another user, so ids cannot be enumerated).
+- If the header is absent, the request falls back to the user's **default library**.
+
+Clients never pass `libraryId` in a query string or body; scoping rides on the header only. The frontend mirrors its `/lib/:id` route segment into this header. Library membership itself is managed through the `Libraries` endpoints below.
+
+> Note: the per-endpoint "Library scope" notes throughout this document predate P5 and say "default library". They now mean **the active library** (the `X-Library-Id` header when present, otherwise the default).
+
 ### Upload Limits
 
 For single-request uploads (`POST /models/upload`), archive files are capped at 100 MB. For larger files, use the chunked upload protocol (`POST /models/upload/init` + chunk PUTs + `POST /models/upload/:uploadId/complete`), which supports files up to 5 GB with 10 MB chunks and per-chunk retry.
@@ -810,11 +821,103 @@ Keys are field slugs. Values may be `string`, `number`, `boolean`, `string[]` (f
 
 ---
 
+## Libraries
+
+Manage the libraries a user owns. These endpoints manage the library scope itself, so they are **not** scoped by the `X-Library-Id` header — they operate on the authenticated user's full set of libraries, identified by the URL `:id`. See [Library scoping](#library-scoping-multi-library).
+
+### GET /libraries
+
+List the authenticated user's libraries with derived model and collection counts. Ordered default-first, then oldest-first. Drives the All-Libraries home and the rail switcher.
+
+**Auth required:** Yes
+
+**Response (200):**
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "name": "Main",
+      "slug": "main-a1b2",
+      "userId": "uuid",
+      "isDefault": true,
+      "color": "amber",
+      "modelCount": 142,
+      "collectionCount": 7,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meta": { "total": 1, "cursor": null, "pageSize": 1 },
+  "errors": null
+}
+```
+
+`data` is an array of `LibrarySummary` (a `Library` plus `modelCount` / `collectionCount`).
+
+---
+
+### POST /libraries
+
+Create a new (non-default) library.
+
+**Auth required:** Yes
+
+**Request body:**
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `name` | string | Required; 1–255 characters |
+| `color` | string (optional) | One of `amber`, `teal`, `sage`, `plum`, `slate` (default `amber`) |
+
+**Response (201):** the created `LibrarySummary` (`modelCount` / `collectionCount` are `0`).
+
+---
+
+### PATCH /libraries/:id
+
+Rename and/or recolor a library. Renaming regenerates the slug. At least one of `name` / `color` must be provided. A library not owned by the user returns `404 NOT_FOUND`.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — library UUID
+
+**Request body:** `name` (optional, 1–255), `color` (optional enum, as above).
+
+**Response (200):** the updated `LibrarySummary`.
+
+---
+
+### POST /libraries/:id/set-default
+
+Mark a library as the user's default. The prior default is cleared in the same transaction, so exactly one library is default at all times. A library not owned by the user returns `404 NOT_FOUND`.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — library UUID
+
+**Response (200):** `{ "data": null, "meta": null, "errors": null }`
+
+---
+
+### DELETE /libraries/:id
+
+Delete a library. Refused (`409 CONFLICT`) when the library is the default, is the user's only library, or still contains any models or collections (move or remove its contents first). A library not owned by the user returns `404 NOT_FOUND`.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — library UUID
+
+**Response (200):** `{ "data": null, "meta": null, "errors": null }`
+
+---
+
 ## Collections
 
 ### GET /collections
 
-List collections belonging to the authenticated user's default library.
+List collections belonging to the active library.
 
 **Auth required:** Yes
 

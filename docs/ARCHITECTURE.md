@@ -97,11 +97,11 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 
 ## Data Model: Library Scope
 
-Every model and collection belongs to a library. Libraries are the top-level organizational scope introduced in P1 as a foundation for future multi-library support.
+Every model and collection belongs to a library. Libraries are the top-level organizational scope introduced in P1 as a foundation for multi-library support, surfaced to users in **P5** (All-Libraries home, `/lib/:id` routing, switcher, per-library scoping).
 
 ### Schema
 
-The `libraries` table (`apps/backend/src/db/schema/library.ts`) has these columns: `id` (UUID PK), `name`, `slug` (globally unique), `user_id` (FK → users), `is_default` (boolean), `created_at`, `updated_at`.
+The `libraries` table (`apps/backend/src/db/schema/library.ts`) has these columns: `id` (UUID PK), `name`, `slug` (globally unique), `user_id` (FK → users), `is_default` (boolean), `color` (palette-accent name; added by `0010_add_library_color`, defaulted to `amber`), `created_at`, `updated_at`.
 
 Both `models` and `collections` carry a `library_id` column (NOT NULL FK → libraries). This was added by migration `0007_add_library_id` after `0005_add_libraries` created the table and `0006_backfill_default_libraries` ensured every existing user had exactly one default library to backfill into.
 
@@ -115,28 +115,31 @@ This index makes the enforcement race-safe: the database rejects a second `is_de
 
 ### LibraryService
 
-`LibraryService.resolveDefaultLibraryId(userId)` is the single entry point for resolving a user's active library. It finds the user's `is_default = true` library and returns its id. If none exists (users created after the migration backfill), it creates one with name `"Library"`. This lazy creation mirrors what the migration backfill did for pre-existing users.
+`LibraryService` owns library resolution **and** management CRUD (expanded in P5). Methods all take `userId` explicitly and never trust a `libraryId` without an ownership check:
 
-The seed (`runSeed`) calls this method for the admin user on startup, so the admin always has a default library even on a fresh database.
+- `resolveDefaultLibraryId(userId)` — finds the user's `is_default = true` library, lazily creating one (name `"Library"`) if none exists. The seed (`runSeed`) calls this for the admin on startup so a default always exists.
+- `resolveLibraryId(userId, requestedId?)` — the scope resolver used by `requireLibrary`: returns `requestedId` if owned (else `NOT_FOUND`), otherwise the default.
+- `requireOwnedLibrary(userId, libraryId)` — ownership guard returning `NOT_FOUND` (no enumeration), reused by the management routes.
+- `listLibraries(userId)` — libraries with derived model/collection counts (two grouped queries, default-first ordering).
+- `createLibrary` / `updateLibrary` / `setDefaultLibrary` / `deleteLibrary` — management CRUD. `setDefaultLibrary` clears the prior default and sets the new one in one transaction (the partial unique index never sees two defaults). `deleteLibrary` refuses (`CONFLICT`) the default, the user's last library, or a non-empty library.
 
 ### The `requireLibrary` Prehandler
 
-`requireLibrary` (`apps/backend/src/middleware/library.ts`) is a Fastify preHandler that runs after `requireAuth` on every route that reads or writes library-scoped data. It calls `LibraryService.resolveDefaultLibraryId` and stores the result on `request.libraryId`.
+`requireLibrary` (`apps/backend/src/middleware/library.ts`) is a Fastify preHandler that runs after `requireAuth` on every route that reads or writes library-scoped data. It reads an optional **`X-Library-Id`** header and calls `LibraryService.resolveLibraryId(userId, header)`, storing the result on `request.libraryId`. Absent header → the user's default library (preserving pre-P5 single-library behavior).
 
-**Security invariant:** `libraryId` is server-injected only. No route accepts a `libraryId` from the client in the query string, path, or request body. The value is always derived from the authenticated session. This prevents one user from accessing another user's library by supplying a different `libraryId`.
+**Security invariant:** `libraryId` is never trusted from untrusted input. The header is accepted only after `resolveLibraryId` confirms the user owns that library; an unknown or un-owned id returns `NOT_FOUND` (same error either way, so ids cannot be enumerated). No route accepts a `libraryId` in the query string, path, or body. The frontend mirrors its `/lib/:id` route segment into the header; the `/libraries` management routes do **not** use `requireLibrary` (they manage the scope itself, keyed by URL `:id` + `userId`).
 
-Routes that apply `requireLibrary` (as of P4):
+Routes that apply `requireLibrary` (as of P5):
 
-- `GET /models`
-- `GET /collections`, `POST /collections`
-- `GET /collections/:id/models`
+- `GET /models`, `GET /models/:id`, `GET /models/:id/files`, `GET /models/:id/status`
+- `GET /collections`, `POST /collections`, `GET /collections/:id`, `GET /collections/:id/models`
 - `GET /metadata/fields/:slug/values`
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/import`
 - `GET /models/import-sessions`, `POST /models/import-sessions/:id/commit`
 - `GET /search`
 - All `/smart-collections` routes
 
-By-id detail routes (`GET /models/:id`, `GET /collections/:id`, `PATCH /models/:id`, etc.) remain owned by `userId` and are not yet library-scoped. Library scoping for detail routes is deferred to P5 multi-library.
+P5 added library-scope guards to the read/detail routes above via `ModelService.requireModelInLibrary` / `CollectionService.requireCollectionInLibrary` (the entity must belong to `request.libraryId`, else `NOT_FOUND`), so a stale deep link to another library's item 404s after switching. By-id **mutation** routes (`PATCH`/`DELETE /models/:id`, `PATCH`/`DELETE /collections/:id`) remain `userId`-owned only — they are same-user operations and were intentionally left out of the minimal P5 sweep.
 
 ### P4: Smart Collections (shipped)
 
@@ -152,13 +155,18 @@ Smart collections were implemented in P4. Key architectural facts:
 
 - **`searchAll` global-search union still deferred**: `SearchService.searchAll` returns only manual collections. Unioning smart collections into global search results is a fast-follow that was explicitly deferred from this phase.
 
-### P5 Deferrals
+### P5: Multi-library (shipped)
 
-The following are explicitly deferred to the multi-library phase:
+P5 surfaced the library layer to users:
 
-- Multi-library UI and routing (the library-switcher button in PivotRail is a non-interactive stub).
-- Library scoping for by-id detail routes (`GET /models/:id`, `GET /collections/:id`, etc.).
+- **Backend**: `color` column (migration `0010`), expanded `LibraryService` CRUD, `requireLibrary` resolving the `X-Library-Id` header, a `/libraries` route module, and library-scope guards on read/detail routes (see above).
+- **Frontend**: an `X-Library-Id` header seam in `api/client.ts` (module-level `activeLibraryId` set by `LibraryProvider` from the `/lib/:id` route), the All-Libraries home, `/lib/:id` routing, the rail switcher, and library-relative navigation via `useLibraryPath`. Because library-scoped React Query keys do not include the library id (scoping rides on the header), `LibraryProvider` clears non-`libraries` queries when the active library changes so the workspace never shows the previous library's cached data.
+
+Still deferred:
+
+- By-id **mutation** routes are not library-scoped (same-user operations; see above).
 - Per-collection group counts in group view (requires server support to return paginated per-group totals).
+- Multi-user / invites / roles (P6).
 
 ---
 
@@ -166,11 +174,11 @@ The following are explicitly deferred to the multi-library phase:
 
 ### LibraryService
 
-**Owns:** Resolving and lazily creating a user's default library.
+**Owns:** Resolving a user's active library (default or `X-Library-Id`-requested, ownership-checked) and full library management CRUD (list-with-counts, create, rename/recolor, set-default, delete).
 
-**Does not own:** Library CRUD, multi-library switching (deferred to P5), or any data scoped within a library.
+**Does not own:** Any data scoped *within* a library (models, collections, etc.), or multi-user sharing (P6).
 
-**Behavior:** `resolveDefaultLibraryId(userId)` finds the user's default library in the `libraries` table. If none exists, it inserts one (name: `"Library"`, `is_default: true`) and returns its id. The partial unique index on the table makes this safe under concurrent calls.
+**Behavior:** `resolveDefaultLibraryId(userId)` finds (or lazily creates) the user's default library; `resolveLibraryId(userId, requestedId?)` validates a requested library against ownership before use. Management methods are detailed under *Data Model: Library Scope → LibraryService*. The partial unique index on `(user_id) WHERE is_default` keeps default resolution and `setDefaultLibrary` race-safe.
 
 ### IngestionService
 

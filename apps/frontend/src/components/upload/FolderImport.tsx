@@ -5,6 +5,7 @@ import { FolderOpen, ArrowRight, AlertCircle, Loader2 } from 'lucide-react';
 import { getFields } from '../../api/metadata';
 import { importFolder } from '../../api/models';
 import type { ImportStrategy } from '@alexandria/shared';
+import { useLibraryPath } from '../../hooks/use-libraries';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -45,6 +46,7 @@ type ImportState =
   | { phase: 'error'; message: string };
 
 export function FolderImport() {
+  const libPath = useLibraryPath();
   const [sourcePath, setSourcePath] = useState('');
   const [segments, setSegments] = useState<Segment[]>(createDefaultSegments);
   const [strategy, setStrategy] = useState<ImportStrategy>('hardlink');
@@ -180,7 +182,7 @@ export function FolderImport() {
           </p>
           <div className="flex gap-3">
             <Link
-              to={`/models/${importState.modelId}`}
+              to={libPath(`/models/${importState.modelId}`)}
               className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
             >
               Track progress <ArrowRight className="h-3.5 w-3.5" />

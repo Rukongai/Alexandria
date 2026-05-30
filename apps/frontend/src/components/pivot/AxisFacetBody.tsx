@@ -5,6 +5,7 @@ import { getCollections } from '../../api/collections';
 import { getFieldValues } from '../../api/metadata';
 import { getSmartCollections } from '../../api/smart-collections';
 import { useModelFilters } from '../../hooks/use-model-filters';
+import { useLibraryPath } from '../../hooks/use-libraries';
 import type { PivotAxis } from '../../hooks/use-model-filters';
 import { CollectionTree } from '../collections/CollectionTree';
 import { ArtistIcon, TagIcon, SmartIcon } from '../icons';
@@ -126,6 +127,7 @@ function TagsAxis() {
 
 function SmartAxis() {
   const { smartCollectionId, setSmartCollectionId } = useModelFilters();
+  const libPath = useLibraryPath();
 
   const { data, isLoading } = useQuery({
     queryKey: ['smart-collections'],
@@ -135,7 +137,7 @@ function SmartAxis() {
   return (
     <div className="flex flex-col gap-px px-1">
       <Link
-        to="/smart-collections/new"
+        to={libPath('/smart-collections/new')}
         className="flex items-center gap-1.5 mx-1 my-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--ax-rail-hover)]"
         style={{ color: 'var(--ax-rail-fg)' }}
       >

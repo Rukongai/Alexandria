@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Folder, ArrowRight } from 'lucide-react';
 import type { SearchCollectionHit } from '@alexandria/shared';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 interface CollectionResultRowProps {
   collection: SearchCollectionHit;
@@ -8,16 +9,17 @@ interface CollectionResultRowProps {
 
 export function CollectionResultRow({ collection }: CollectionResultRowProps) {
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
 
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={() => navigate(`/collections/${collection.id}`)}
+      onClick={() => navigate(libPath(`/collections/${collection.id}`))}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          navigate(`/collections/${collection.id}`);
+          navigate(libPath(`/collections/${collection.id}`));
         }
       }}
       style={{

@@ -35,6 +35,23 @@ vi.mock('../../hooks/use-auth', () => ({
   useAuth: vi.fn(),
 }));
 
+// Mock the libraries hook so the switcher renders without a LibraryProvider
+vi.mock('../../hooks/use-libraries', () => ({
+  useLibraries: () => ({
+    libraries: [
+      { id: 'lib-1', name: 'Main', slug: 'main', color: 'amber', isDefault: true, modelCount: 3, collectionCount: 1, userId: 'user-1', createdAt: '', updatedAt: '' },
+    ],
+    isLoading: false,
+    currentLibraryId: 'lib-1',
+    currentLibrary: { id: 'lib-1', name: 'Main', slug: 'main', color: 'amber', isDefault: true, modelCount: 3, collectionCount: 1, userId: 'user-1', createdAt: '', updatedAt: '' },
+    createLibrary: vi.fn(),
+    updateLibrary: vi.fn(),
+    setDefaultLibrary: vi.fn(),
+    deleteLibrary: vi.fn(),
+  }),
+  useLibraryPath: () => (path: string) => path,
+}));
+
 // Mock useNavigate (used by UserMenu)
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -136,13 +153,13 @@ describe('PivotRail', () => {
     expect(screen.getByText('JR')).toBeTruthy();
   });
 
-  it('the library-switcher stub is disabled (aria-disabled + tabIndex=-1)', async () => {
+  it('renders the interactive library switcher with the current library name', async () => {
     render(<PivotRail />, { wrapper: makeWrapper() });
 
-    // The stub button has aria-disabled="true" and tabIndex -1
-    const stubBtn = screen.getByTitle(/library switching coming soon/i);
-    expect(stubBtn.getAttribute('aria-disabled')).toBe('true');
-    expect(stubBtn.getAttribute('tabindex')).toBe('-1');
+    // The switcher is now an enabled control showing the active library name.
+    const switcherBtn = screen.getByTitle(/switch library/i);
+    expect(switcherBtn.getAttribute('aria-disabled')).toBeNull();
+    expect(screen.getByText('Main')).toBeTruthy();
   });
 
   it('reflects axis=tags from the URL in the axis picker', async () => {

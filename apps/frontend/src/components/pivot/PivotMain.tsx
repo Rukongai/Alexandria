@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Pencil } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useModelFilters } from '../../hooks/use-model-filters';
+import { useLibraryPath } from '../../hooks/use-libraries';
 import { useModelResults } from '../../hooks/use-model-results';
 import { getSmartCollections, getSmartCollectionModels } from '../../api/smart-collections';
 import { useDisplayPreferences } from '../../hooks/use-display-preferences';
@@ -70,6 +71,7 @@ function deriveContextTitle(
  */
 export function PivotMain() {
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
   const { filters, toApiParams, setQ, axis, activeAxisValue, hasActiveFilters, smartCollectionId } =
     useModelFilters();
   const { view, showThumbnails } = useDisplayPreferences();
@@ -147,7 +149,7 @@ export function PivotMain() {
             onSubmit={(e) => {
               e.preventDefault();
               const val = filters.q.trim();
-              if (val) navigate(`/search?q=${encodeURIComponent(val)}`);
+              if (val) navigate(libPath(`/search?q=${encodeURIComponent(val)}`));
             }}
           >
             <label className="relative flex items-center">
@@ -176,7 +178,7 @@ export function PivotMain() {
 
           {/* Upload action */}
           <Link
-            to="/upload"
+            to={libPath('/upload')}
             className="flex items-center gap-1.5 rounded-lg px-3 h-8 text-sm font-medium transition-colors"
             style={{
               background: 'var(--ax-amber)',
@@ -234,7 +236,7 @@ export function PivotMain() {
         <div className="flex items-center gap-2 flex-shrink-0">
           {smartActive && (
             <Link
-              to={`/smart-collections/${smartCollectionId}/edit`}
+              to={libPath(`/smart-collections/${smartCollectionId}/edit`)}
               className="flex items-center gap-1.5 h-8 rounded-lg px-3 text-sm font-medium transition-colors"
               style={{ background: 'var(--ax-bg-elev)', border: '1px solid var(--ax-border)', color: 'var(--ax-fg)', textDecoration: 'none' }}
             >
@@ -373,7 +375,7 @@ export function PivotMain() {
               Select a smart collection from the rail, or
             </p>
             <Link
-              to="/smart-collections/new"
+              to={libPath('/smart-collections/new')}
               className="rounded-lg px-3 h-8 flex items-center text-sm font-medium"
               style={{ background: 'var(--ax-amber)', color: 'var(--ax-amber-fg, white)', textDecoration: 'none' }}
             >

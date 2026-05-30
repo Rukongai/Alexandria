@@ -4,6 +4,7 @@ import { Loader2, AlertCircle, Package, CheckCircle2, ArrowRight } from 'lucide-
 import { getModels } from '../../api/models';
 import { formatDate, formatFileSize } from '../../lib/format';
 import type { ModelCard } from '@alexandria/shared';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 function StatusBadge({ status }: { status: ModelCard['status'] }) {
   if (status === 'processing') {
@@ -31,6 +32,7 @@ function StatusBadge({ status }: { status: ModelCard['status'] }) {
 }
 
 export function RecentUploads() {
+  const libPath = useLibraryPath();
   const { data, isLoading } = useQuery({
     queryKey: ['recent-uploads'],
     queryFn: () =>
@@ -67,7 +69,7 @@ export function RecentUploads() {
         return (
           <li key={model.id}>
             <Link
-              to={`/models/${model.id}`}
+              to={libPath(`/models/${model.id}`)}
               className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors"
             >
               {/* Thumbnail or placeholder */}

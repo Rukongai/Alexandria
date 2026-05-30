@@ -1,12 +1,14 @@
 import { Link } from 'react-router-dom';
 import { FolderOpen } from 'lucide-react';
 import type { CollectionSummary } from '@alexandria/shared';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 interface CollectionsListProps {
   collections: CollectionSummary[];
 }
 
 export function CollectionsList({ collections }: CollectionsListProps) {
+  const libPath = useLibraryPath();
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
@@ -22,7 +24,7 @@ export function CollectionsList({ collections }: CollectionsListProps) {
             {collections.map((col) => (
               <li key={col.id}>
                 <Link
-                  to={`/collections/${col.id}`}
+                  to={libPath(`/collections/${col.id}`)}
                   className="flex items-center gap-2 text-sm text-foreground hover:text-primary transition-colors py-0.5 group"
                 >
                   <FolderOpen className="h-4 w-4 text-muted-foreground flex-shrink-0 group-hover:text-primary transition-colors" />

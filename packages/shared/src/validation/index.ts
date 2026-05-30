@@ -4,5 +4,6 @@ export * from './model.js';
 export * from './import.js';
 export * from './search.js';
 export * from './collection.js';
+export * from './library.js';
 export * from './upload.js';
 export * from './smart-collection.js';

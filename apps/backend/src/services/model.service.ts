@@ -129,6 +129,19 @@ export class ModelService {
     return row;
   }
 
+  /**
+   * Verify a model exists AND belongs to the active library. Throws NOT_FOUND
+   * otherwise, so a stale deep link to a model in another library 404s after the
+   * user switches libraries instead of rendering cross-library content.
+   */
+  async requireModelInLibrary(id: string, libraryId: string): Promise<Model> {
+    const model = await this.getModelById(id);
+    if (model.libraryId !== libraryId) {
+      throw notFound(`Model not found: ${id}`);
+    }
+    return model;
+  }
+
   async updateModel(id: string, data: UpdateModelRequest): Promise<Model> {
     await this.getModelById(id);
 

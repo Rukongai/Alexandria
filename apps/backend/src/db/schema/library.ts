@@ -17,6 +17,10 @@ export const libraries = pgTable(
       .references(() => users.id),
     // Each user has exactly one default library; enforced by a partial unique index below.
     isDefault: boolean('is_default').notNull().default(false),
+    // Palette-accent name (amber|teal|sage|plum|slate) rendered to a gradient badge
+    // in the All-Libraries cards and the rail switcher. Defaulted so existing rows
+    // backfill without a data migration step.
+    color: varchar('color', { length: 32 }).notNull().default('amber'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

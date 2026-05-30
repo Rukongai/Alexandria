@@ -4,6 +4,7 @@ import { Search, Package, Folder, ArrowRight } from 'lucide-react';
 import { Dialog, DialogContent } from '../ui/dialog';
 import { useCommandPalette } from '../../hooks/use-command-palette';
 import { useGlobalSearch } from '../../hooks/use-global-search';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -17,6 +18,7 @@ function useDebounce<T>(value: T, delay: number): T {
 export function CommandPalette() {
   const { isOpen, close } = useCommandPalette();
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [inputValue, setInputValue] = useState('');
@@ -32,7 +34,7 @@ export function CommandPalette() {
       type: 'search',
       label: `Search everything for "${debouncedQ}"`,
       action: () => {
-        navigate(`/search?q=${encodeURIComponent(debouncedQ)}`);
+        navigate(libPath(`/search?q=${encodeURIComponent(debouncedQ)}`));
         close();
       },
     });
@@ -45,7 +47,7 @@ export function CommandPalette() {
         label: model.name,
         sub: `${model.fileCount} ${model.fileCount === 1 ? 'file' : 'files'}`,
         action: () => {
-          navigate(`/models/${model.id}`);
+          navigate(libPath(`/models/${model.id}`));
           close();
         },
       });
@@ -56,7 +58,7 @@ export function CommandPalette() {
         label: col.name,
         sub: `${col.modelCount} ${col.modelCount === 1 ? 'model' : 'models'}`,
         action: () => {
-          navigate(`/collections/${col.id}`);
+          navigate(libPath(`/collections/${col.id}`));
           close();
         },
       });

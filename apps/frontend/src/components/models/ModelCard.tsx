@@ -5,6 +5,7 @@ import { Badge } from '../ui/badge';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
 import { useDisplayPreferences } from '../../hooks/use-display-preferences';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 interface ModelCardProps {
   model: ModelCardType;
@@ -40,6 +41,7 @@ function StatusIndicator({ status }: { status: ModelCardType['status'] }) {
 
 export function ModelCard({ model, selectable, selected, onToggleSelect }: ModelCardProps) {
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
   const { cardAspectRatio } = useDisplayPreferences();
 
   const tags = model.metadata
@@ -55,7 +57,7 @@ export function ModelCard({ model, selectable, selected, onToggleSelect }: Model
       onToggleSelect?.(model.id);
       return;
     }
-    navigate(`/models/${model.id}`);
+    navigate(libPath(`/models/${model.id}`));
   }
 
   return (
