@@ -125,7 +125,7 @@ The seed (`runSeed`) calls this method for the admin user on startup, so the adm
 
 **Security invariant:** `libraryId` is server-injected only. No route accepts a `libraryId` from the client in the query string, path, or request body. The value is always derived from the authenticated session. This prevents one user from accessing another user's library by supplying a different `libraryId`.
 
-Routes that apply `requireLibrary` (as of P3):
+Routes that apply `requireLibrary` (as of P4):
 
 - `GET /models`
 - `GET /collections`, `POST /collections`
@@ -134,14 +134,23 @@ Routes that apply `requireLibrary` (as of P3):
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/import`
 - `GET /models/import-sessions`, `POST /models/import-sessions/:id/commit`
 - `GET /search`
+- All `/smart-collections` routes
 
 By-id detail routes (`GET /models/:id`, `GET /collections/:id`, `PATCH /models/:id`, etc.) remain owned by `userId` and are not yet library-scoped. Library scoping for detail routes is deferred to P5 multi-library.
 
-### P4 Deferrals
+### P4: Smart Collections (shipped)
 
-The following are deferred to the Smart Collections phase:
+Smart collections were implemented in P4. Key architectural facts:
 
-- Smart (rule-based) collections entity and rule engine. `SearchService.searchAll` returns only manual collections. When smart collections ship, `searchAll` will need to union both types.
+- **Entity**: The `smart_collections` table (`apps/backend/src/db/schema/smart-collection.ts`, migration `0009_add_smart_collections.sql`) stores `id`, `name`, `slug` (globally unique), `description`, `definition` (JSONB rule tree typed as `RuleNode`), `userId`, `libraryId`, and timestamps. There is no membership join table — results are derived on read, never materialized.
+
+- **Rule engine**: `apps/backend/src/services/rule-engine.ts` compiles a nested `RuleNode` tree into a Drizzle `SQL` condition. The engine is pure (no I/O). It exports `buildLeafCondition`, which `search.service.ts` also uses for its own flat filter logic — this is the single source of truth for "what SQL a filter on dimension X looks like." Both code paths are guaranteed to produce identical results for equivalent criteria.
+
+- **`applyDefaultStatus` seam**: `searchModels` normally applies an implicit `status = 'ready'` filter. When a smart collection's rule tree contains a `status` condition, `SmartCollectionService.resolveAndCompile` sets `applyDefaultStatus: false`, suppressing the default so it does not contradict the rule. This flag travels through `SearchModelsOptions` into `searchModels`.
+
+- **Cross-tenant guard**: Every by-id route goes through `SmartCollectionService.requireOwnedSmartCollection`, which verifies the row exists, belongs to the requesting user, and belongs to the library. A mismatch on any check returns `NOT_FOUND` — the same error shape regardless of which check failed, so IDs cannot be enumerated across tenants.
+
+- **`searchAll` global-search union still deferred**: `SearchService.searchAll` returns only manual collections. Unioning smart collections into global search results is a fast-follow that was explicitly deferred from this phase.
 
 ### P5 Deferrals
 
@@ -227,9 +236,9 @@ Uses the **PatternParser** utility (located in `utils/pattern-parser.ts`) — a 
 
 **Behavior:** Two public methods:
 
-- `searchModels(params, libraryId)` — accepts query parameters (text search, metadata filters, collection filter, sort, pagination cursor). Executes against Postgres full-text search. Understands which metadata fields use optimized storage (tags → join table query) vs. generic storage (other fields → model_metadata table query). Returns paginated results as `ModelCard` objects assembled by PresenterService.
+- `searchModels(params, libraryId, options?)` — accepts query parameters (text search, metadata filters, collection filter, sort, pagination cursor) plus an optional `SearchModelsOptions`. `options.ruleWhere` is a pre-compiled smart-collection SQL condition ANDed into the query. `options.applyDefaultStatus` (default `true`) controls the implicit `status = 'ready'` filter — smart collections suppress it when their rule tree already references `status`. Internally, `searchModels` builds its per-dimension filter SQL via `buildLeafCondition` from `rule-engine.ts`, the same function the rule compiler uses, so flat params and compiled rule trees produce identical SQL per dimension.
 
-- `searchAll(params, userId, libraryId)` — cross-entity search. Calls `searchModels` for models (full-text), then filters in-memory against collections (by name substring, sorted by `modelCount`), artist values, and tag values (both by name substring, drawn from `listFieldValues`). Results for each entity type are limited to `params.limit` (default 6). Returns a `GlobalSearchResult`.
+- `searchAll(params, userId, libraryId)` — cross-entity search. Calls `searchModels` for models (full-text), then filters in-memory against collections (by name substring, sorted by `modelCount`), artist values, and tag values (both by name substring, drawn from `listFieldValues`). Results for each entity type are limited to `params.limit` (default 6). Returns a `GlobalSearchResult`. Smart collections are not yet included in `searchAll` results — that union is deferred.
 
 **Abstraction:** The search implementation is behind an interface. Postgres FTS is the MVP implementation. A future MeiliSearch or Typesense implementation can be swapped in without changing any callers.
 
@@ -262,6 +271,16 @@ No other service knows about this routing. To every consumer, tags are just anot
 **Boundary note:** CollectionService owns "add/remove model from collection." ModelService can read "what collections is this model in" for display purposes but does not mutate collection membership.
 
 Collections are an organizational structure, not metadata. A model's relationship to a collection is about where you put it, not what it is. This is why collections remain a separate entity while Artist and Tags moved into the metadata system.
+
+### SmartCollectionService
+
+**Owns:** Smart collection CRUD, rule-tree validation, derived model result sets, unsaved rule-tree preview (dry-run).
+
+**Does not own:** Rule compilation to SQL (delegates to `compileRuleTree` in `rule-engine.ts`), model querying (delegates to `SearchService.searchModels`).
+
+**Behavior:** `create` and `update` call `resolveAndCompile` before any DB write, so a syntactically valid but semantically invalid tree (unknown metadata slug, illegal operator for a field's type) is rejected with a `VALIDATION_ERROR` rather than persisted. `getById` and `getModels` call `requireOwnedSmartCollection` first, which enforces ownership + library in a single query and returns `NOT_FOUND` on any mismatch. The list endpoint omits derived model counts to keep it cheap; `getById` and `create`/`update` compute a live count via `searchModels`.
+
+`resolveAndCompile` resolves all metadata leaf conditions against live field definitions, validates operator/type compatibility using `LEGAL_OPERATORS_BY_METADATA_TYPE`, and decides whether to suppress `searchModels`' implicit `status = 'ready'` default (see `applyDefaultStatus` seam above).
 
 ### AuthService
 
@@ -481,6 +500,19 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | POST | /collections/:id/models | Add model(s) | CollectionService | No (userId) |
 | DELETE | /collections/:id/models/:modelId | Remove model | CollectionService | No (userId) |
 
+**Smart Collections**
+| Method | Route | Purpose | Service Chain | Library-scoped |
+|--------|-------|---------|---------------|---------------|
+| GET | /smart-collections | List (no model counts) | SmartCollectionService | Yes |
+| POST | /smart-collections | Create | SmartCollectionService | Yes |
+| GET | /smart-collections/:id | Single collection (with model count) | SmartCollectionService → SearchService | Yes |
+| PATCH | /smart-collections/:id | Update name/description/definition | SmartCollectionService | Yes |
+| DELETE | /smart-collections/:id | Delete | SmartCollectionService | Yes |
+| GET | /smart-collections/:id/models | Derived model result set | SmartCollectionService → SearchService | Yes |
+| POST | /smart-collections/preview | Dry-run unsaved rule tree | SmartCollectionService → SearchService | Yes |
+
+All smart-collection by-id routes enforce ownership via `requireOwnedSmartCollection` in addition to the library scope from `requireLibrary`.
+
 **Metadata**
 | Method | Route | Purpose | Service Chain | Library-scoped |
 |--------|-------|---------|---------------|---------------|
@@ -572,6 +604,12 @@ The active pivot axis (`?axis=collections|artists|tags`) is stored in the URL so
 Archive uploads no longer create a model immediately. Instead they create an `ImportSession`, extract the archive, and expose detected metadata for review before the user commits. This gives users a chance to verify and supplement auto-detected artist, tags, and collection assignment before the model record is created. Folder imports retain the existing immediate behavior because they operate on server-side directories where the user has already organized the content.
 
 The consequence is that `POST /models/upload` (and the chunked `complete` endpoint) return `{ sessionId }` rather than `{ modelId, jobId }`. Callers that previously polled `GET /models/:id/status` now poll `GET /models/import-sessions/:id`, then call `POST /models/import-sessions/:id/commit` to get a `{ modelId, jobId }` to track the final ingestion.
+
+### D18: Smart collection results are derived, never materialized
+A smart collection stores only its rule tree (a `RuleNode` JSONB value). The result set is computed on every read by compiling the tree into SQL and running it through `SearchService.searchModels`. This avoids a membership sync problem — a manual collection would need its membership table updated whenever a model is edited — at the cost of per-request query execution. For the expected library sizes (thousands, not millions of models), this is acceptable. Materialized membership can be added later if performance requires it.
+
+### D19: Rule engine is the single source of truth for per-dimension SQL
+`buildLeafCondition` in `rule-engine.ts` is the canonical implementation of "what SQL a filter on dimension X looks like." `searchModels` was refactored to call it for its own flat filter parameters, so flat search and smart-collection compilation are guaranteed to produce identical SQL for equivalent criteria. Any change to how a dimension (e.g., tag membership, metadata value match) is queried must be made in `buildLeafCondition`, not in scattered helpers.
 
 ### D17: Cross-entity global search is in-memory for non-model types
 `SearchService.searchAll` runs Postgres full-text search for models, but for collections, artists, and tags it fetches the full library-scoped list and filters in memory. This is acceptable because these lists are small (hundreds at most), require no dedicated index, and avoids schema complexity. If list sizes grow to a point where in-memory filtering is measurably slow, the internal implementation can be replaced with index-backed queries without changing the API or callers. Smart collections (P4) may warrant a dedicated index at that point.

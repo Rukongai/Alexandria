@@ -1,6 +1,6 @@
 import { cn } from '../../lib/utils';
 import { useModelFilters, type PivotAxis } from '../../hooks/use-model-filters';
-import { CollectionsIcon, ArtistIcon, TagIcon } from '../icons';
+import { CollectionsIcon, ArtistIcon, TagIcon, SmartIcon } from '../icons';
 
 interface AxisOption {
   id: PivotAxis;
@@ -12,6 +12,7 @@ const AXIS_OPTIONS: AxisOption[] = [
   { id: 'collections', label: 'Collections', icon: CollectionsIcon },
   { id: 'artists', label: 'Artists', icon: ArtistIcon },
   { id: 'tags', label: 'Tags', icon: TagIcon },
+  { id: 'smart', label: 'Smart', icon: SmartIcon },
 ];
 
 /**

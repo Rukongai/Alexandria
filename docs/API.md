@@ -1067,6 +1067,281 @@ Remove a single model from a collection without deleting the model.
 
 ---
 
+## Smart Collections
+
+Smart collections are dynamic, rule-based collections. Instead of managing explicit membership, a smart collection stores a rule tree (`definition`) that is compiled into SQL and executed on every read. The result set is derived — never persisted. There is no join table.
+
+The `definition` field is a `RuleNode` — a recursive tree of groups (AND/OR) and leaf conditions. See `docs/TYPES.md` for the full type hierarchy.
+
+### GET /smart-collections
+
+List smart collections in the authenticated user's default library. Model counts are omitted from the list response to keep it cheap; use `GET /smart-collections/:id` for a live count.
+
+**Auth required:** Yes
+
+**Library scope:** Results are scoped to the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
+
+**Response (200):**
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "name": "Ready Fantasy Models",
+      "slug": "ready-fantasy-models-a3f2",
+      "description": "All ready models tagged fantasy",
+      "definition": {
+        "kind": "group",
+        "op": "and",
+        "children": [
+          { "kind": "condition", "field": { "source": "builtin", "field": "tag" }, "operator": "hasTag", "value": "fantasy" },
+          { "kind": "condition", "field": { "source": "builtin", "field": "status" }, "operator": "is", "value": "ready" }
+        ]
+      },
+      "userId": "uuid",
+      "createdAt": "2026-05-01T10:00:00.000Z",
+      "updatedAt": "2026-05-01T10:00:00.000Z"
+    }
+  ],
+  "meta": { "total": 1, "cursor": null, "pageSize": 1 },
+  "errors": null
+}
+```
+
+`data` is an array of `SmartCollection`. The `meta.cursor` is always `null`; this endpoint returns all smart collections for the library without cursor pagination.
+
+---
+
+### POST /smart-collections
+
+Create a smart collection.
+
+**Auth required:** Yes
+
+**Library scope:** The new smart collection is created in the authenticated user's default library, resolved server-side from the session.
+
+**Request body:**
+
+```json
+{
+  "name": "Ready Fantasy Models",
+  "description": "All ready models tagged fantasy",
+  "definition": {
+    "kind": "group",
+    "op": "and",
+    "children": [
+      { "kind": "condition", "field": { "source": "builtin", "field": "tag" }, "operator": "hasTag", "value": "fantasy" },
+      { "kind": "condition", "field": { "source": "builtin", "field": "status" }, "operator": "is", "value": "ready" }
+    ]
+  }
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `name` | string | Required; 1–255 characters |
+| `description` | string (optional) | Maximum 2000 characters |
+| `definition` | RuleNode | Required; a valid rule tree (see below) |
+
+**Rule tree validation:** The tree must not exceed depth 3 (group nesting), 50 total nodes, or 20 children per group. A bare condition or an empty root group (`{ kind: "group", op: "and", children: [] }`) is valid. For leaf conditions: the operator must be legal for the field (e.g., `contains` and `equals` for `name`; `hasTag`/`notHasTag` for `tag`). Operators `exists` and `notExists` take a null value; all others require a non-empty string. Metadata field slugs are validated server-side against the live field definitions; unknown slugs return `400`.
+
+**Response (201):** Returns the created `SmartCollectionDetail` (includes a live `modelCount`).
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "name": "Ready Fantasy Models",
+    "slug": "ready-fantasy-models-a3f2",
+    "description": "All ready models tagged fantasy",
+    "definition": { ... },
+    "modelCount": 7,
+    "createdAt": "2026-05-01T10:00:00.000Z",
+    "updatedAt": "2026-05-01T10:00:00.000Z"
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+**Error cases:**
+
+| Code | Status | When |
+|------|--------|------|
+| `VALIDATION_ERROR` | 400 | Tree fails structural validation (depth, node count, illegal operator for field) |
+| `VALIDATION_ERROR` | 400 | A `metadata` leaf references an unknown field slug |
+| `VALIDATION_ERROR` | 400 | A `metadata` leaf uses an operator that is illegal for the field's type |
+
+---
+
+### GET /smart-collections/:id
+
+Retrieve a single smart collection, including a live count of models the rule tree currently matches.
+
+**Auth required:** Yes
+
+**Library scope:** The smart collection must belong to the authenticated user's default library. Mismatches return `404`.
+
+**Path parameter:** `id` — smart collection UUID
+
+**Response (200):** Returns a `SmartCollectionDetail`.
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "name": "Ready Fantasy Models",
+    "slug": "ready-fantasy-models-a3f2",
+    "description": "All ready models tagged fantasy",
+    "definition": { ... },
+    "modelCount": 7,
+    "createdAt": "2026-05-01T10:00:00.000Z",
+    "updatedAt": "2026-05-01T10:00:00.000Z"
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`modelCount` is derived live by running the rule tree against the library — it reflects the current state of the model set.
+
+---
+
+### PATCH /smart-collections/:id
+
+Update a smart collection's name, description, or rule tree. All fields are optional; at least one must be provided.
+
+**Auth required:** Yes
+
+**Library scope:** The smart collection must belong to the authenticated user's default library. Mismatches return `404`.
+
+**Path parameter:** `id` — smart collection UUID
+
+**Request body:**
+
+```json
+{
+  "name": "Renamed Collection",
+  "description": null,
+  "definition": {
+    "kind": "condition",
+    "field": { "source": "builtin", "field": "tag" },
+    "operator": "hasTag",
+    "value": "sci-fi"
+  }
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `name` | string (optional) | 1–255 characters |
+| `description` | string or null (optional) | Maximum 2000 characters; `null` clears the description |
+| `definition` | RuleNode (optional) | Must pass the same validation as `POST /smart-collections` |
+
+When `name` is updated the slug is regenerated. If `definition` is provided, `resolveAndCompile` runs the full validation before the update is written to the database.
+
+**Response (200):** Returns the updated `SmartCollectionDetail`.
+
+---
+
+### DELETE /smart-collections/:id
+
+Delete a smart collection. Models are not affected — only the rule tree and its metadata are removed.
+
+**Auth required:** Yes
+
+**Library scope:** The smart collection must belong to the authenticated user's default library. Mismatches return `404`.
+
+**Path parameter:** `id` — smart collection UUID
+
+**Response (200):**
+
+```json
+{
+  "data": null,
+  "meta": null,
+  "errors": null
+}
+```
+
+---
+
+### GET /smart-collections/:id/models
+
+Execute the rule tree and return the derived model result set. Supports the same filtering, sorting, and pagination as `GET /models` — these parameters are ANDed on top of the compiled rule tree.
+
+**Auth required:** Yes
+
+**Library scope:** Results are scoped to the authenticated user's default library in addition to the rule tree's constraints. The library is resolved server-side; clients do not pass a `libraryId`.
+
+**Path parameter:** `id` — smart collection UUID
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `q` | string | Full-text search within the rule-derived set |
+| `tags` | string | Comma-separated tag slugs to further filter by |
+| `fileType` | `stl` \| `image` \| `document` \| `other` | Filter by presence of this file type |
+| `status` | `processing` \| `ready` \| `error` | Filter by processing status |
+| `sort` | `name` \| `createdAt` \| `totalSizeBytes` | Sort field |
+| `sortDir` | `asc` \| `desc` | Sort direction |
+| `cursor` | string | Pagination cursor |
+| `pageSize` | integer | Results per page (1–200, default 50) |
+| `metadata.<fieldSlug>` | string | Filter by a metadata field value |
+
+**Response (200):** Same envelope shape as `GET /models`. `data` is an array of `ModelCard`.
+
+---
+
+### POST /smart-collections/preview
+
+Dry-run an unsaved rule tree against the authenticated user's library. Useful for live feedback in the rule composer before creating or saving a smart collection.
+
+**Auth required:** Yes
+
+**Library scope:** Results are scoped to the authenticated user's default library, resolved server-side from the session.
+
+**Request body:**
+
+```json
+{
+  "definition": {
+    "kind": "group",
+    "op": "or",
+    "children": [
+      { "kind": "condition", "field": { "source": "builtin", "field": "tag" }, "operator": "hasTag", "value": "fantasy" },
+      { "kind": "condition", "field": { "source": "builtin", "field": "tag" }, "operator": "hasTag", "value": "sci-fi" }
+    ]
+  },
+  "sort": "name",
+  "sortDir": "asc",
+  "pageSize": 20
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `definition` | RuleNode | Required; same validation as `POST /smart-collections` |
+| `status` | `processing` \| `ready` \| `error` (optional) | Additional status filter |
+| `fileType` | `stl` \| `image` \| `document` \| `other` (optional) | Additional file-type filter |
+| `sort` | `name` \| `createdAt` \| `totalSizeBytes` (optional) | Sort field |
+| `sortDir` | `asc` \| `desc` (optional) | Sort direction |
+| `cursor` | string (optional) | Pagination cursor |
+| `pageSize` | integer (optional) | Results per page (1–200, default 50) |
+
+**Response (200):** Same envelope shape as `GET /models`. `data` is an array of `ModelCard`.
+
+**Error cases:**
+
+| Code | Status | When |
+|------|--------|------|
+| `VALIDATION_ERROR` | 400 | Tree fails structural validation |
+| `VALIDATION_ERROR` | 400 | Unknown metadata slug or illegal operator for field's type |
+
+---
+
 ## Metadata
 
 Metadata is the system for attaching typed attributes to models. Field definitions describe the available fields; values are the per-model assignments.

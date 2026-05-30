@@ -12,9 +12,9 @@ export interface ModelFilters {
   metadataFilters: Record<string, string>;
 }
 
-export type PivotAxis = 'collections' | 'artists' | 'tags';
+export type PivotAxis = 'collections' | 'artists' | 'tags' | 'smart';
 
-const VALID_AXES: PivotAxis[] = ['collections', 'artists', 'tags'];
+const VALID_AXES: PivotAxis[] = ['collections', 'artists', 'tags', 'smart'];
 const DEFAULT_AXIS: PivotAxis = 'collections';
 
 /**
@@ -22,11 +22,13 @@ const DEFAULT_AXIS: PivotAxis = 'collections';
  * - axis 'collections': collectionId (string | undefined)
  * - axis 'artists': the value of metadataFilters['artist'] (string | undefined)
  * - axis 'tags': the selected tag names (string[])
+ * - axis 'smart': smartCollectionId (string | undefined)
  */
 export interface ActiveAxisValue {
   collectionId: string | undefined;
   artist: string | undefined;
   tags: string[];
+  smartCollectionId: string | undefined;
 }
 
 function parseMetaFilters(params: URLSearchParams): Record<string, string> {
@@ -60,11 +62,16 @@ export function useModelFilters() {
       ? (rawAxis as PivotAxis)
       : DEFAULT_AXIS;
 
+  // smartCollectionId is pure UI selection (which smart collection to view) —
+  // like axis, it is NOT a model filter and not in toApiParams/the query key.
+  const smartCollectionId = searchParams.get('smartCollectionId') ?? undefined;
+
   // activeAxisValue reflects what is selected for the current axis
   const activeAxisValue: ActiveAxisValue = {
     collectionId: axis === 'collections' ? filters.collectionId : undefined,
     artist: axis === 'artists' ? filters.metadataFilters['artist'] : undefined,
     tags: axis === 'tags' ? filters.tags : [],
+    smartCollectionId: axis === 'smart' ? smartCollectionId : undefined,
   };
 
   const toApiParams = useCallback(
@@ -205,6 +212,21 @@ export function useModelFilters() {
     filters.collectionId !== undefined ||
     Object.keys(filters.metadataFilters).length > 0;
 
+  const setSmartCollectionId = useCallback(
+    (id: string | undefined) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (id) {
+          next.set('smartCollectionId', id);
+        } else {
+          next.delete('smartCollectionId');
+        }
+        return next;
+      });
+    },
+    [setSearchParams]
+  );
+
   // setAxis writes ?axis= to the URL while preserving all other params.
   // The default axis ('collections') is omitted from the URL for cleaner links.
   const setAxis = useCallback(
@@ -238,5 +260,7 @@ export function useModelFilters() {
     axis,
     setAxis,
     activeAxisValue,
+    smartCollectionId,
+    setSmartCollectionId,
   };
 }

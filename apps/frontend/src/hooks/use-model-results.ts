@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
-import type { ModelCard, ModelSearchParams } from '@alexandria/shared';
+import type { ApiResponse, ModelCard, ModelSearchParams } from '@alexandria/shared';
 import { getModels } from '../api/models';
 import type { ModelFilters } from './use-model-filters';
 
 export interface UseModelResultsInput {
   filters: ModelFilters;
   toApiParams: (cursor?: string) => ModelSearchParams;
+  /** Override the fetch source (e.g. a smart collection's derived models). */
+  fetcher?: (params: ModelSearchParams) => Promise<ApiResponse<ModelCard[]>>;
+  /** Extra query-key segments distinguishing this fetch source from the default. */
+  queryKeyExtra?: unknown[];
+  /** When false, the query does not run (e.g. smart axis with nothing selected). */
+  enabled?: boolean;
 }
 
 export interface UseModelResultsOutput {
@@ -32,6 +38,9 @@ export interface UseModelResultsOutput {
 export function useModelResults({
   filters,
   toApiParams,
+  fetcher = getModels,
+  queryKeyExtra = [],
+  enabled = true,
 }: UseModelResultsInput): UseModelResultsOutput {
   const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -44,14 +53,15 @@ export function useModelResults({
     isError,
     error,
   } = useInfiniteQuery({
-    queryKey: ['models', filters],
+    queryKey: ['models', ...queryKeyExtra, filters],
     queryFn: async ({ pageParam }: { pageParam: string | undefined }) => {
       const params: ModelSearchParams = toApiParams(pageParam);
-      return getModels(params);
+      return fetcher(params);
     },
     getNextPageParam: (lastPage) => lastPage.meta?.cursor ?? undefined,
     initialPageParam: undefined as string | undefined,
     staleTime: 30_000,
+    enabled,
   });
 
   const handleIntersect = useCallback(
