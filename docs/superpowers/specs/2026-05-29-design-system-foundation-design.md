@@ -190,3 +190,23 @@ new design with **no component edits**.
 4. `/design-system` sandbox renders swatches/type/chips/helpers faithfully and is DEV-gated.
 5. Tailwind opacity-modifier audit complete; no regressions in existing components.
 6. No backend changes. Tests pass.
+
+---
+
+## P0 follow-ups (handle in P1)
+
+Static sweep during P0 acceptance (Task 10) found **27 hardcoded Tailwind color-scale
+classes** that bypass the token bridge and will visibly clash with the Slate palette. P0
+intentionally does not restyle components — these are recorded for the P1 component pass:
+
+| Color | Count | Where / intent | P1 target token |
+|-------|-------|----------------|-----------------|
+| `amber-*` | 11 | Folder/file icons (`FileTree`, `CollectionsList`), cover badges (`ImageGallery`), "processing" indicators (`ModelCard`, `RecentUploads`) | `--ax-amber` (primary) or `--ax-warning`; processing → `.ax-pulse` |
+| `emerald-*` | 13 | "ready"/success status dots & text (`ModelCard`, `UploadProgress`, `FolderImport`, `RecentUploads`, `SettingsPage`) | `--ax-success` |
+| `red-*` | 2 | Destructive actions in `BulkActions` | `--ax-danger` / `destructive` |
+| `blue-*` | 1 | Image-file icon in `FileTree` | `--ax-teal` (accent) or neutral |
+
+Files: `FileTree.tsx`, `ModelCard.tsx`, `ImageGallery.tsx`, `BulkActions.tsx`,
+`CollectionsList.tsx`, `FolderImport.tsx`, `UploadProgress.tsx`, `RecentUploads.tsx`,
+`SettingsPage.tsx`. These were left untouched in P0 (foundation only); the P1 app-shell/pivot
+work restyles these components and should swap the literals for semantic tokens.
