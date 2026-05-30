@@ -14,6 +14,7 @@ if (!file) {
 }
 
 const HSL = /^(\s*)(--ax-[\w-]+):\s*hsl\(([^)]+)\);\s*$/;
+// Only #ffffff appears as a hex literal in this token file; all other colors use hsl().
 const HEX_WHITE = /^(\s*)(--ax-[\w-]+):\s*#ffffff;\s*$/i;
 
 const out = readFileSync(file, 'utf8')
@@ -22,6 +23,9 @@ const out = readFileSync(file, 'utf8')
     let m = line.match(HSL);
     if (m) {
       const [, indent, name, channels] = m;
+      if (channels.includes('/')) {
+        throw new Error(`alpha HSL not supported by transform: ${line.trim()}`);
+      }
       return `${indent}${name}-h: ${channels};\n${indent}${name}: hsl(var(${name}-h));`;
     }
     m = line.match(HEX_WHITE);
