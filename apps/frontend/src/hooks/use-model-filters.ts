@@ -173,6 +173,21 @@ export function useModelFilters() {
     [setMetaFilter]
   );
 
+  const setCollectionId = useCallback(
+    (id: string | undefined) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (id) {
+          next.set('collectionId', id);
+        } else {
+          next.delete('collectionId');
+        }
+        return next;
+      });
+    },
+    [setSearchParams]
+  );
+
   const clearAllFilters = useCallback(() => {
     setSearchParams(new URLSearchParams());
   }, [setSearchParams]);
@@ -208,6 +223,7 @@ export function useModelFilters() {
     setSort,
     setTags,
     toggleTag,
+    setCollectionId,
     setMetaFilter,
     clearMetaFilter,
     clearAllFilters,
