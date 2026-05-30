@@ -6,3 +6,4 @@ export * from './library.js';
 export * from './api.js';
 export * from './upload.js';
 export * from './search.js';
+export * from './smart-collection.js';

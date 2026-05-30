@@ -64,6 +64,13 @@
       "when": 1748591400000,
       "tag": "0008_add_import_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1772100003000,
+      "tag": "0009_add_smart_collections",
+      "breakpoints": true
     }
   ]
 }

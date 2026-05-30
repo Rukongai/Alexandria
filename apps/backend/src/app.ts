@@ -10,6 +10,7 @@ import { modelRoutes } from './routes/models.js';
 import { metadataFieldRoutes, modelMetadataRoute } from './routes/metadata.js';
 import { bulkRoutes } from './routes/bulk.js';
 import { collectionRoutes } from './routes/collections.js';
+import { smartCollectionRoutes } from './routes/smart-collections.js';
 import { fileRoutes } from './routes/files.js';
 import { searchRoutes } from './routes/search.js';
 import { startIngestionWorker } from './workers/ingestion.worker.js';
@@ -65,6 +66,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   await app.register(modelMetadataRoute, { prefix: '/models' });
   await app.register(bulkRoutes, { prefix: '/bulk' });
   await app.register(collectionRoutes, { prefix: '/collections' });
+  await app.register(smartCollectionRoutes, { prefix: '/smart-collections' });
   await app.register(fileRoutes, { prefix: '/files' });
   await app.register(searchRoutes, { prefix: '/search' });
 

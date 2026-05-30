@@ -10,6 +10,8 @@ import { models } from '../db/schema/index.js';
 import { presenterService } from './presenter.service.js';
 import { collectionService } from './collection.service.js';
 import { metadataService } from './metadata.service.js';
+import { buildLeafCondition, buildTsQuery } from './rule-engine.js';
+import type { RuleCondition, RuleFieldRef, RuleOperator } from '@alexandria/shared';
 import { validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -23,8 +25,23 @@ const DEFAULT_GLOBAL_LIMIT = 6;
 // Public interfaces
 // ---------------------------------------------------------------------------
 
+/**
+ * Extra options for searchModels. `ruleWhere` is a pre-compiled smart-collection
+ * rule tree (see rule-engine) ANDed into the query. `applyDefaultStatus`
+ * controls the implicit status='ready' default — smart collections suppress it
+ * when their rule tree references status, to avoid a contradiction.
+ */
+export interface SearchModelsOptions {
+  ruleWhere?: SQL;
+  applyDefaultStatus?: boolean;
+}
+
 export interface ISearchService {
-  searchModels(params: ModelSearchParams, libraryId: string): Promise<SearchResult>;
+  searchModels(
+    params: ModelSearchParams,
+    libraryId: string,
+    options?: SearchModelsOptions,
+  ): Promise<SearchResult>;
   searchAll(
     params: GlobalSearchParams,
     userId: string,
@@ -53,23 +70,12 @@ interface CursorPayload {
 // ---------------------------------------------------------------------------
 
 /**
- * Convert a user-supplied search string into a Postgres tsquery expression.
- * Example: "dragon bust" → "dragon & bust:*"
- * Prefix matching is applied only to the last token so mid-string words still
- * require exact form, keeping result quality reasonable.
+ * Build a single flat filter as a rule-engine leaf, so flat search and smart
+ * collections emit identical SQL per dimension (buildTsQuery is shared too).
  */
-function buildTsQuery(q: string): string {
-  const tokens = q.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return '';
-
-  // Escape characters that have special meaning in tsquery
-  const safe = tokens.map((t) => t.replace(/[!'()*:&|<>]/g, ''));
-  const filtered = safe.filter(Boolean);
-  if (filtered.length === 0) return '';
-
-  const last = filtered.length - 1;
-  const parts = filtered.map((t, i) => (i === last ? `${t}:*` : t));
-  return parts.join(' & ');
+function leaf(field: RuleFieldRef, operator: RuleOperator, value: string) {
+  const condition: RuleCondition = { kind: 'condition', field, operator, value };
+  return buildLeafCondition(condition);
 }
 
 function encodeCursor(sortValue: string | number, id: string): string {
@@ -112,7 +118,12 @@ function buildCursorWhere(
 // ---------------------------------------------------------------------------
 
 export class PostgresSearchService implements ISearchService {
-  async searchModels(params: ModelSearchParams, libraryId: string): Promise<SearchResult> {
+  async searchModels(
+    params: ModelSearchParams,
+    libraryId: string,
+    options: SearchModelsOptions = {},
+  ): Promise<SearchResult> {
+    const { ruleWhere, applyDefaultStatus = true } = options;
     const pageSize = Math.min(params.pageSize ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const sortField = params.sort ?? 'createdAt';
     const sortDir = params.sortDir ?? 'desc';
@@ -155,63 +166,46 @@ export class PostgresSearchService implements ISearchService {
       }
     }
 
-    // Status filter — default to 'ready' to exclude processing/error models
+    // Status filter — default to 'ready' to exclude processing/error models.
+    // The default is suppressed when a smart-collection rule tree already
+    // constrains status (applyDefaultStatus=false), to avoid a contradiction.
     if (params.status) {
-      conditions.push(sql`${models.status} = ${params.status}`);
-    } else {
-      conditions.push(sql`${models.status} = 'ready'`);
+      conditions.push(leaf({ source: 'builtin', field: 'status' }, 'is', params.status));
+    } else if (applyDefaultStatus) {
+      conditions.push(leaf({ source: 'builtin', field: 'status' }, 'is', 'ready'));
     }
 
     // File type filter — EXISTS subquery
     if (params.fileType) {
-      conditions.push(
-        sql`EXISTS (
-          SELECT 1 FROM model_files mf
-          WHERE mf.model_id = ${models.id}
-            AND mf.file_type = ${params.fileType}
-        )`,
-      );
+      conditions.push(leaf({ source: 'builtin', field: 'fileType' }, 'has', params.fileType));
     }
 
     // Collection filter
     if (params.collectionId) {
       conditions.push(
-        sql`${models.id} IN (
-          SELECT cm.model_id FROM collection_models cm
-          WHERE cm.collection_id = ${params.collectionId}
-        )`,
+        leaf({ source: 'builtin', field: 'collection' }, 'inCollection', params.collectionId),
       );
     }
 
-    // Tags filter — ALL semantics (model must have every listed tag)
-    // Matches by tag name (case-insensitive) because listFieldValues returns tag names as values.
+    // Tags filter — ALL semantics (model must have every listed tag).
+    // Matches by tag name (case-insensitive); one membership leaf per tag.
     if (params.tags) {
       const tagNames = params.tags.split(',').map((s) => s.trim()).filter(Boolean);
-      if (tagNames.length > 0) {
-        for (const name of tagNames) {
-          conditions.push(
-            sql`${models.id} IN (
-              SELECT mt.model_id FROM model_tags mt
-              INNER JOIN tags t ON t.id = mt.tag_id
-              WHERE lower(t.name) = lower(${name})
-            )`,
-          );
-        }
+      for (const name of tagNames) {
+        conditions.push(leaf({ source: 'builtin', field: 'tag' }, 'hasTag', name));
       }
     }
 
-    // Generic metadata filters
+    // Generic metadata filters — exact value match per field slug
     if (params.metadataFilters && Object.keys(params.metadataFilters).length > 0) {
       for (const [fieldSlug, value] of Object.entries(params.metadataFilters)) {
-        conditions.push(
-          sql`${models.id} IN (
-            SELECT mm.model_id FROM model_metadata mm
-            INNER JOIN metadata_field_definitions fd ON fd.id = mm.field_definition_id
-            WHERE fd.slug = ${fieldSlug}
-              AND mm.value = ${value}
-          )`,
-        );
+        conditions.push(leaf({ source: 'metadata', slug: fieldSlug }, 'equals', value));
       }
+    }
+
+    // Smart-collection rule tree (pre-compiled by the caller), ANDed in.
+    if (ruleWhere) {
+      conditions.push(ruleWhere);
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
