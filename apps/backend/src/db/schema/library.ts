@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, boolean, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, boolean, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { users } from './user.js';
 
 // Libraries table — top-level organizational scope for models and collections.
@@ -14,7 +15,7 @@ export const libraries = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id),
-    // Each user has exactly one default library; enforced at the application layer
+    // Each user has exactly one default library; enforced by a partial unique index below.
     isDefault: boolean('is_default').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -22,6 +23,12 @@ export const libraries = pgTable(
   (table) => [
     // List libraries owned by a user (most common access pattern)
     index('libraries_user_id_idx').on(table.userId),
+    // Enforce exactly one default library per user at the DB level. A partial
+    // unique index lets a user have many non-default libraries but only one
+    // default, and makes resolveDefaultLibraryId's lookup race-safe.
+    uniqueIndex('libraries_user_default_unique')
+      .on(table.userId)
+      .where(sql`${table.isDefault}`),
   ],
 );
 

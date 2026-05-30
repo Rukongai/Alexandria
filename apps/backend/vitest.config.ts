@@ -12,14 +12,16 @@ export default defineConfig({
     // DB and break count/ordering-sensitive queries. `fileParallelism: false`
     // forces files to run one after another.
     fileParallelism: false,
-    poolOptions: {
-      threads: { singleThread: true },
-      forks: { singleFork: true },
-    },
     exclude: ['dist/**', 'node_modules/**'],
     env: {
       DATABASE_URL: 'postgresql://alexandria:alexandria@localhost:5433/alexandria_test',
     },
+  },
+  // Vitest 4 moved poolOptions to the top level. Pin to a single fork so the
+  // serialized files also share one process (belt-and-suspenders with
+  // fileParallelism for the shared-DB integration tests).
+  poolOptions: {
+    forks: { singleFork: true },
   },
   resolve: {
     // Support .js extension imports in ESM TypeScript source
