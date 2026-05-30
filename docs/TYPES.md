@@ -184,6 +184,118 @@ interface Collection {
 
 Join table `collection_models`: `{ collectionId: string, modelId: string }`
 
+### SmartCollection
+
+A dynamic, rule-based collection. The `definition` field is the sole server state — results are derived on read by compiling the tree into SQL. The database schema is in `apps/backend/src/db/schema/smart-collection.ts` and migration `0009_add_smart_collections.sql`. Shared types are in `packages/shared/src/types/smart-collection.ts`.
+
+```typescript
+interface SmartCollection {
+  id: string;
+  name: string;
+  slug: string;       // globally unique; URL-safe
+  description: string | null;
+  definition: RuleNode; // the rule tree; see below
+  userId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+There is no membership join table and no parent/child nesting.
+
+#### Rule Tree Types
+
+A rule tree is a `RuleNode` — either a leaf condition or a group combining children with AND or OR.
+
+```typescript
+// A leaf: one condition targeting one field.
+interface RuleCondition {
+  kind: 'condition';
+  field: RuleFieldRef;
+  operator: RuleOperator;
+  value: string | null; // null only for exists/notExists operators
+}
+
+// A branch: combine children with AND or OR.
+interface RuleGroup {
+  kind: 'group';
+  op: 'and' | 'or';
+  children: RuleNode[];
+}
+
+type RuleNode = RuleGroup | RuleCondition;
+```
+
+`RuleFieldRef` identifies the field a condition targets — either a named built-in dimension or a user-defined metadata field by slug:
+
+```typescript
+type RuleFieldRef =
+  | { source: 'builtin'; field: BuiltinRuleField }
+  | { source: 'metadata'; slug: string };
+
+type BuiltinRuleField =
+  | 'name'         // full-text search / exact match on model name
+  | 'description'  // ILIKE substring match on description
+  | 'status'       // models.status column
+  | 'fileType'     // EXISTS in model_files for the given file_type
+  | 'collection'   // membership in a collection (by UUID value)
+  | 'tag';         // tag membership (by name, case-insensitive)
+```
+
+`RuleOperator` is the set of operators available in v1. All are text-safe — numeric and date comparison operators are deferred because metadata values are stored as untyped text.
+
+```typescript
+type RuleOperator =
+  | 'contains'         // full-text / ILIKE substring
+  | 'equals'           // exact, case-insensitive
+  | 'notEquals'
+  | 'is'               // enum / boolean exact match
+  | 'isNot'
+  | 'has'              // file type present (EXISTS)
+  | 'notHas'
+  | 'hasTag'           // tag membership
+  | 'notHasTag'
+  | 'inCollection'     // collection membership
+  | 'notInCollection'
+  | 'exists'           // metadata field has any value (no value required)
+  | 'notExists';
+```
+
+Legal operator combinations — which operators are valid for which fields — are defined in `LEGAL_OPERATORS_BY_BUILTIN` and `LEGAL_OPERATORS_BY_METADATA_TYPE` in `packages/shared/src/types/smart-collection.ts`. The shared validator enforces built-in legality; metadata legality is checked server-side once the field definition is resolved.
+
+Tree complexity bounds (enforced by the shared Zod schema and re-checked server-side):
+
+| Bound | Value | Constant |
+|-------|-------|----------|
+| Maximum group nesting depth | 3 | `SMART_COLLECTION_MAX_DEPTH` |
+| Maximum total nodes | 50 | `SMART_COLLECTION_MAX_NODES` |
+| Maximum children per group | 20 | `SMART_COLLECTION_MAX_CHILDREN` |
+
+#### Smart Collection Response Types
+
+```typescript
+// Lightweight; used in the list response
+interface SmartCollectionSummary {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+// Full detail; returned by create, update, and GET /:id
+interface SmartCollectionDetail {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  definition: RuleNode;
+  modelCount: number; // derived live by executing the rule tree
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+`modelCount` in `SmartCollectionDetail` is computed by running the compiled rule tree through `SearchService.searchModels` at response time. The list endpoint (`GET /smart-collections`) returns `SmartCollection` (no count) to avoid N+1 queries.
+
 ### ImportSession
 
 A staged archive upload awaiting review and commit. Created by `POST /models/upload` (and the chunked complete endpoint); destroyed by commit or discard. The database schema is in `apps/backend/src/db/schema/import-session.ts` and migration `0008_add_import_sessions.sql`.
@@ -562,6 +674,35 @@ interface AddModelsToCollectionRequest {
 }
 ```
 
+### Smart Collection Requests
+
+```typescript
+interface CreateSmartCollectionRequest {
+  name: string;          // 1–255 characters
+  description?: string;  // maximum 2000 characters
+  definition: RuleNode;  // the rule tree
+}
+
+interface UpdateSmartCollectionRequest {
+  name?: string;
+  description?: string | null; // null clears the description
+  definition?: RuleNode;
+}
+
+// POST /smart-collections/preview — dry-run an unsaved rule tree
+interface PreviewSmartCollectionRequest {
+  definition: RuleNode;
+  status?: ModelStatus;
+  fileType?: FileType;
+  sort?: 'name' | 'createdAt' | 'totalSizeBytes';
+  sortDir?: 'asc' | 'desc';
+  cursor?: string;
+  pageSize?: number; // default 50, max 200
+}
+```
+
+Validation schemas: `createSmartCollectionSchema`, `updateSmartCollectionSchema`, `previewSmartCollectionSchema`, `smartCollectionDefinitionSchema` in `packages/shared/src/validation/smart-collection.ts`.
+
 ### Metadata Requests
 
 ```typescript
@@ -717,14 +858,19 @@ User ──owns──→ Library ──scopes──→ Model ──has many─�
   │               │
   │               ├──scopes──→ Collection
   │               │
+  │               ├──scopes──→ SmartCollection  (definition: RuleNode JSONB;
+  │               │               no membership table; results derived on read)
+  │               │
   │               └──scopes──→ ImportSession ──(on commit)──→ Model
   │                              (staged upload; expires 24h; FK set null on model delete)
   │
   └──owns──→ Collection (via userId, for ownership; libraryId for scope)
+  └──owns──→ SmartCollection (via userId, for ownership; libraryId for scope)
 ```
 
 The key insights:
 
-- Library is the top-level scope for models and collections. Every model and collection has a NOT NULL `libraryId` FK. The API enforces this via the `requireLibrary` preHandler, which injects `request.libraryId` from the session — clients never supply it.
+- Library is the top-level scope for models, collections, and smart collections. Every model, collection, and smart collection has a NOT NULL `libraryId` FK. The API enforces this via the `requireLibrary` preHandler, which injects `request.libraryId` from the session — clients never supply it.
 - Tag and model_tags exist as database-level optimizations. At the API level, tags are just metadata values of type `multi_enum`. MetadataService abstracts the storage routing.
+- `SmartCollection` stores only a rule tree. It has no join table and no parent/child nesting. The model result set is computed on each request by compiling the tree into SQL.
 - `ImportSession` is a transient entity. It exists between `POST /models/upload` (scan enqueued) and `POST /models/import-sessions/:id/commit` (model created). The `modelId` FK is set to null on model deletion; the session row itself is deleted by the discard endpoint or reaped by the expiry cleanup.

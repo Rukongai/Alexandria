@@ -169,6 +169,8 @@ function buildMetadataCondition(leaf: RuleCondition): SQL {
     }
     case 'notEquals':
     case 'isNot': {
+      // NOT IN also matches models that have NO value for this field (not just a
+      // different value). Safe here: model_metadata.model_id is NOT NULL.
       const sub = metadataMembership(slug, sql`mm.value = ${requireValue(leaf)}`);
       return sql`${models.id} NOT IN ${sub}`;
     }

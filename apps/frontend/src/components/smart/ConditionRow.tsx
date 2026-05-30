@@ -76,6 +76,10 @@ export function ConditionRow({ node, fields, onChange, onRemove }: Props) {
   const field = node.field;
   const metaDef = field.source === 'metadata' ? fields.find((f) => f.slug === field.slug) : undefined;
 
+  // The 'tags' field is stored in dedicated tables, not model_metadata, so a
+  // metadata rule on it matches nothing — the builtin "Tag" field covers it.
+  const metadataFieldOptions = fields.filter((f) => f.slug !== 'tags');
+
   const operators = legalOperators(field, metaDef);
   const valueless = VALUELESS_OPERATORS.includes(node.operator);
 
@@ -107,9 +111,9 @@ export function ConditionRow({ node, fields, onChange, onRemove }: Props) {
             </option>
           ))}
         </optgroup>
-        {fields.length > 0 && (
+        {metadataFieldOptions.length > 0 && (
           <optgroup label="Metadata">
-            {fields.map((f) => (
+            {metadataFieldOptions.map((f) => (
               <option key={f.slug} value={`metadata:${f.slug}`}>
                 {f.name}
               </option>

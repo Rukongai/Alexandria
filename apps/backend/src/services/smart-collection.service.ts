@@ -87,6 +87,15 @@ export class SmartCollectionService {
       const fields = await metadataService.listFields();
       const bySlug = new Map(fields.map((f) => [f.slug, f]));
       for (const leaf of metadataLeaves) {
+        // Tags are stored in the dedicated model_tags/tags tables (per D3), not
+        // model_metadata, so a metadata rule on the 'tags' field would silently
+        // match nothing. Direct callers to the builtin `tag` dimension instead.
+        if (leaf.field.slug === 'tags') {
+          throw validationError(
+            "Use the 'tag' field instead of the Tags metadata field",
+            'definition',
+          );
+        }
         const def = bySlug.get(leaf.field.slug);
         if (!def) {
           throw validationError(`Unknown metadata field: ${leaf.field.slug}`, 'definition');

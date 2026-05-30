@@ -260,6 +260,18 @@ describe('POST /smart-collections — create', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('rejects a metadata rule on the optimized tags field with 400', async () => {
+    const definition: RuleNode = {
+      kind: 'group',
+      op: 'and',
+      children: [
+        { kind: 'condition', field: { source: 'metadata', slug: 'tags' }, operator: 'contains', value: 'dragon' },
+      ],
+    };
+    const res = await authedPost('/smart-collections', { name: 'tags-meta', definition });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('rejects a tree exceeding the max nesting depth with 400', async () => {
     const leaf: RuleNode = { kind: 'condition', field: { source: 'builtin', field: 'status' }, operator: 'is', value: 'ready' };
     const definition: RuleNode = {
