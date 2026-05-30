@@ -7,6 +7,8 @@ import { DisplayPreferencesProvider } from './hooks/use-display-preferences';
 import { ThemeProvider } from './hooks/use-theme';
 import { Toaster } from './components/ui/toast';
 import App from './App';
+import './styles/ax-tokens.css';
+import './styles/ax-bridge.css';
 import './index.css';
 
 const queryClient = new QueryClient({

@@ -2,87 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    /* Warm stone base — light theme */
-    --background: 40 20% 97%;
-    --foreground: 25 15% 12%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 25 15% 12%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 25 15% 12%;
-
-    /* Amber primary */
-    --primary: 35 92% 48%;
-    --primary-foreground: 40 100% 98%;
-
-    --secondary: 30 12% 92%;
-    --secondary-foreground: 25 15% 20%;
-
-    --muted: 30 10% 94%;
-    --muted-foreground: 25 10% 45%;
-
-    --accent: 35 80% 92%;
-    --accent-foreground: 35 70% 25%;
-
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
-
-    --border: 30 12% 88%;
-    --input: 30 12% 88%;
-    --ring: 35 92% 48%;
-
-    --radius: 0.5rem;
-
-    /* Sidebar — dark warm tone */
-    --sidebar: 25 20% 14%;
-    --sidebar-foreground: 30 15% 85%;
-    --sidebar-border: 25 15% 22%;
-    --sidebar-accent: 30 15% 22%;
-    --sidebar-accent-foreground: 30 20% 92%;
-  }
-
-  .dark {
-    /* Warm dark theme */
-    --background: 25 15% 10%;
-    --foreground: 30 15% 90%;
-
-    --card: 25 15% 13%;
-    --card-foreground: 30 15% 90%;
-
-    --popover: 25 15% 13%;
-    --popover-foreground: 30 15% 90%;
-
-    /* Amber primary unchanged */
-    --primary: 35 92% 48%;
-    --primary-foreground: 40 100% 98%;
-
-    --secondary: 25 12% 20%;
-    --secondary-foreground: 30 15% 80%;
-
-    --muted: 25 12% 18%;
-    --muted-foreground: 25 10% 55%;
-
-    --accent: 35 30% 20%;
-    --accent-foreground: 35 70% 75%;
-
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
-
-    --border: 25 12% 22%;
-    --input: 25 12% 22%;
-    --ring: 35 92% 48%;
-
-    /* Sidebar — slightly darker than body in dark mode */
-    --sidebar: 25 18% 7%;
-    --sidebar-foreground: 30 15% 80%;
-    --sidebar-border: 25 15% 15%;
-    --sidebar-accent: 25 15% 14%;
-    --sidebar-accent-foreground: 30 20% 88%;
-  }
-}
+/* Color/theme vars now come from ax-tokens.css (channels) via ax-bridge.css.
+ * Both are imported in main.tsx so they load alongside this file. */
 
 @layer base {
   * {
