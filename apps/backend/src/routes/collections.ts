@@ -14,6 +14,7 @@ import {
   modelSearchParamsSchema,
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
+import { requireLibrary } from '../middleware/library.js';
 import { validate } from '../middleware/validate.js';
 import { collectionService } from '../services/collection.service.js';
 import { presenterService } from '../services/presenter.service.js';
@@ -103,7 +104,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
   // GET /:id/models — models in a collection (delegates to SearchService)
   app.get(
     '/:id/models',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const rawQuery = request.query as Record<string, unknown>;
@@ -136,7 +137,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const params = parseResult.data as ModelSearchParams;
-      const result = await searchService.searchModels(params);
+      const result = await searchService.searchModels(params, request.libraryId!);
 
       return reply.status(200).send({
         data: result.models,
