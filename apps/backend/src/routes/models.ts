@@ -127,9 +127,11 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // POST /upload/:uploadId/complete — assemble chunks and start ingestion
+  // requireLibrary is mandatory: libraryId comes ONLY from request.libraryId,
+  // never from query or body parameters.
   app.post(
     '/upload/:uploadId/complete',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const parseResult = uploadCompleteParamsSchema.safeParse(request.params);
       if (!parseResult.success) {
@@ -147,6 +149,7 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const { modelId, jobId } = await ingestionService.handleUpload(
         { tempFilePath, originalFilename },
         userId,
+        request.libraryId!,
       );
 
       return reply.status(202).send({ data: { modelId, jobId }, meta: null, errors: null });
@@ -154,9 +157,11 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // POST /upload — accept a zip file, enqueue ingestion
+  // requireLibrary is mandatory: libraryId comes ONLY from request.libraryId,
+  // never from query or body parameters.
   app.post(
     '/upload',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const data = await request.file();
 
@@ -184,6 +189,7 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const { modelId, jobId } = await ingestionService.handleUpload(
         { tempFilePath, originalFilename },
         userId,
+        request.libraryId!,
       );
 
       return reply.status(202).send({ data: { modelId, jobId }, meta: null, errors: null });
@@ -191,14 +197,16 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // POST /import — start folder import
+  // requireLibrary is mandatory: libraryId comes ONLY from request.libraryId,
+  // never from query or body parameters.
   app.post(
     '/import',
-    { preHandler: [requireAuth, validate(importConfigSchema)] },
+    { preHandler: [requireAuth, requireLibrary, validate(importConfigSchema)] },
     async (request, reply) => {
       const body = request.body as ImportConfig;
       const userId = request.user!.id;
 
-      const { jobId } = await ingestionService.handleFolderImport(body, userId);
+      const { jobId } = await ingestionService.handleFolderImport(body, userId, request.libraryId!);
 
       return reply.status(202).send({ data: { jobId }, meta: null, errors: null });
     },

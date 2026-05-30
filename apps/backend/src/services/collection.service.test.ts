@@ -160,6 +160,7 @@ describe('CollectionService – createCollection()', () => {
     const result = await collectionService.createCollection(
       { name: 'My First Collection' },
       testUserId,
+      testLibraryId,
     );
 
     expect(typeof result.id).toBe('string');
@@ -177,6 +178,7 @@ describe('CollectionService – createCollection()', () => {
     const result = await collectionService.createCollection(
       { name: 'Described Collection', description: 'A helpful description' },
       testUserId,
+      testLibraryId,
     );
 
     expect(result.description).toBe('A helpful description');
@@ -186,11 +188,13 @@ describe('CollectionService – createCollection()', () => {
     const parent = await collectionService.createCollection(
       { name: 'Parent Collection' },
       testUserId,
+      testLibraryId,
     );
 
     const child = await collectionService.createCollection(
       { name: 'Child Collection', parentCollectionId: parent.id },
       testUserId,
+      testLibraryId,
     );
 
     expect(child.parentCollectionId).toBe(parent.id);
@@ -201,6 +205,7 @@ describe('CollectionService – createCollection()', () => {
       collectionService.createCollection(
         { name: 'Orphan Collection', parentCollectionId: NULL_UUID },
         testUserId,
+      testLibraryId,
       ),
     ).rejects.toThrow(AppError);
 
@@ -208,6 +213,7 @@ describe('CollectionService – createCollection()', () => {
       collectionService.createCollection(
         { name: 'Orphan Collection', parentCollectionId: NULL_UUID },
         testUserId,
+      testLibraryId,
       ),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
@@ -222,6 +228,7 @@ describe('CollectionService – getCollectionById()', () => {
     const created = await collectionService.createCollection(
       { name: 'Get By ID Test' },
       testUserId,
+      testLibraryId,
     );
 
     const fetched = await collectionService.getCollectionById(created.id);
@@ -235,6 +242,7 @@ describe('CollectionService – getCollectionById()', () => {
     const created = await collectionService.createCollection(
       { name: 'Shape Test Collection', description: 'desc' },
       testUserId,
+      testLibraryId,
     );
 
     const fetched = await collectionService.getCollectionById(created.id);
@@ -267,6 +275,7 @@ describe('CollectionService – getCollectionDetail()', () => {
     const col = await collectionService.createCollection(
       { name: 'Detail Test Collection' },
       testUserId,
+      testLibraryId,
     );
 
     const detail = await collectionService.getCollectionDetail(col.id);
@@ -284,6 +293,7 @@ describe('CollectionService – getCollectionDetail()', () => {
     const col = await collectionService.createCollection(
       { name: 'Childless Collection' },
       testUserId,
+      testLibraryId,
     );
 
     const detail = await collectionService.getCollectionDetail(col.id);
@@ -295,14 +305,17 @@ describe('CollectionService – getCollectionDetail()', () => {
     const parent = await collectionService.createCollection(
       { name: 'Parent with Children' },
       testUserId,
+      testLibraryId,
     );
     const childA = await collectionService.createCollection(
       { name: 'Child A', parentCollectionId: parent.id },
       testUserId,
+      testLibraryId,
     );
     const childB = await collectionService.createCollection(
       { name: 'Child B', parentCollectionId: parent.id },
       testUserId,
+      testLibraryId,
     );
 
     const detail = await collectionService.getCollectionDetail(parent.id);
@@ -324,6 +337,7 @@ describe('CollectionService – getCollectionDetail()', () => {
     const col = await collectionService.createCollection(
       { name: 'Model Count Test' },
       testUserId,
+      testLibraryId,
     );
 
     await collectionService.addModelsToCollection(col.id, [testModelId1, testModelId2]);
@@ -337,6 +351,7 @@ describe('CollectionService – getCollectionDetail()', () => {
     const col = await collectionService.createCollection(
       { name: 'Empty Collection' },
       testUserId,
+      testLibraryId,
     );
 
     const detail = await collectionService.getCollectionDetail(col.id);
@@ -366,14 +381,17 @@ describe('CollectionService – listCollections()', () => {
     const top1 = await collectionService.createCollection(
       { name: 'Top Level 1' },
       testUserId,
+      testLibraryId,
     );
     const top2 = await collectionService.createCollection(
       { name: 'Top Level 2' },
       testUserId,
+      testLibraryId,
     );
     const child = await collectionService.createCollection(
       { name: 'Child of Top 1', parentCollectionId: top1.id },
       testUserId,
+      testLibraryId,
     );
 
     const result = await collectionService.listCollections(testUserId, testLibraryId);
@@ -389,10 +407,12 @@ describe('CollectionService – listCollections()', () => {
     const top = await collectionService.createCollection(
       { name: 'Top with Sub' },
       testUserId,
+      testLibraryId,
     );
     const child = await collectionService.createCollection(
       { name: 'Sub Collection', parentCollectionId: top.id },
       testUserId,
+      testLibraryId,
     );
 
     const result = await collectionService.listCollections(testUserId, testLibraryId, { depth: 1 });
@@ -407,6 +427,7 @@ describe('CollectionService – listCollections()', () => {
     const col = await collectionService.createCollection(
       { name: 'List With Models' },
       testUserId,
+      testLibraryId,
     );
     await collectionService.addModelsToCollection(col.id, [testModelId1]);
 
@@ -421,12 +442,14 @@ describe('CollectionService – listCollections()', () => {
     const first = await collectionService.createCollection(
       { name: 'First Created' },
       testUserId,
+      testLibraryId,
     );
     // Small delay to ensure distinct timestamps
     await new Promise((r) => setTimeout(r, 10));
     const second = await collectionService.createCollection(
       { name: 'Second Created' },
       testUserId,
+      testLibraryId,
     );
 
     const result = await collectionService.listCollections(testUserId, testLibraryId);
@@ -463,6 +486,7 @@ describe('CollectionService – listCollections()', () => {
       const colA = await collectionService.createCollection(
         { name: 'Library A Collection' },
         testUserId,
+        testLibraryId,
       );
 
       // listCollections scoped to library A must NOT return library B's collection
@@ -494,6 +518,7 @@ describe('CollectionService – updateCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Original Name' },
       testUserId,
+      testLibraryId,
     );
 
     const updated = await collectionService.updateCollection(col.id, {
@@ -510,6 +535,7 @@ describe('CollectionService – updateCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'No Description Yet' },
       testUserId,
+      testLibraryId,
     );
 
     const updated = await collectionService.updateCollection(col.id, {
@@ -523,6 +549,7 @@ describe('CollectionService – updateCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Has Description', description: 'To be cleared' },
       testUserId,
+      testLibraryId,
     );
 
     const updated = await collectionService.updateCollection(col.id, {
@@ -536,14 +563,17 @@ describe('CollectionService – updateCollection()', () => {
     const parentA = await collectionService.createCollection(
       { name: 'Parent A' },
       testUserId,
+      testLibraryId,
     );
     const parentB = await collectionService.createCollection(
       { name: 'Parent B' },
       testUserId,
+      testLibraryId,
     );
     const child = await collectionService.createCollection(
       { name: 'Moveable Child', parentCollectionId: parentA.id },
       testUserId,
+      testLibraryId,
     );
 
     const moved = await collectionService.updateCollection(child.id, {
@@ -557,10 +587,12 @@ describe('CollectionService – updateCollection()', () => {
     const parent = await collectionService.createCollection(
       { name: 'Detach Parent' },
       testUserId,
+      testLibraryId,
     );
     const child = await collectionService.createCollection(
       { name: 'Will Detach', parentCollectionId: parent.id },
       testUserId,
+      testLibraryId,
     );
 
     const detached = await collectionService.updateCollection(child.id, {
@@ -574,10 +606,12 @@ describe('CollectionService – updateCollection()', () => {
     const parent = await collectionService.createCollection(
       { name: 'Cycle Parent' },
       testUserId,
+      testLibraryId,
     );
     const child = await collectionService.createCollection(
       { name: 'Cycle Child', parentCollectionId: parent.id },
       testUserId,
+      testLibraryId,
     );
 
     await expect(
@@ -597,14 +631,17 @@ describe('CollectionService – updateCollection()', () => {
     const grandparent = await collectionService.createCollection(
       { name: 'Grandparent' },
       testUserId,
+      testLibraryId,
     );
     const parent = await collectionService.createCollection(
       { name: 'Parent', parentCollectionId: grandparent.id },
       testUserId,
+      testLibraryId,
     );
     const grandchild = await collectionService.createCollection(
       { name: 'Grandchild', parentCollectionId: parent.id },
       testUserId,
+      testLibraryId,
     );
 
     await expect(
@@ -624,6 +661,7 @@ describe('CollectionService – updateCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Needs Valid Parent' },
       testUserId,
+      testLibraryId,
     );
 
     await expect(
@@ -643,6 +681,7 @@ describe('CollectionService – deleteCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'To Be Deleted' },
       testUserId,
+      testLibraryId,
     );
 
     await collectionService.deleteCollection(col.id);
@@ -656,10 +695,12 @@ describe('CollectionService – deleteCollection()', () => {
     const parent = await collectionService.createCollection(
       { name: 'Parent To Delete' },
       testUserId,
+      testLibraryId,
     );
     const child = await collectionService.createCollection(
       { name: 'Child Will Survive', parentCollectionId: parent.id },
       testUserId,
+      testLibraryId,
     );
 
     await collectionService.deleteCollection(parent.id);
@@ -674,6 +715,7 @@ describe('CollectionService – deleteCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Collection With Models' },
       testUserId,
+      testLibraryId,
     );
     await collectionService.addModelsToCollection(col.id, [testModelId1]);
 
@@ -694,6 +736,7 @@ describe('CollectionService – deleteCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Membership Cleanup' },
       testUserId,
+      testLibraryId,
     );
     await collectionService.addModelsToCollection(col.id, [testModelId1]);
 
@@ -723,6 +766,7 @@ describe('CollectionService – addModelsToCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Add Models Test' },
       testUserId,
+      testLibraryId,
     );
 
     await collectionService.addModelsToCollection(col.id, [testModelId1, testModelId2]);
@@ -742,6 +786,7 @@ describe('CollectionService – addModelsToCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Idempotent Add' },
       testUserId,
+      testLibraryId,
     );
 
     await collectionService.addModelsToCollection(col.id, [testModelId1]);
@@ -759,6 +804,7 @@ describe('CollectionService – addModelsToCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Empty Add' },
       testUserId,
+      testLibraryId,
     );
 
     // Should not throw
@@ -778,10 +824,12 @@ describe('CollectionService – addModelsToCollection()', () => {
     const colA = await collectionService.createCollection(
       { name: 'Multi-Collection A' },
       testUserId,
+      testLibraryId,
     );
     const colB = await collectionService.createCollection(
       { name: 'Multi-Collection B' },
       testUserId,
+      testLibraryId,
     );
 
     await collectionService.addModelsToCollection(colA.id, [testModelId1]);
@@ -818,6 +866,7 @@ describe('CollectionService – removeModelFromCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Remove Model Test' },
       testUserId,
+      testLibraryId,
     );
     await collectionService.addModelsToCollection(col.id, [testModelId1, testModelId2]);
 
@@ -836,6 +885,7 @@ describe('CollectionService – removeModelFromCollection()', () => {
     const col = await collectionService.createCollection(
       { name: 'Remove Non-Member' },
       testUserId,
+      testLibraryId,
     );
 
     // testModelId3 was never added — should silently succeed
@@ -854,6 +904,7 @@ describe('CollectionService – bulkCollectionOperation() with action=add', () =
     const col = await collectionService.createCollection(
       { name: 'Bulk Add Target' },
       testUserId,
+      testLibraryId,
     );
 
     await collectionService.bulkCollectionOperation({
@@ -874,6 +925,7 @@ describe('CollectionService – bulkCollectionOperation() with action=add', () =
     const col = await collectionService.createCollection(
       { name: 'Bulk Add Idempotent' },
       testUserId,
+      testLibraryId,
     );
 
     await collectionService.bulkCollectionOperation({
@@ -899,6 +951,7 @@ describe('CollectionService – bulkCollectionOperation() with action=add', () =
     const col = await collectionService.createCollection(
       { name: 'Bulk Add Empty' },
       testUserId,
+      testLibraryId,
     );
 
     await expect(
@@ -916,6 +969,7 @@ describe('CollectionService – bulkCollectionOperation() with action=remove', (
     const col = await collectionService.createCollection(
       { name: 'Bulk Remove Selective' },
       testUserId,
+      testLibraryId,
     );
     await collectionService.addModelsToCollection(col.id, [
       testModelId1,
@@ -942,6 +996,7 @@ describe('CollectionService – bulkCollectionOperation() with action=remove', (
     const col = await collectionService.createCollection(
       { name: 'Bulk Remove Non-Members' },
       testUserId,
+      testLibraryId,
     );
 
     await expect(
@@ -957,6 +1012,7 @@ describe('CollectionService – bulkCollectionOperation() with action=remove', (
     const col = await collectionService.createCollection(
       { name: 'Bulk Remove Empty' },
       testUserId,
+      testLibraryId,
     );
     await collectionService.addModelsToCollection(col.id, [testModelId1]);
 
@@ -994,6 +1050,7 @@ describe('CollectionService – findOrCreateByName()', () => {
     const result = await collectionService.findOrCreateByName(
       'Brand New Collection',
       testUserId,
+      testLibraryId,
     );
 
     expect(typeof result.id).toBe('string');
@@ -1012,11 +1069,13 @@ describe('CollectionService – findOrCreateByName()', () => {
     const first = await collectionService.findOrCreateByName(
       'Existing Collection',
       testUserId,
+      testLibraryId,
     );
 
     const second = await collectionService.findOrCreateByName(
       'Existing Collection',
       testUserId,
+      testLibraryId,
     );
 
     expect(second.id).toBe(first.id);
@@ -1027,11 +1086,13 @@ describe('CollectionService – findOrCreateByName()', () => {
     const first = await collectionService.findOrCreateByName(
       'Case Collection',
       testUserId,
+      testLibraryId,
     );
 
     const found = await collectionService.findOrCreateByName(
       'CASE COLLECTION',
       testUserId,
+      testLibraryId,
     );
 
     expect(found.id).toBe(first.id);
@@ -1041,6 +1102,7 @@ describe('CollectionService – findOrCreateByName()', () => {
     const result = await collectionService.findOrCreateByName(
       'Shape Check Collection',
       testUserId,
+      testLibraryId,
     );
 
     expect(typeof result.id).toBe('string');
@@ -1057,14 +1119,17 @@ describe('CollectionService – parent-child nesting', () => {
     const grandparent = await collectionService.createCollection(
       { name: 'GP Level' },
       testUserId,
+      testLibraryId,
     );
     const parent = await collectionService.createCollection(
       { name: 'P Level', parentCollectionId: grandparent.id },
       testUserId,
+      testLibraryId,
     );
     const child = await collectionService.createCollection(
       { name: 'C Level', parentCollectionId: parent.id },
       testUserId,
+      testLibraryId,
     );
 
     expect(child.parentCollectionId).toBe(parent.id);
@@ -1076,10 +1141,12 @@ describe('CollectionService – parent-child nesting', () => {
     const top = await collectionService.createCollection(
       { name: 'Top Nesting Test' },
       testUserId,
+      testLibraryId,
     );
     const nested = await collectionService.createCollection(
       { name: 'Nested Child', parentCollectionId: top.id },
       testUserId,
+      testLibraryId,
     );
 
     const result = await collectionService.listCollections(testUserId, testLibraryId);
@@ -1098,10 +1165,12 @@ describe('CollectionService – parent-child nesting', () => {
     const root = await collectionService.createCollection(
       { name: 'Root' },
       testUserId,
+      testLibraryId,
     );
     const mid = await collectionService.createCollection(
       { name: 'Mid', parentCollectionId: root.id },
       testUserId,
+      testLibraryId,
     );
 
     const rootDetail = await collectionService.getCollectionDetail(root.id);

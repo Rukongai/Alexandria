@@ -11,7 +11,6 @@ import type { Collection as CollectionRow } from '../db/schema/collection.js';
 import { createLogger } from '../utils/logger.js';
 import { generateSlug } from '../utils/slug.js';
 import { notFound, validationError } from '../utils/errors.js';
-import { libraryService } from './library.service.js';
 
 const logger = createLogger('CollectionService');
 
@@ -44,11 +43,15 @@ export class CollectionService {
   /**
    * Find a collection by name for a user, or create it if it doesn't exist.
    * Uses case-insensitive name matching.
-   * Preserved for folder import backward compatibility.
+   *
+   * libraryId MUST be provided explicitly — it comes from the ingestion job
+   * payload which was populated from request.libraryId at import-request time.
+   * The service no longer resolves the default library internally for this path.
    */
   async findOrCreateByName(
     name: string,
     userId: string,
+    libraryId: string,
   ): Promise<{ id: string; name: string }> {
     const [existing] = await db
       .select({ id: collections.id, name: collections.name })
@@ -57,6 +60,7 @@ export class CollectionService {
         and(
           sql`lower(${collections.name}) = lower(${name})`,
           eq(collections.userId, userId),
+          eq(collections.libraryId, libraryId),
         ),
       )
       .limit(1);
@@ -66,15 +70,13 @@ export class CollectionService {
     }
 
     const slug = generateSlug(name);
-    // Collections are scoped to a library (library_id NOT NULL since 0007).
-    const libraryId = await libraryService.resolveDefaultLibraryId(userId);
     const [created] = await db
       .insert(collections)
       .values({ name, slug, userId, libraryId })
       .returning({ id: collections.id, name: collections.name });
 
     logger.info(
-      { service: 'CollectionService', collectionId: created.id, name, slug },
+      { service: 'CollectionService', collectionId: created.id, name, slug, libraryId },
       'Created collection from import pattern',
     );
 
@@ -99,18 +101,21 @@ export class CollectionService {
 
   /**
    * Create a new collection. Validates parent exists if provided.
+   *
+   * libraryId MUST be provided explicitly — it comes from request.libraryId
+   * (set by the requireLibrary preHandler). The service no longer resolves
+   * the default library internally so the library is always caller-determined.
    */
   async createCollection(
     data: { name: string; description?: string; parentCollectionId?: string },
     userId: string,
+    libraryId: string,
   ): Promise<Collection> {
     if (data.parentCollectionId) {
       await this._requireCollection(data.parentCollectionId);
     }
 
     const slug = generateSlug(data.name);
-    // Collections are scoped to a library (library_id NOT NULL since 0007).
-    const libraryId = await libraryService.resolveDefaultLibraryId(userId);
     const [row] = await db
       .insert(collections)
       .values({

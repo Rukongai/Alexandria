@@ -53,13 +53,15 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // POST / — create a collection
+  // requireLibrary is mandatory: libraryId comes ONLY from request.libraryId,
+  // never from query or body parameters.
   app.post(
     '/',
-    { preHandler: [requireAuth, validate(createCollectionSchema)] },
+    { preHandler: [requireAuth, requireLibrary, validate(createCollectionSchema)] },
     async (request, reply) => {
       const body = request.body as CreateCollectionRequest;
       const userId = request.user!.id;
-      const collection = await collectionService.createCollection(body, userId);
+      const collection = await collectionService.createCollection(body, userId, request.libraryId!);
 
       return reply.status(201).send({ data: collection, meta: null, errors: null });
     },
