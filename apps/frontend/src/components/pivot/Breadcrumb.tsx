@@ -3,6 +3,7 @@ import {
   CollectionsIcon,
   ArtistIcon,
   TagIcon,
+  SmartIcon,
   ChevronRightIcon,
 } from '../icons';
 
@@ -15,12 +16,14 @@ const AXIS_LABELS: Record<PivotAxis, string> = {
   collections: 'Collections',
   artists: 'Artists',
   tags: 'Tags',
+  smart: 'Smart Collections',
 };
 
 const AXIS_ICONS: Record<PivotAxis, React.ReactNode> = {
   collections: <CollectionsIcon className="h-3.5 w-3.5" />,
   artists: <ArtistIcon className="h-3.5 w-3.5" />,
   tags: <TagIcon className="h-3.5 w-3.5" />,
+  smart: <SmartIcon className="h-3.5 w-3.5" />,
 };
 
 /**

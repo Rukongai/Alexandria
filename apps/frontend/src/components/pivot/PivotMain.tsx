@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Pencil } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { useModelFilters } from '../../hooks/use-model-filters';
 import { useModelResults } from '../../hooks/use-model-results';
+import { getSmartCollections, getSmartCollectionModels } from '../../api/smart-collections';
 import { useDisplayPreferences } from '../../hooks/use-display-preferences';
 import { useBulkSelection } from '../../hooks/use-bulk-selection';
 import { ModelCard } from '../models/ModelCard';
@@ -18,6 +20,7 @@ import {
   CollectionsIcon,
   ArtistIcon,
   TagIcon,
+  SmartIcon,
 } from '../icons';
 import type { PivotAxis } from '../../hooks/use-model-filters';
 
@@ -25,12 +28,14 @@ const AXIS_ICONS: Record<PivotAxis, React.ComponentType<{ className?: string }>>
   collections: CollectionsIcon,
   artists: ArtistIcon,
   tags: TagIcon,
+  smart: SmartIcon,
 };
 
 const AXIS_LABELS: Record<PivotAxis, string> = {
   collections: 'Collections',
   artists: 'Artists',
   tags: 'Tags',
+  smart: 'Smart Collections',
 };
 
 /** Derive a human-readable context title from the active axis + selection. */
@@ -65,12 +70,22 @@ function deriveContextTitle(
  */
 export function PivotMain() {
   const navigate = useNavigate();
-  const { filters, toApiParams, setQ, axis, activeAxisValue, hasActiveFilters } =
+  const { filters, toApiParams, setQ, axis, activeAxisValue, hasActiveFilters, smartCollectionId } =
     useModelFilters();
   const { view, showThumbnails } = useDisplayPreferences();
 
   const [bulkMode, setBulkMode] = useState(false);
   const { selected, toggle, selectAll, clear, isSelected, count } = useBulkSelection();
+
+  // Smart axis: drive the grid from a selected smart collection's derived set.
+  const isSmart = axis === 'smart';
+  const smartActive = isSmart && !!smartCollectionId;
+  const { data: smartList } = useQuery({
+    queryKey: ['smart-collections'],
+    queryFn: () => getSmartCollections().then((r) => r.data),
+    enabled: isSmart,
+  });
+  const activeSmart = smartList?.find((s) => s.id === smartCollectionId);
 
   const {
     models,
@@ -80,7 +95,13 @@ export function PivotMain() {
     isFetchingNextPage,
     hasNextPage,
     sentinelRef,
-  } = useModelResults({ filters, toApiParams });
+  } = useModelResults({
+    filters,
+    toApiParams,
+    fetcher: smartActive ? (params) => getSmartCollectionModels(smartCollectionId, params) : undefined,
+    queryKeyExtra: smartActive ? ['smart', smartCollectionId] : [],
+    enabled: !isSmart || smartActive,
+  });
 
   function handleSelectAll() {
     selectAll(models.map((m) => m.id));
@@ -92,13 +113,16 @@ export function PivotMain() {
   }
 
   const AxisIcon = AXIS_ICONS[axis];
-  const contextTitle = deriveContextTitle(axis, activeAxisValue);
+  const contextTitle = isSmart
+    ? activeSmart?.name ?? 'Smart Collections'
+    : deriveContextTitle(axis, activeAxisValue);
 
   // Axis icon badge background per axis
   const AXIS_BG: Record<PivotAxis, string> = {
     collections: 'linear-gradient(135deg, var(--ax-amber), var(--ax-amber-deep, #b45309))',
     artists: 'linear-gradient(135deg, var(--ax-teal, #0d9488), #0f766e)',
     tags: 'linear-gradient(135deg, var(--ax-teal, #0d9488), #0f766e)',
+    smart: 'linear-gradient(135deg, var(--ax-violet, #7c3aed), #6d28d9)',
   };
 
   return (
@@ -208,6 +232,16 @@ export function PivotMain() {
 
         {/* View switch + bulk mode toggle */}
         <div className="flex items-center gap-2 flex-shrink-0">
+          {smartActive && (
+            <Link
+              to={`/smart-collections/${smartCollectionId}/edit`}
+              className="flex items-center gap-1.5 h-8 rounded-lg px-3 text-sm font-medium transition-colors"
+              style={{ background: 'var(--ax-bg-elev)', border: '1px solid var(--ax-border)', color: 'var(--ax-fg)', textDecoration: 'none' }}
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden />
+              Edit rules
+            </Link>
+          )}
           {models.length > 0 && (
             <button
               type="button"
@@ -331,9 +365,29 @@ export function PivotMain() {
           </>
         )}
 
+        {/* Smart axis with nothing selected — prompt to pick or create one */}
+        {isSmart && !smartActive && !isLoading && (
+          <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+            <SmartIcon className="h-8 w-8" style={{ color: 'var(--ax-fg-muted)' }} />
+            <p className="text-sm" style={{ color: 'var(--ax-fg-muted)' }}>
+              Select a smart collection from the rail, or
+            </p>
+            <Link
+              to="/smart-collections/new"
+              className="rounded-lg px-3 h-8 flex items-center text-sm font-medium"
+              style={{ background: 'var(--ax-amber)', color: 'var(--ax-amber-fg, white)', textDecoration: 'none' }}
+            >
+              Create a smart collection
+            </Link>
+          </div>
+        )}
+
         {/* Empty state */}
-        {!isLoading && !isError && models.length === 0 && (
+        {!isSmart && !isLoading && !isError && models.length === 0 && (
           <EmptyLibrary hasFilters={hasActiveFilters} />
+        )}
+        {smartActive && !isLoading && !isError && models.length === 0 && (
+          <EmptyLibrary hasFilters />
         )}
 
         {/* Infinite scroll sentinel */}

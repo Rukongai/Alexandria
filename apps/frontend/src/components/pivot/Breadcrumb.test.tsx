@@ -7,6 +7,7 @@ const EMPTY_AXIS_VALUE: ActiveAxisValue = {
   collectionId: undefined,
   artist: undefined,
   tags: [],
+  smartCollectionId: undefined,
 };
 
 describe('Breadcrumb', () => {

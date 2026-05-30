@@ -194,13 +194,50 @@ export function SearchPage() {
             </label>
           </form>
 
-          {/* Right: Save as Smart Collection (disabled) */}
+          {/* Right: Save as Smart Collection — seeds the composer from this search */}
           <div className="flex-shrink-0">
-            <DisabledPill
-              icon={<Zap size={12} />}
-              label="Save as Smart Collection"
-              tooltip="Available in a later update"
-            />
+            {q ? (
+              <button
+                type="button"
+                onClick={() =>
+                  navigate('/smart-collections/new', {
+                    state: {
+                      name: q,
+                      definition: {
+                        kind: 'group',
+                        op: 'and',
+                        children: [
+                          { kind: 'condition', field: { source: 'builtin', field: 'name' }, operator: 'contains', value: q },
+                        ],
+                      },
+                    },
+                  })
+                }
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '5px 12px',
+                  borderRadius: 999,
+                  background: 'var(--ax-bg-elev)',
+                  border: '1px solid var(--ax-border)',
+                  color: 'var(--ax-fg)',
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                <Zap size={12} />
+                Save as Smart Collection
+              </button>
+            ) : (
+              <DisabledPill
+                icon={<Zap size={12} />}
+                label="Save as Smart Collection"
+                tooltip="Enter a search to save it"
+              />
+            )}
           </div>
         </div>
 

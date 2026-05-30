@@ -81,7 +81,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const DEFAULT_AXIS_VALUE = { collectionId: undefined, artist: undefined, tags: [] };
+const DEFAULT_AXIS_VALUE = { collectionId: undefined, artist: undefined, tags: [], smartCollectionId: undefined };
 
 // ---------------------------------------------------------------------------
 // Tests

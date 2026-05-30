@@ -10,6 +10,7 @@ import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UploadPage } from './pages/UploadPage';
 import { SearchPage } from './pages/SearchPage';
+import { SmartCollectionComposerPage } from './pages/SmartCollectionComposerPage';
 import { DesignSystemPage } from './pages/DesignSystemPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -47,6 +48,8 @@ export default function App() {
         <Route path="collections" element={<CollectionsPage />} />
         <Route path="collections/:id" element={<CollectionDetailPage />} />
         <Route path="upload" element={<UploadPage />} />
+        <Route path="smart-collections/new" element={<SmartCollectionComposerPage />} />
+        <Route path="smart-collections/:id/edit" element={<SmartCollectionComposerPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="search" element={<SearchPage />} />
       </Route>

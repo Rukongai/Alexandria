@@ -1,10 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
+import { Plus } from 'lucide-react';
 import { getCollections } from '../../api/collections';
 import { getFieldValues } from '../../api/metadata';
+import { getSmartCollections } from '../../api/smart-collections';
 import { useModelFilters } from '../../hooks/use-model-filters';
 import type { PivotAxis } from '../../hooks/use-model-filters';
 import { CollectionTree } from '../collections/CollectionTree';
-import { ArtistIcon, TagIcon } from '../icons';
+import { ArtistIcon, TagIcon, SmartIcon } from '../icons';
 import { FacetItem } from './FacetItem';
 
 interface AxisFacetBodyProps {
@@ -121,6 +124,44 @@ function TagsAxis() {
   );
 }
 
+function SmartAxis() {
+  const { smartCollectionId, setSmartCollectionId } = useModelFilters();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['smart-collections'],
+    queryFn: () => getSmartCollections().then((r) => r.data),
+  });
+
+  return (
+    <div className="flex flex-col gap-px px-1">
+      <Link
+        to="/smart-collections/new"
+        className="flex items-center gap-1.5 mx-1 my-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--ax-rail-hover)]"
+        style={{ color: 'var(--ax-rail-fg)' }}
+      >
+        <Plus className="h-3.5 w-3.5" aria-hidden />
+        New smart collection
+      </Link>
+
+      {isLoading && <LoadingRows />}
+
+      {!isLoading && (!data || data.length === 0) && (
+        <p className="px-3 py-2 text-xs text-[var(--ax-rail-fg-muted)]">No smart collections yet.</p>
+      )}
+
+      {data?.map((sc) => (
+        <FacetItem
+          key={sc.id}
+          icon={SmartIcon}
+          label={sc.name}
+          active={smartCollectionId === sc.id}
+          onClick={() => setSmartCollectionId(smartCollectionId === sc.id ? undefined : sc.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
 /**
  * Renders the facet list body for the currently active pivot axis.
  * Fetches its own data via React Query; uses setters from useModelFilters
@@ -132,6 +173,7 @@ export function AxisFacetBody({ axis }: AxisFacetBodyProps) {
       {axis === 'collections' && <CollectionsAxis />}
       {axis === 'artists' && <ArtistsAxis />}
       {axis === 'tags' && <TagsAxis />}
+      {axis === 'smart' && <SmartAxis />}
     </div>
   );
 }
