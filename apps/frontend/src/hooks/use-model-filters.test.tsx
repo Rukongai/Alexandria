@@ -166,4 +166,33 @@ describe('useModelFilters — existing filter behavior unchanged', () => {
     });
     expect(result.current.hasActiveFilters).toBe(false);
   });
+
+  it('clearAllFilters preserves the current axis param', () => {
+    const { result } = renderHook(() => useModelFilters(), {
+      wrapper: makeWrapper(['/?axis=artists&q=robot&collectionId=col-1']),
+    });
+
+    expect(result.current.hasActiveFilters).toBe(true);
+
+    act(() => result.current.clearAllFilters());
+
+    // axis should be preserved
+    expect(result.current.axis).toBe('artists');
+    // all content filters should be cleared
+    expect(result.current.filters.q).toBe('');
+    expect(result.current.filters.collectionId).toBeUndefined();
+    expect(result.current.hasActiveFilters).toBe(false);
+  });
+
+  it('clearAllFilters on a clean URL (no axis) leaves URL clean', () => {
+    const { result } = renderHook(() => useModelFilters(), {
+      wrapper: makeWrapper(['/?q=vase']),
+    });
+
+    act(() => result.current.clearAllFilters());
+
+    // default axis is still reported (no ?axis= in URL)
+    expect(result.current.axis).toBe('collections');
+    expect(result.current.filters.q).toBe('');
+  });
 });

@@ -84,7 +84,7 @@ export function UserMenu() {
                 />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuContent align="end" side="top" className="w-56">
               <DropdownMenuLabel>
                 <div className="flex flex-col">
                   <span className="text-sm font-medium text-foreground">{user.displayName}</span>

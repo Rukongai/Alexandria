@@ -189,7 +189,13 @@ export function useModelFilters() {
   );
 
   const clearAllFilters = useCallback(() => {
-    setSearchParams(new URLSearchParams());
+    setSearchParams((prev) => {
+      const next = new URLSearchParams();
+      // Preserve the axis param so clearing filters doesn't reset the user's chosen axis
+      const currentAxis = prev.get('axis');
+      if (currentAxis) next.set('axis', currentAxis);
+      return next;
+    });
   }, [setSearchParams]);
 
   const hasActiveFilters =
