@@ -6,6 +6,8 @@ import { useModelResults } from '../../hooks/use-model-results';
 import { useDisplayPreferences } from '../../hooks/use-display-preferences';
 import { useBulkSelection } from '../../hooks/use-bulk-selection';
 import { ModelCard } from '../models/ModelCard';
+import { ModelList } from '../models/ModelList';
+import { ModelGroupView } from '../models/ModelGroupView';
 import { ModelCardSkeleton } from '../models/ModelCardSkeleton';
 import { EmptyLibrary } from '../models/EmptyLibrary';
 import { Breadcrumb } from './Breadcrumb';
@@ -64,7 +66,7 @@ function deriveContextTitle(
 export function PivotMain() {
   const { filters, toApiParams, setQ, axis, activeAxisValue, hasActiveFilters } =
     useModelFilters();
-  const { view } = useDisplayPreferences();
+  const { view, showThumbnails } = useDisplayPreferences();
 
   const [bulkMode, setBulkMode] = useState(false);
   const { selected, toggle, selectAll, clear, isSelected, count } = useBulkSelection();
@@ -279,38 +281,25 @@ export function PivotMain() {
           <>
             {/* F18: list view */}
             {view === 'list' && (
-              <div
-                className="grid gap-4"
-                style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}
-              >
-                {models.map((model) => (
-                  <ModelCard
-                    key={model.id}
-                    model={model}
-                    selectable={bulkMode}
-                    selected={isSelected(model.id)}
-                    onToggleSelect={toggle}
-                  />
-                ))}
-              </div>
+              <ModelList
+                models={models}
+                selectable={bulkMode}
+                isSelected={isSelected}
+                onToggleSelect={toggle}
+                showThumbnails={showThumbnails}
+              />
             )}
 
             {/* F18: group view */}
             {view === 'group' && (
-              <div
-                className="grid gap-4"
-                style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}
-              >
-                {models.map((model) => (
-                  <ModelCard
-                    key={model.id}
-                    model={model}
-                    selectable={bulkMode}
-                    selected={isSelected(model.id)}
-                    onToggleSelect={toggle}
-                  />
-                ))}
-              </div>
+              <ModelGroupView
+                models={models}
+                axis={axis}
+                activeAxisValue={activeAxisValue}
+                selectable={bulkMode}
+                isSelected={isSelected}
+                onToggleSelect={toggle}
+              />
             )}
 
             {/* Grid view (default) */}
