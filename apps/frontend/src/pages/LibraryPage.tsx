@@ -1,10 +1,9 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import { CheckSquare, Square } from 'lucide-react';
-import type { ModelCard, ModelSearchParams } from '@alexandria/shared';
-import { getModels } from '../api/models';
+import type { ModelSearchParams } from '@alexandria/shared';
 import { useModelFilters } from '../hooks/use-model-filters';
 import { useBulkSelection } from '../hooks/use-bulk-selection';
+import { useModelResults } from '../hooks/use-model-results';
 import { ModelCard as ModelCardComponent } from '../components/models/ModelCard';
 import { ModelCardSkeleton } from '../components/models/ModelCardSkeleton';
 import { SearchBar } from '../components/models/SearchBar';
@@ -29,51 +28,18 @@ export function LibraryPage() {
     hasActiveFilters,
   } = useModelFilters();
 
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [bulkMode, setBulkMode] = useState(false);
   const { selected, toggle, selectAll, clear, isSelected, count } = useBulkSelection();
 
   const {
-    data,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
+    models: allModels,
+    total: totalCount,
     isLoading,
     isError,
-  } = useInfiniteQuery({
-    queryKey: ['models', filters],
-    queryFn: async ({ pageParam }: { pageParam: string | undefined }) => {
-      const params: ModelSearchParams = toApiParams(pageParam);
-      return getModels(params);
-    },
-    getNextPageParam: (lastPage) => lastPage.meta?.cursor ?? undefined,
-    initialPageParam: undefined as string | undefined,
-    staleTime: 30_000,
-  });
-
-  // IntersectionObserver for infinite scroll
-  const handleIntersect = useCallback(
-    (entries: IntersectionObserverEntry[]) => {
-      if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
-        fetchNextPage();
-      }
-    },
-    [hasNextPage, isFetchingNextPage, fetchNextPage]
-  );
-
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-
-    const observer = new IntersectionObserver(handleIntersect, {
-      rootMargin: '200px',
-    });
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [handleIntersect]);
-
-  const allModels: ModelCard[] = data?.pages.flatMap((page) => page.data) ?? [];
-  const totalCount = data?.pages[0]?.meta?.total ?? 0;
+    isFetchingNextPage,
+    hasNextPage,
+    sentinelRef,
+  } = useModelResults({ filters, toApiParams });
 
   function handleSortChange(
     sort: ModelSearchParams['sort'],
