@@ -5,6 +5,7 @@ import { ArrowLeft, Pencil, Trash2, FolderOpen, Loader2 } from 'lucide-react';
 import type { ModelCard } from '@alexandria/shared';
 import { getCollection, getCollectionModels, deleteCollection } from '../api/collections';
 import { useToast } from '../hooks/use-toast';
+import { useLibraryPath } from '../hooks/use-libraries';
 import { CollectionDialog } from '../components/collections/CollectionDialog';
 import { AlertDialog } from '../components/ui/alert-dialog';
 import { ModelCard as ModelCardComponent } from '../components/models/ModelCard';
@@ -15,6 +16,7 @@ import { Skeleton } from '../components/ui/skeleton';
 export function CollectionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -47,7 +49,7 @@ export function CollectionDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['collections'] });
       toast({ title: 'Collection deleted' });
-      navigate('/collections');
+      navigate(libPath('/collections'));
     },
     onError: () => {
       toast({ title: 'Failed to delete collection', variant: 'destructive' });
@@ -58,7 +60,7 @@ export function CollectionDetailPage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-[300px] gap-4">
         <p className="text-destructive">Collection not found or failed to load.</p>
-        <Link to="/collections" className="text-sm text-primary hover:underline">
+        <Link to={libPath('/collections')} className="text-sm text-primary hover:underline">
           Back to Collections
         </Link>
       </div>
@@ -70,7 +72,7 @@ export function CollectionDetailPage() {
       {/* Back nav */}
       <div>
         <Link
-          to="/collections"
+          to={libPath('/collections')}
           className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
@@ -125,7 +127,7 @@ export function CollectionDetailPage() {
             {collection.children.map((child) => (
               <Link
                 key={child.id}
-                to={`/collections/${child.id}`}
+                to={libPath(`/collections/${child.id}`)}
                 className="inline-flex items-center gap-1.5 rounded-lg border bg-card px-3 py-1.5 text-sm hover:bg-accent transition-colors"
               >
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />

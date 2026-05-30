@@ -9,9 +9,11 @@ import { ModelBreadcrumb } from '../components/models/ModelBreadcrumb';
 import { ModelViewer3DModal } from '../components/models/ModelViewer3DModal';
 import { ModelDetailSkeleton } from '../components/models/ModelDetailSkeleton';
 import { collectStlFiles, type StlFileRef } from '../lib/model-files';
+import { useLibraryPath } from '../hooks/use-libraries';
 
 export function ModelDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const libPath = useLibraryPath();
 
   const {
     data: model,
@@ -51,7 +53,7 @@ export function ModelDetailPage() {
       {/* Header: back link + breadcrumb */}
       <div className="flex flex-col gap-2">
         <Link
-          to="/"
+          to={libPath('/')}
           className="inline-flex items-center gap-0.5 h-8 px-2 -ml-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors self-start"
         >
           <ChevronLeft className="h-4 w-4" />
@@ -77,7 +79,7 @@ export function ModelDetailPage() {
             </p>
           </div>
           <Link
-            to="/"
+            to={libPath('/')}
             className="inline-flex items-center justify-center h-9 px-4 rounded-md border border-input bg-background text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground transition-colors"
           >
             Go to Library

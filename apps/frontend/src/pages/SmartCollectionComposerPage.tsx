@@ -10,6 +10,7 @@ import { Textarea } from '../components/ui/textarea';
 import { RuleGroupEditor } from '../components/smart/RuleGroupEditor';
 import { PreviewPane } from '../components/smart/PreviewPane';
 import { useSmartCollectionDraft } from '../hooks/use-smart-collection-draft';
+import { useLibraryPath } from '../hooks/use-libraries';
 import {
   getSmartCollection,
   createSmartCollection,
@@ -30,6 +31,7 @@ export function SmartCollectionComposerPage() {
   const isEdit = Boolean(id);
   const navigate = useNavigate();
   const location = useLocation();
+  const libPath = useLibraryPath();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -68,7 +70,7 @@ export function SmartCollectionComposerPage() {
       queryClient.invalidateQueries({ queryKey: ['smart-collections'] });
       queryClient.invalidateQueries({ queryKey: ['smart-collection', data.id] });
       toast({ title: isEdit ? 'Smart collection updated' : 'Smart collection created' });
-      navigate(`/?axis=smart&smartCollectionId=${data.id}`);
+      navigate(`${libPath('/')}?axis=smart&smartCollectionId=${data.id}`);
     },
     onError: (err) => {
       toast({

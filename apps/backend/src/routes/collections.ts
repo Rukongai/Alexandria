@@ -67,12 +67,13 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /:id — single collection detail
+  // GET /:id — single collection detail (scoped to the active library)
   app.get(
     '/:id',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+      await collectionService.requireCollectionInLibrary(id, request.libraryId!);
       const detail = await presenterService.buildCollectionDetail(id);
 
       return reply.status(200).send({ data: detail, meta: null, errors: null });
@@ -113,8 +114,8 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
       const { id } = request.params as { id: string };
       const rawQuery = request.query as Record<string, unknown>;
 
-      // Verify collection exists
-      await collectionService.getCollectionById(id);
+      // Verify collection exists in the active library
+      await collectionService.requireCollectionInLibrary(id, request.libraryId!);
 
       // Extract metadata.* keys into a metadataFilters record
       const metadataFilters: Record<string, string> = {};

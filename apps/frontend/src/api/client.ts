@@ -2,6 +2,21 @@ import type { ApiResponse } from '@alexandria/shared';
 
 const BASE_URL = '/api';
 
+/**
+ * The active library id, mirrored from the `/lib/:id` route by LibraryProvider.
+ * Sent as the `X-Library-Id` header on every request so all resource endpoints
+ * scope to the selected library without each api module threading it through.
+ * Null on the All-Libraries home / login, where the backend falls back to the
+ * user's default library.
+ */
+let activeLibraryId: string | null = null;
+
+export function setActiveLibraryId(id: string | null): void {
+  activeLibraryId = id;
+}
+
+const LIBRARY_HEADER = 'X-Library-Id';
+
 export class ApiRequestError extends Error {
   constructor(
     public statusCode: number,
@@ -25,6 +40,9 @@ async function request<T>(
   // Content-Type: application/json on requests with no body.
   if (init.body !== undefined) {
     headers['Content-Type'] ??= 'application/json';
+  }
+  if (activeLibraryId) {
+    headers[LIBRARY_HEADER] ??= activeLibraryId;
   }
 
   const response = await fetch(url, {
@@ -79,6 +97,7 @@ export async function postForm<T>(
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${BASE_URL}${path}`);
     xhr.withCredentials = true;
+    if (activeLibraryId) xhr.setRequestHeader(LIBRARY_HEADER, activeLibraryId);
 
     if (onProgress) {
       xhr.upload.addEventListener('progress', (e) => {
@@ -127,6 +146,7 @@ export async function putRaw<T>(
     xhr.open('PUT', `${BASE_URL}${path}`);
     xhr.withCredentials = true;
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    if (activeLibraryId) xhr.setRequestHeader(LIBRARY_HEADER, activeLibraryId);
 
     if (onProgress) {
       xhr.upload.addEventListener('progress', (e) => {

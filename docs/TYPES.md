@@ -28,12 +28,23 @@ interface Library {
   slug: string;       // globally unique; URL-safe
   userId: string;
   isDefault: boolean; // exactly one default per user; enforced by DB partial unique index
+  color: string;      // palette-accent badge: amber | teal | sage | plum | slate (P5)
   createdAt: string;
   updatedAt: string;
 }
+
+// P5 — returned by GET /libraries; powers the All-Libraries cards and switcher
+interface LibrarySummary extends Library {
+  modelCount: number;
+  collectionCount: number;
+}
+
+interface CreateLibraryRequest { name: string; color?: LibraryColor }
+interface UpdateLibraryRequest { name?: string; color?: LibraryColor }
+// LibraryColor = 'amber' | 'teal' | 'sage' | 'plum' | 'slate' (LIBRARY_COLORS)
 ```
 
-The shared type is defined in `packages/shared/src/types/library.ts`. The database schema is in `apps/backend/src/db/schema/library.ts`. See the Architecture Reference for the `requireLibrary` preHandler and library-scoping rules.
+The shared types are defined in `packages/shared/src/types/library.ts` (validation in `packages/shared/src/validation/library.ts`). The database schema is in `apps/backend/src/db/schema/library.ts`. See the Architecture Reference for the `requireLibrary` preHandler, the `X-Library-Id` header, and library-scoping rules.
 
 ### User
 

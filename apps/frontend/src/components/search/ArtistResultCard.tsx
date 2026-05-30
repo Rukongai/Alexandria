@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import type { SearchArtistHit } from '@alexandria/shared';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 // A deterministic palette per artist name for the gradient avatar
 const GRADIENTS: [string, string][] = [
@@ -35,10 +36,11 @@ interface ArtistResultCardProps {
 
 export function ArtistResultCard({ artist }: ArtistResultCardProps) {
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
   const [from, to] = getGradient(artist.name);
 
   function handleClick() {
-    navigate(`/?meta_artist=${encodeURIComponent(artist.name)}`);
+    navigate(`${libPath('/')}?meta_artist=${encodeURIComponent(artist.name)}`);
   }
 
   return (

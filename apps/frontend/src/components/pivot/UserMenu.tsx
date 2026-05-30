@@ -1,6 +1,7 @@
 import { LogOut, MoreHorizontal, User } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/use-auth';
+import { useLibraryPath } from '../../hooks/use-libraries';
 import { Avatar, AvatarFallback } from '../ui/avatar';
 import {
   DropdownMenu,
@@ -29,6 +30,7 @@ function getInitials(displayName: string): string {
 export function UserMenu() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
 
   return (
     <div
@@ -92,7 +94,7 @@ export function UserMenu() {
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => navigate('/settings')}>
+              <DropdownMenuItem onClick={() => navigate(libPath('/settings'))}>
                 <User className="mr-2 h-4 w-4" />
                 Settings
               </DropdownMenuItem>

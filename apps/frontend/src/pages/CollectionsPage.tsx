@@ -5,6 +5,7 @@ import { Plus, FolderOpen, Pencil, Trash2, ExternalLink } from 'lucide-react';
 import type { CollectionDetail } from '@alexandria/shared';
 import { getCollections, deleteCollection } from '../api/collections';
 import { useToast } from '../hooks/use-toast';
+import { useLibraryPath } from '../hooks/use-libraries';
 import { CollectionTree } from '../components/collections/CollectionTree';
 import { CollectionDialog } from '../components/collections/CollectionDialog';
 import { AlertDialog } from '../components/ui/alert-dialog';
@@ -13,6 +14,7 @@ import { Skeleton } from '../components/ui/skeleton';
 
 export function CollectionsPage() {
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -125,7 +127,7 @@ export function CollectionsPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => navigate(`/collections/${selectedCollection.id}`)}
+                  onClick={() => navigate(libPath(`/collections/${selectedCollection.id}`))}
                 >
                   <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
                   Open
@@ -176,7 +178,7 @@ export function CollectionsPage() {
                 View all models in this collection on the collection detail page.
               </p>
               <Button
-                onClick={() => navigate(`/collections/${selectedCollection.id}`)}
+                onClick={() => navigate(libPath(`/collections/${selectedCollection.id}`))}
               >
                 <ExternalLink className="h-4 w-4 mr-1.5" />
                 Open Collection Detail

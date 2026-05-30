@@ -116,6 +116,18 @@ export class CollectionService {
   }
 
   /**
+   * Verify a collection exists AND belongs to the active library. Throws
+   * NOT_FOUND otherwise, so a stale deep link to a collection in another library
+   * 404s after the user switches libraries instead of rendering its content.
+   */
+  async requireCollectionInLibrary(id: string, libraryId: string): Promise<void> {
+    const row = await this._requireCollection(id);
+    if (row.libraryId !== libraryId) {
+      throw notFound(`Collection not found: ${id}`);
+    }
+  }
+
+  /**
    * Add a single model to a collection. Idempotent.
    * Preserved for folder import backward compatibility.
    */

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Loader2, CheckCircle2, AlertCircle, ArrowRight } from 'lucide-react';
 import { getModelStatus } from '../../api/models';
 import type { JobStatus } from '@alexandria/shared';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 interface UploadProgressProps {
   modelId: string;
@@ -20,6 +21,7 @@ function statusLabel(status: JobStatus['status'], progress: number | null): stri
 }
 
 export function UploadProgress({ modelId }: UploadProgressProps) {
+  const libPath = useLibraryPath();
   const { data: status, error } = useQuery({
     queryKey: ['model-status', modelId],
     queryFn: () => getModelStatus(modelId),
@@ -63,7 +65,7 @@ export function UploadProgress({ modelId }: UploadProgressProps) {
           <span>{status.error ?? 'Processing failed with an unknown error.'}</span>
         </div>
         <Link
-          to={`/models/${modelId}`}
+          to={libPath(`/models/${modelId}`)}
           className="text-sm text-primary hover:underline inline-flex items-center gap-1"
         >
           View model anyway <ArrowRight className="h-3 w-3" />
@@ -80,7 +82,7 @@ export function UploadProgress({ modelId }: UploadProgressProps) {
           <span>Model is ready.</span>
         </div>
         <Link
-          to={`/models/${modelId}`}
+          to={libPath(`/models/${modelId}`)}
           className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
         >
           View model <ArrowRight className="h-3.5 w-3.5" />

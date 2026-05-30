@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Search, Zap, Box, Folder, User, Hash, SortAsc } from 'lucide-react';
 import { Loader2 } from 'lucide-react';
 import { useGlobalSearch } from '../hooks/use-global-search';
+import { useLibraryPath } from '../hooks/use-libraries';
 import { ModelCard } from '../components/models/ModelCard';
 import { SearchSection } from '../components/search/SearchSection';
 import { CollectionResultRow } from '../components/search/CollectionResultRow';
@@ -100,6 +101,7 @@ function ResultPill({ count, label, icon }: { count: number; label: string; icon
 export function SearchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
   const q = searchParams.get('q') ?? '';
   const refineRef = useRef<HTMLInputElement>(null);
   const [refineValue, setRefineValue] = useState('');
@@ -200,7 +202,7 @@ export function SearchPage() {
               <button
                 type="button"
                 onClick={() =>
-                  navigate('/smart-collections/new', {
+                  navigate(libPath('/smart-collections/new'), {
                     state: {
                       name: q,
                       definition: {
@@ -393,7 +395,7 @@ export function SearchPage() {
                   {data.models.total > data.models.items.length && (
                     <button
                       type="button"
-                      onClick={() => navigate(`/?q=${encodeURIComponent(q)}`)}
+                      onClick={() => navigate(`${libPath('/')}?q=${encodeURIComponent(q)}`)}
                       style={{
                         marginTop: 12,
                         padding: '8px 12px',

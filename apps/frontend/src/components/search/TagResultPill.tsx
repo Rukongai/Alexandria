@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Hash } from 'lucide-react';
 import type { SearchTagHit } from '@alexandria/shared';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 interface TagResultPillProps {
   tag: SearchTagHit;
@@ -8,9 +9,10 @@ interface TagResultPillProps {
 
 export function TagResultPill({ tag }: TagResultPillProps) {
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
 
   function handleClick() {
-    navigate(`/?tags=${encodeURIComponent(tag.name)}`);
+    navigate(`${libPath('/')}?tags=${encodeURIComponent(tag.name)}`);
   }
 
   return (

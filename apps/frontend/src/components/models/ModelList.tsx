@@ -3,6 +3,7 @@ import { Package, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import type { ModelCard } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
+import { useLibraryPath } from '../../hooks/use-libraries';
 
 interface ModelRowProps {
   model: ModelCard;
@@ -14,6 +15,7 @@ interface ModelRowProps {
 
 function ModelRow({ model, selectable, selected, onToggleSelect, showThumbnails = true }: ModelRowProps) {
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
 
   const artist = model.metadata.find((m) => m.fieldSlug === 'artist');
   const artistName = artist
@@ -36,7 +38,7 @@ function ModelRow({ model, selectable, selected, onToggleSelect, showThumbnails 
       onToggleSelect?.(model.id);
       return;
     }
-    navigate(`/models/${model.id}`);
+    navigate(libPath(`/models/${model.id}`));
   }
 
   return (
