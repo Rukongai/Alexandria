@@ -11,6 +11,7 @@ import type { Collection as CollectionRow } from '../db/schema/collection.js';
 import { createLogger } from '../utils/logger.js';
 import { generateSlug } from '../utils/slug.js';
 import { notFound, validationError } from '../utils/errors.js';
+import { libraryService } from './library.service.js';
 
 const logger = createLogger('CollectionService');
 
@@ -65,9 +66,11 @@ export class CollectionService {
     }
 
     const slug = generateSlug(name);
+    // Collections are scoped to a library (library_id NOT NULL since 0007).
+    const libraryId = await libraryService.resolveDefaultLibraryId(userId);
     const [created] = await db
       .insert(collections)
-      .values({ name, slug, userId })
+      .values({ name, slug, userId, libraryId })
       .returning({ id: collections.id, name: collections.name });
 
     logger.info(
@@ -106,6 +109,8 @@ export class CollectionService {
     }
 
     const slug = generateSlug(data.name);
+    // Collections are scoped to a library (library_id NOT NULL since 0007).
+    const libraryId = await libraryService.resolveDefaultLibraryId(userId);
     const [row] = await db
       .insert(collections)
       .values({
@@ -113,6 +118,7 @@ export class CollectionService {
         slug,
         description: data.description ?? null,
         userId,
+        libraryId,
         parentCollectionId: data.parentCollectionId ?? null,
       })
       .returning();

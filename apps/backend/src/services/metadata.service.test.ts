@@ -10,6 +10,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   users,
+  libraries,
   models,
   metadataFieldDefinitions,
   modelMetadata,
@@ -38,6 +39,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 let testUserId: string;
+let testLibraryId: string;
 let testModelId: string;
 
 // Default field slugs as seeded — they have no random suffix.
@@ -73,6 +75,7 @@ beforeAll(async () => {
   if (leftoverUsers.length > 0) {
     const leftoverUserIds = leftoverUsers.map((u) => u.id);
     await db.delete(models).where(inArray(models.userId, leftoverUserIds));
+    await db.delete(libraries).where(inArray(libraries.userId, leftoverUserIds));
     await db.delete(users).where(eq(users.email, 'metadata-test@example.com'));
   }
 
@@ -89,6 +92,18 @@ beforeAll(async () => {
 
   testUserId = testUser.id;
 
+  // Create the user's default library — models require a libraryId (NOT NULL).
+  const [testLibrary] = await db
+    .insert(libraries)
+    .values({
+      name: 'Metadata Test Library',
+      slug: `metadata-test-library-${Date.now()}`,
+      userId: testUserId,
+      isDefault: true,
+    })
+    .returning();
+  testLibraryId = testLibrary.id;
+
   // Create a test model owned by the test user
   const [testModel] = await db
     .insert(models)
@@ -96,6 +111,7 @@ beforeAll(async () => {
       name: 'Metadata Test Model',
       slug: `metadata-test-model-${Date.now()}`,
       userId: testUserId,
+      libraryId: testLibraryId,
       sourceType: 'zip_upload',
       status: 'ready',
     })
@@ -120,6 +136,11 @@ afterAll(async () => {
   // Remove model (CASCADE removes model_tags and model_metadata)
   if (testModelId) {
     await db.delete(models).where(eq(models.id, testModelId));
+  }
+
+  // Remove the test library (after the models that reference it via FK)
+  if (testLibraryId) {
+    await db.delete(libraries).where(eq(libraries.id, testLibraryId));
   }
 
   // Remove test user
@@ -717,6 +738,7 @@ describe('MetadataService – bulkSetMetadata()', () => {
         name: 'Bulk Test Model B',
         slug: `bulk-test-model-b-${Date.now()}`,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: 'ready',
       })
@@ -768,6 +790,7 @@ describe('MetadataService – bulkSetMetadata()', () => {
         name: 'Bulk Remove Test Model',
         slug: `bulk-remove-test-${Date.now()}`,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: 'ready',
       })
@@ -810,6 +833,7 @@ describe('MetadataService – bulkSetMetadata()', () => {
         name: 'Bulk Tag Test Model',
         slug: `bulk-tag-test-${Date.now()}`,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: 'ready',
       })

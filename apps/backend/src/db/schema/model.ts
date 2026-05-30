@@ -56,9 +56,11 @@ export const models = pgTable(
     // Zoom multiplier applied on top of object-fit:cover (1.0 = no extra zoom, >1.0 = zoom in).
     // Applied via transform: scale() on the card thumbnail image.
     previewCropScale: real('preview_crop_scale'),
-    // Library this model belongs to. Nullable during the migration window;
-    // a later migration backfills and flips to NOT NULL.
-    libraryId: uuid('library_id').references(() => libraries.id),
+    // Library this model belongs to. NOT NULL — every model is scoped to a library
+    // (migration 0007 backfilled existing rows and enforced the constraint at the DB level).
+    libraryId: uuid('library_id')
+      .notNull()
+      .references(() => libraries.id),
   },
   (table) => [
     // Fast lookup by slug for URL-based access

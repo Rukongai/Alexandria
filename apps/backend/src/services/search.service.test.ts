@@ -3,6 +3,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   users,
+  libraries,
   models,
   modelFiles,
   thumbnails,
@@ -40,6 +41,7 @@ import type { ModelCard } from '@alexandria/shared';
 // ---------------------------------------------------------------------------
 
 let testUserId: string;
+let testLibraryId: string;
 const modelIds: string[] = [];
 let collectionId: string;
 const tagIds: Record<string, string> = {};
@@ -59,6 +61,7 @@ beforeAll(async () => {
     const leftoverUserIds = leftoverUsers.map((u) => u.id);
     await db.delete(collections).where(inArray(collections.userId, leftoverUserIds));
     await db.delete(models).where(inArray(models.userId, leftoverUserIds));
+    await db.delete(libraries).where(inArray(libraries.userId, leftoverUserIds));
     await db.delete(users).where(eq(users.email, 'search-test@example.com'));
   }
   // Clean up orphaned test tags from previous runs
@@ -78,6 +81,22 @@ beforeAll(async () => {
     .returning();
 
   testUserId = testUser.id;
+
+  // -------------------------------------------------------------------------
+  // Create the user's default library — models/collections require a libraryId
+  // (NOT NULL since migration 0007).
+  // -------------------------------------------------------------------------
+  const [testLibrary] = await db
+    .insert(libraries)
+    .values({
+      name: 'Search Test Library',
+      slug: `search-test-library-${Date.now()}`,
+      userId: testUserId,
+      isDefault: true,
+    })
+    .returning();
+
+  testLibraryId = testLibrary.id;
 
   // -------------------------------------------------------------------------
   // Resolve default field definition IDs from seed
@@ -145,6 +164,7 @@ beforeAll(async () => {
         slug: `search-test-${def.name.toLowerCase().replace(/\s+/g, '-')}-${ts}-${i}`,
         description: def.description,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: def.status,
         totalSizeBytes: def.totalSizeBytes,
@@ -254,9 +274,11 @@ beforeAll(async () => {
   // -------------------------------------------------------------------------
   // Create thumbnail for model[0]'s image file (grid size = 400px wide)
   // -------------------------------------------------------------------------
+  // storagePath MUST carry the `_grid` suffix: the presenter resolves grid
+  // thumbnails by storage-path suffix (LIKE '%_grid.webp'), not by width.
   await db.insert(thumbnails).values({
     sourceFileId: imageFileModel0.id,
-    storagePath: '/storage/thumbnails/m0/thumb.webp',
+    storagePath: '/storage/thumbnails/m0/thumb_grid.webp',
     width: 400,
     height: 300,
     format: 'webp',
@@ -271,6 +293,7 @@ beforeAll(async () => {
       name: 'Dragon Collection',
       slug: `dragon-collection-${ts}`,
       userId: testUserId,
+      libraryId: testLibraryId,
     })
     .returning();
 
@@ -299,6 +322,11 @@ afterAll(async () => {
   // Delete test collection (collection_models already cleaned via model CASCADE)
   if (collectionId) {
     await db.delete(collections).where(eq(collections.id, collectionId));
+  }
+
+  // Delete the test library (after models/collections that reference it via FK)
+  if (testLibraryId) {
+    await db.delete(libraries).where(eq(libraries.id, testLibraryId));
   }
 
   // Delete test user
@@ -525,6 +553,7 @@ describe('collection filtering', () => {
         name: 'Empty Test Collection',
         slug: `empty-collection-${ts}`,
         userId: testUserId,
+        libraryId: testLibraryId,
       })
       .returning();
 

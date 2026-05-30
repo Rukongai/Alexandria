@@ -8,7 +8,7 @@ import {
 } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { users, models, collections, collectionModels } from '../db/schema/index.js';
+import { users, libraries, models, collections, collectionModels } from '../db/schema/index.js';
 import { collectionService, CollectionService } from './collection.service.js';
 import { AppError } from '../utils/errors.js';
 import type { CollectionDetail, CollectionSummary, Collection } from '@alexandria/shared';
@@ -29,6 +29,7 @@ import type { CollectionDetail, CollectionSummary, Collection } from '@alexandri
 const NULL_UUID = '00000000-0000-0000-0000-000000000000';
 
 let testUserId: string;
+let testLibraryId: string;
 let testModelId1: string;
 let testModelId2: string;
 let testModelId3: string;
@@ -49,6 +50,7 @@ beforeAll(async () => {
   if (existingUser) {
     await db.delete(collections).where(eq(collections.userId, existingUser.id));
     await db.delete(models).where(eq(models.userId, existingUser.id));
+    await db.delete(libraries).where(eq(libraries.userId, existingUser.id));
     await db.delete(users).where(eq(users.id, existingUser.id));
   }
 
@@ -65,6 +67,19 @@ beforeAll(async () => {
 
   testUserId = testUser.id;
 
+  // Create the user's default library — models/collections require a libraryId (NOT NULL).
+  // The collection service resolves this same default library when creating collections.
+  const [testLibrary] = await db
+    .insert(libraries)
+    .values({
+      name: 'Collection Test Library',
+      slug: `collection-test-library-${Date.now()}`,
+      userId: testUserId,
+      isDefault: true,
+    })
+    .returning();
+  testLibraryId = testLibrary.id;
+
   // Create test models owned by the test user
   const [model1] = await db
     .insert(models)
@@ -72,6 +87,7 @@ beforeAll(async () => {
       name: 'Collection Test Model 1',
       slug: `collection-test-model-1-${Date.now()}`,
       userId: testUserId,
+      libraryId: testLibraryId,
       sourceType: 'zip_upload',
       status: 'ready',
     })
@@ -84,6 +100,7 @@ beforeAll(async () => {
       name: 'Collection Test Model 2',
       slug: `collection-test-model-2-${Date.now()}`,
       userId: testUserId,
+      libraryId: testLibraryId,
       sourceType: 'zip_upload',
       status: 'ready',
     })
@@ -96,6 +113,7 @@ beforeAll(async () => {
       name: 'Collection Test Model 3',
       slug: `collection-test-model-3-${Date.now()}`,
       userId: testUserId,
+      libraryId: testLibraryId,
       sourceType: 'zip_upload',
       status: 'ready',
     })
@@ -115,6 +133,11 @@ afterAll(async () => {
     .where(
       inArray(models.id, [testModelId1, testModelId2, testModelId3].filter(Boolean)),
     );
+
+  // Remove the test library/libraries (after models/collections that reference it)
+  if (testUserId) {
+    await db.delete(libraries).where(eq(libraries.userId, testUserId));
+  }
 
   // Remove test user
   if (testUserId) {

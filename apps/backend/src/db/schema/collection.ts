@@ -25,9 +25,11 @@ export const collections = pgTable(
     ),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-    // Library this collection belongs to. Nullable during the migration window;
-    // a later migration backfills and flips to NOT NULL.
-    libraryId: uuid('library_id').references(() => libraries.id),
+    // Library this collection belongs to. NOT NULL — every collection is scoped to a library
+    // (migration 0007 backfilled existing rows and enforced the constraint at the DB level).
+    libraryId: uuid('library_id')
+      .notNull()
+      .references(() => libraries.id),
   },
   (table) => [
     // Lookup by slug for URL-based access
