@@ -10,7 +10,6 @@ export interface ModelGroupViewProps {
   selectable?: boolean;
   isSelected?: (id: string) => boolean;
   onToggleSelect?: (id: string) => void;
-  showThumbnails?: boolean;
 }
 
 interface ModelGroup {

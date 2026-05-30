@@ -25,7 +25,7 @@ The system follows a monorepo structure with a React frontend, a Fastify backend
 When the backend process starts (`server.ts`), it runs three steps before accepting traffic:
 
 1. **Migrations** — Drizzle applies any pending SQL migrations from `apps/backend/src/db/migrations/`. If migration fails, the process exits with a non-zero code.
-2. **Seed** — `runSeed()` inserts the default admin user and default metadata field definitions using `ON CONFLICT DO NOTHING`. This is idempotent and safe to run on every startup. If the seed fails (e.g., a constraint violation on a partially seeded DB), it logs a warning and continues rather than crashing. Seed credentials are controlled by `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables.
+2. **Seed** — `runSeed()` inserts the default admin user and default metadata field definitions using `ON CONFLICT DO NOTHING`, then calls `LibraryService.resolveDefaultLibraryId` for the admin user to ensure the admin's default library exists. This is idempotent and safe to run on every startup. If the seed fails (e.g., a constraint violation on a partially seeded DB), it logs a warning and continues rather than crashing. Seed credentials are controlled by `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables.
 3. **Listen** — Fastify binds to the configured `HOST:PORT` and begins accepting requests.
 
 In Docker Compose, the `backend` service declares `depends_on` with `condition: service_healthy` for both Postgres and Redis, so both infrastructure services are ready before the backend starts.
@@ -42,6 +42,10 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 │              React + Vite + TypeScript                    │
 │         Tailwind + shadcn/ui                             │
 │         Communicates with backend via REST API            │
+│                                                          │
+│   AppShell: PivotRail + <Outlet>                         │
+│   PivotRail: AxisPicker + AxisFacetBody + UserMenu       │
+│   PivotMain: top bar + context header + results grid     │
 └──────────────────────┬──────────────────────────────────┘
                        │ HTTP (JSON, multipart)
 ┌──────────────────────▼──────────────────────────────────┐
@@ -53,9 +57,12 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 │  │          │  │ assembly)    │  │ ModelService        │   │
 │  └─────────┘  └──────────────┘  │ MetadataService     │   │
 │                                  │ CollectionService   │   │
-│  ┌──────────────┐               │ SearchService       │   │
-│  │IngestionSvc  │──────────────→│ AuthService         │   │
-│  │(orchestrates)│               └───────────────────┘   │
+│  requireAuth ──→ requireLibrary  │ SearchService       │   │
+│  (injects request.libraryId)     │ AuthService         │   │
+│                                  │ LibraryService      │   │
+│  ┌──────────────┐               └───────────────────┘   │
+│  │IngestionSvc  │──────────────→(services above)         │
+│  │(orchestrates)│                                        │
 │  └──────┬───────┘                                        │
 │         │           ┌──────────────┐                     │
 │         ├──────────→│FileProcessing│                     │
@@ -82,7 +89,65 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 
 ---
 
+## Data Model: Library Scope
+
+Every model and collection belongs to a library. Libraries are the top-level organizational scope introduced in P1 as a foundation for future multi-library support.
+
+### Schema
+
+The `libraries` table (`apps/backend/src/db/schema/library.ts`) has these columns: `id` (UUID PK), `name`, `slug` (globally unique), `user_id` (FK → users), `is_default` (boolean), `created_at`, `updated_at`.
+
+Both `models` and `collections` carry a `library_id` column (NOT NULL FK → libraries). This was added by migration `0007_add_library_id` after `0005_add_libraries` created the table and `0006_backfill_default_libraries` ensured every existing user had exactly one default library to backfill into.
+
+One-default-per-user is enforced at the database level with a partial unique index:
+
+```sql
+CREATE UNIQUE INDEX libraries_user_default_unique ON libraries (user_id) WHERE is_default
+```
+
+This index makes the enforcement race-safe: the database rejects a second `is_default = true` row for the same user even under concurrent writes.
+
+### LibraryService
+
+`LibraryService.resolveDefaultLibraryId(userId)` is the single entry point for resolving a user's active library. It finds the user's `is_default = true` library and returns its id. If none exists (users created after the migration backfill), it creates one with name `"Library"`. This lazy creation mirrors what the migration backfill did for pre-existing users.
+
+The seed (`runSeed`) calls this method for the admin user on startup, so the admin always has a default library even on a fresh database.
+
+### The `requireLibrary` Prehandler
+
+`requireLibrary` (`apps/backend/src/middleware/library.ts`) is a Fastify preHandler that runs after `requireAuth` on every route that reads or writes library-scoped data. It calls `LibraryService.resolveDefaultLibraryId` and stores the result on `request.libraryId`.
+
+**Security invariant:** `libraryId` is server-injected only. No route accepts a `libraryId` from the client in the query string, path, or request body. The value is always derived from the authenticated session. This prevents one user from accessing another user's library by supplying a different `libraryId`.
+
+Routes that apply `requireLibrary` (as of P1):
+
+- `GET /models`
+- `GET /collections`, `POST /collections`
+- `GET /collections/:id/models`
+- `GET /metadata/fields/:slug/values`
+- `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/import`
+
+By-id detail routes (`GET /models/:id`, `GET /collections/:id`, `PATCH /models/:id`, etc.) remain owned by `userId` and are not yet library-scoped. Library scoping for detail routes is deferred to P5 multi-library.
+
+### P5 Deferrals
+
+The following are explicitly deferred to the multi-library phase:
+
+- Multi-library UI and routing (the library-switcher button in PivotRail is a non-interactive stub).
+- Library scoping for by-id detail routes (`GET /models/:id`, `GET /collections/:id`, etc.).
+- Per-collection group counts in group view (requires server support to return paginated per-group totals).
+
+---
+
 ## Service Inventory
+
+### LibraryService
+
+**Owns:** Resolving and lazily creating a user's default library.
+
+**Does not own:** Library CRUD, multi-library switching (deferred to P5), or any data scoped within a library.
+
+**Behavior:** `resolveDefaultLibraryId(userId)` finds the user's default library in the `libraries` table. If none exists, it inserts one (name: `"Library"`, `is_default: true`) and returns its id. The partial unique index on the table makes this safe under concurrent calls.
 
 ### IngestionService
 
@@ -211,6 +276,94 @@ Collections are an organizational structure, not metadata. A model's relationshi
 
 ---
 
+## Frontend: Pivot Workspace
+
+The Pivot Workspace is the primary browsing interface introduced in P1, replacing the previous Sidebar + Header + LibraryPage layout.
+
+### Layout
+
+The application shell (`AppShell`) is a full-height flex row:
+
+```
+┌──────────────┬──────────────────────────────────────────┐
+│  PivotRail   │             <Outlet>                      │
+│  (272 px,    │  PivotPage → PivotMain                   │
+│   fixed)     │  ModelDetailPage, CollectionDetailPage,   │
+│              │  UploadPage, SettingsPage                 │
+└──────────────┴──────────────────────────────────────────┘
+```
+
+`PivotRail` is permanently mounted for all authenticated routes. The old `Sidebar.tsx` and global `Header.tsx` components were deleted; their responsibilities moved into the rail and PivotMain's top bar respectively.
+
+### PivotRail
+
+The rail contains, top to bottom:
+
+1. **Library header** — brand mark plus a library-name badge. The badge includes a chevron-down but is non-interactive (`aria-disabled`, `tabIndex=-1`): multi-library switching is a P5 stub.
+2. **AxisPicker** — a 2-column button grid for selecting the active axis (Collections, Artists, Tags).
+3. **AxisFacetBody** — a scrollable list for the active axis. Shows collections tree, artist values, or tag values, each pulling from the appropriate backend endpoint.
+4. **UserMenu** — pinned footer with user avatar, display name, theme toggle, Settings link, and Log out.
+
+### Axes
+
+The "axis" is the currently-selected browse dimension. It is stored in the URL as `?axis=` (e.g., `?axis=artists`). The default axis is `collections`, which is omitted from the URL for clean links.
+
+The axis is **pure UI state**. It is kept out of the React Query key and does not affect the API request made by `useModelResults`. Changing the axis reshapes the rail and the context header but does not refetch models unless the axis selection also changes the active filter (e.g., selecting a collection updates `?collectionId=`).
+
+The three axes and what they do in the rail:
+
+| Axis | Rail body | Active filter set |
+|------|-----------|-------------------|
+| `collections` | Collections tree | `collectionId` query param |
+| `artists` | Artist values + model counts | `meta_artist` query param |
+| `tags` | Tag values + model counts | `tags` query param |
+
+### useModelFilters
+
+`useModelFilters` (`apps/frontend/src/hooks/use-model-filters.ts`) is the single source of truth for all URL-backed filter state. It reads from and writes to `URLSearchParams`. It exposes:
+
+- `filters` — the filter object passed to the React Query key.
+- `toApiParams(cursor?)` — converts filters to the `ModelSearchParams` shape for the API call.
+- `axis` / `setAxis` — the active pivot axis; not in `filters` and not in the React Query key.
+- `activeAxisValue` — the currently-selected value within the active axis.
+- Setter helpers for each filter dimension.
+
+Metadata filters use a `meta_<slug>` prefix in the URL to namespace them (e.g., `?meta_artist=Maker+Name`).
+
+### useModelResults
+
+`useModelResults` (`apps/frontend/src/hooks/use-model-results.ts`) is the shared data engine for all view modes. It wraps a TanStack Query `useInfiniteQuery` keyed on `filters` (not `axis`), uses `getNextPageParam` to thread cursors, and sets up an `IntersectionObserver` on a sentinel `div` to trigger `fetchNextPage` automatically as the user scrolls. The hook exposes `models`, `total`, loading/error flags, and `sentinelRef`.
+
+### PivotMain
+
+`PivotMain` is the right-hand content area mounted at the `/` route (via `PivotPage`). It composes:
+
+1. **Top bar** — `Breadcrumb` (left), search input, Upload link (right).
+2. **Context header** — axis icon badge, context title (e.g., "All Collections", the selected artist name, or selected tags), total model count, View Switch, and a bulk-select toggle.
+3. **Results region** — renders one of three views based on the `view` display preference.
+
+### View Modes
+
+Three view modes are available, selected via `ViewSwitch` and persisted in `localStorage` under the key `displayPrefs`:
+
+| Mode | Component | Description |
+|------|-----------|-------------|
+| `grid` | inline card grid in PivotMain | Responsive auto-fill grid of `ModelCard` components |
+| `list` | `ModelList` | Dense row view: thumbnail, name, artist, year, file count, size, status, tags |
+| `group` | `ModelGroupView` | Models under sticky group headers keyed by the active axis |
+
+The `showThumbnails` preference (also in `displayPrefs`) toggles thumbnail display in list and group views.
+
+**Group view limitation:** For `axis=collections`, per-collection grouping requires collection membership on `ModelCard`, which the API does not currently return. Group view renders a single group for the collections axis. For `artists` and `tags`, grouping runs client-side on loaded models; group counts reflect loaded models only and will grow as infinite scroll loads more pages.
+
+### Navigation
+
+Routes unchanged from P0: `/models/:id`, `/collections`, `/collections/:id`, `/upload`, `/settings`. The standalone `/collections` nav link was removed from the left rail (collections are now an axis, not a separate page), but the route itself still exists for direct navigation and is used by collection-detail links.
+
+`/lib/:id` (multi-library routing) does not exist yet; deferred to P5.
+
+---
+
 ## API Design
 
 ### Conventions
@@ -223,41 +376,43 @@ Collections are an organizational structure, not metadata. A model's relationshi
 ### Route Map
 
 **Models**
-| Method | Route | Purpose | Service Chain |
-|--------|-------|---------|---------------|
-| GET | /models | Browse/search with filters | SearchService → PresenterService |
-| GET | /models/:id | Model detail | ModelService → PresenterService |
-| GET | /models/:id/files | File tree | ModelService → PresenterService |
-| POST | /models/upload | Upload archive (zip/rar/7z/tar.gz, ≤100 MB) | IngestionService → JobService |
-| POST | /models/upload/init | Initiate chunked upload session | UploadService |
-| PUT | /models/upload/:uploadId/chunk/:index | Upload a single chunk | UploadService |
-| POST | /models/upload/:uploadId/complete | Assemble chunks, start ingestion | UploadService → IngestionService → JobService |
-| POST | /models/import | Folder import | IngestionService → JobService |
-| GET | /models/:id/status | Processing status | JobService |
-| PATCH | /models/:id | Update model | ModelService → PresenterService |
-| DELETE | /models/:id | Delete model + files | ModelService → StorageService |
+| Method | Route | Purpose | Service Chain | Library-scoped |
+|--------|-------|---------|---------------|---------------|
+| GET | /models | Browse/search with filters | SearchService → PresenterService | Yes |
+| GET | /models/:id | Model detail | ModelService → PresenterService | No (userId) |
+| GET | /models/:id/files | File tree | ModelService → PresenterService | No (userId) |
+| POST | /models/upload | Upload archive (zip/rar/7z/tar.gz, ≤100 MB) | IngestionService → JobService | Yes |
+| POST | /models/upload/init | Initiate chunked upload session | UploadService | No |
+| PUT | /models/upload/:uploadId/chunk/:index | Upload a single chunk | UploadService | No |
+| POST | /models/upload/:uploadId/complete | Assemble chunks, start ingestion | UploadService → IngestionService → JobService | Yes |
+| POST | /models/import | Folder import | IngestionService → JobService | Yes |
+| GET | /models/:id/status | Processing status | JobService | No (userId) |
+| PATCH | /models/:id | Update model | ModelService → PresenterService | No (userId) |
+| DELETE | /models/:id | Delete model + files | ModelService → StorageService | No (userId) |
+
+"Library-scoped" means the route applies the `requireLibrary` preHandler and scopes its read or write to `request.libraryId`. By-id routes are still owned by `userId` and library-scoping for detail routes is deferred to P5.
 
 **Collections**
-| Method | Route | Purpose | Service Chain |
-|--------|-------|---------|---------------|
-| GET | /collections | List (with depth param) | CollectionService → PresenterService |
-| GET | /collections/:id | Single collection | CollectionService → PresenterService |
-| GET | /collections/:id/models | Models in collection | SearchService → PresenterService |
-| POST | /collections | Create | CollectionService |
-| PATCH | /collections/:id | Update | CollectionService → PresenterService |
-| DELETE | /collections/:id | Delete (not its models) | CollectionService |
-| POST | /collections/:id/models | Add model(s) | CollectionService |
-| DELETE | /collections/:id/models/:modelId | Remove model | CollectionService |
+| Method | Route | Purpose | Service Chain | Library-scoped |
+|--------|-------|---------|---------------|---------------|
+| GET | /collections | List (with depth param) | CollectionService → PresenterService | Yes |
+| GET | /collections/:id | Single collection | CollectionService → PresenterService | No (userId) |
+| GET | /collections/:id/models | Models in collection | SearchService → PresenterService | Yes |
+| POST | /collections | Create | CollectionService | Yes |
+| PATCH | /collections/:id | Update | CollectionService → PresenterService | No (userId) |
+| DELETE | /collections/:id | Delete (not its models) | CollectionService | No (userId) |
+| POST | /collections/:id/models | Add model(s) | CollectionService | No (userId) |
+| DELETE | /collections/:id/models/:modelId | Remove model | CollectionService | No (userId) |
 
 **Metadata**
-| Method | Route | Purpose | Service Chain |
-|--------|-------|---------|---------------|
-| GET | /metadata/fields | List all field definitions | MetadataService → PresenterService |
-| POST | /metadata/fields | Create custom field | MetadataService |
-| PATCH | /metadata/fields/:id | Update field definition | MetadataService |
-| DELETE | /metadata/fields/:id | Delete (not defaults) | MetadataService |
-| GET | /metadata/fields/:slug/values | Known values + counts | MetadataService → PresenterService |
-| PATCH | /models/:id/metadata | Set/update metadata | MetadataService |
+| Method | Route | Purpose | Service Chain | Library-scoped |
+|--------|-------|---------|---------------|---------------|
+| GET | /metadata/fields | List all field definitions | MetadataService → PresenterService | No |
+| POST | /metadata/fields | Create custom field | MetadataService | No |
+| PATCH | /metadata/fields/:id | Update field definition | MetadataService | No |
+| DELETE | /metadata/fields/:id | Delete (not defaults) | MetadataService | No |
+| GET | /metadata/fields/:slug/values | Known values + counts (within library) | MetadataService → PresenterService | Yes |
+| PATCH | /models/:id/metadata | Set/update metadata | MetadataService | No (userId) |
 
 **Auth**
 | Method | Route | Purpose | Service Chain |
@@ -321,3 +476,9 @@ All API responses use `{ data, meta, errors }`. No raw arrays, no inconsistent s
 
 ### D12: Services never format HTTP responses
 Services throw typed errors or return domain data. Routes and middleware handle HTTP status codes and envelope formatting. Services have no knowledge of HTTP.
+
+### D13: libraryId is server-injected — never client-supplied
+The `requireLibrary` preHandler derives `libraryId` from the authenticated session and writes it to `request.libraryId`. No route accepts a `libraryId` value from the client. This ensures a user cannot access another user's library by supplying an arbitrary `libraryId` in the query string or request body.
+
+### D14: Pivot axis is URL state, not query state
+The active pivot axis (`?axis=collections|artists|tags`) is stored in the URL so it survives navigation and is shareable, but it is excluded from the React Query key. The axis controls how the rail and context header look; it does not change the underlying API request. Only the filter values derived from an axis selection (e.g., `collectionId`, `meta_artist`) enter the query key and trigger refetches.

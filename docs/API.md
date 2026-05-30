@@ -224,6 +224,8 @@ Browse and search models. Supports full-text search, metadata filters, file type
 
 **Auth required:** Yes
 
+**Library scope:** Results are automatically scoped to the authenticated user's default library. The library is resolved server-side from the session; clients do not pass (and must not pass) a `libraryId`.
+
 **Query parameters:**
 
 | Parameter | Type | Default | Description |
@@ -291,6 +293,8 @@ Each item in `data` is a `ModelCard`.
 Upload an archive file to create a new model. The upload is accepted immediately and processed asynchronously. Returns a `modelId` and `jobId` to track progress.
 
 **Auth required:** Yes
+
+**Library scope:** The new model is created in the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
 
 **Request:** `multipart/form-data` with a single file field. The file must have a supported archive extension (`.zip`, `.rar`, `.7z`, `.tar.gz`, or `.tgz`) and must be 100 MB or smaller.
 
@@ -384,6 +388,8 @@ Assemble all uploaded chunks and start ingestion processing. All chunks (0 throu
 
 **Auth required:** Yes
 
+**Library scope:** The new model is created in the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
+
 **Path parameter:** `uploadId` — UUID from `POST /models/upload/init`
 
 **Response (202):**
@@ -408,6 +414,8 @@ Same response shape as `POST /models/upload`. Poll `GET /models/:id/status` with
 Start a folder import. Discovers models by walking a directory on the server's filesystem according to a hierarchy pattern, then ingests each discovered model using the specified file strategy.
 
 **Auth required:** Yes
+
+**Library scope:** All models created by this import are assigned to the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
 
 **Request body:**
 
@@ -648,9 +656,11 @@ Keys are field slugs. Values may be `string`, `number`, `boolean`, `string[]` (f
 
 ### GET /collections
 
-List collections belonging to the authenticated user.
+List collections belonging to the authenticated user's default library.
 
 **Auth required:** Yes
+
+**Library scope:** Results are scoped to the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
 
 **Query parameters:**
 
@@ -692,9 +702,11 @@ List collections belonging to the authenticated user.
 
 ### POST /collections
 
-Create a new collection.
+Create a new collection in the authenticated user's default library.
 
 **Auth required:** Yes
+
+**Library scope:** The new collection is created in the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
 
 **Request body:**
 
@@ -819,9 +831,11 @@ Delete a collection. The models inside it are not deleted — they are unlinked 
 
 ### GET /collections/:id/models
 
-List models belonging to a collection. Delegates to SearchService and supports the same filtering, sorting, and pagination as `GET /models`, scoped to the collection.
+List models belonging to a collection. Delegates to SearchService and supports the same filtering, sorting, and pagination as `GET /models`, scoped to both the collection and the authenticated user's default library.
 
 **Auth required:** Yes
+
+**Library scope:** Results are scoped to the authenticated user's default library in addition to the specified collection. The library is resolved server-side from the session; clients do not pass a `libraryId`.
 
 **Path parameter:** `id` — collection UUID
 
@@ -1043,9 +1057,11 @@ Delete a custom metadata field definition. Default fields (`isDefault: true`) ca
 
 ### GET /metadata/fields/:slug/values
 
-List distinct values recorded for a metadata field across all models, along with the count of models using each value. Useful for populating filter UIs.
+List distinct values recorded for a metadata field across models in the authenticated user's default library, along with the count of models using each value. Useful for populating filter UIs such as the AxisFacetBody in the Pivot Workspace.
 
 **Auth required:** Yes
+
+**Library scope:** Values and counts are scoped to the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
 
 **Path parameter:** `slug` — field slug (e.g., `artist`, `tags`)
 

@@ -19,6 +19,22 @@ When a new type is needed, it is added here first, then implemented in the share
 
 These map directly to Drizzle schema definitions and database tables.
 
+### Library
+
+```typescript
+interface Library {
+  id: string;
+  name: string;
+  slug: string;       // globally unique; URL-safe
+  userId: string;
+  isDefault: boolean; // exactly one default per user; enforced by DB partial unique index
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+The shared type is defined in `packages/shared/src/types/library.ts`. The database schema is in `apps/backend/src/db/schema/library.ts`. See the Architecture Reference for the `requireLibrary` preHandler and library-scoping rules.
+
 ### User
 
 ```typescript
@@ -44,6 +60,7 @@ interface Model {
   slug: string;
   description: string | null;
   userId: string;
+  libraryId: string;             // NOT NULL; every model belongs to a library (P1+)
   sourceType: ModelSourceType;
   status: ModelStatus;
   originalFilename: string | null;
@@ -158,6 +175,7 @@ interface Collection {
   slug: string;
   description: string | null;
   userId: string;
+  libraryId: string;             // NOT NULL; every collection belongs to a library (P1+)
   parentCollectionId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -530,19 +548,24 @@ These drive `FileType` classification during ingestion. They are extension lists
 ## Type Relationship Map
 
 ```
-User ──owns──→ Model ──has many──→ ModelFile ──has many──→ Thumbnail
-  │               │                     │
-  │               │                     └── hash (SHA-256)
+User ──owns──→ Library ──scopes──→ Model ──has many──→ ModelFile ──has many──→ Thumbnail
+  │               │                   │                     │
+  │               │                   │                     └── hash (SHA-256)
+  │               │                   │
+  │               │                   ├──has many──→ ModelMetadata ──references──→ MetadataFieldDefinition
+  │               │                   │
+  │               │                   ├──has many──→ model_tags ──references──→ Tag
+  │               │                   │             (optimized metadata storage)
+  │               │                   │
+  │               │                   └──many to many──→ Collection ──self-references──→ Collection
+  │               │                       (via collection_models)     (via parentCollectionId)
   │               │
-  │               ├──has many──→ ModelMetadata ──references──→ MetadataFieldDefinition
-  │               │
-  │               ├──has many──→ model_tags ──references──→ Tag
-  │               │             (optimized metadata storage)
-  │               │
-  │               └──many to many──→ Collection ──self-references──→ Collection
-  │                   (via collection_models)     (via parentCollectionId)
+  │               └──scopes──→ Collection
   │
-  └──owns──→ Collection
+  └──owns──→ Collection (via userId, for ownership; libraryId for scope)
 ```
 
-The key insight: Tag and model_tags exist as database-level optimizations. At the API level, tags are just metadata values of type `multi_enum`. MetadataService abstracts the storage routing.
+The key insights:
+
+- Library is the top-level scope for models and collections. Every model and collection has a NOT NULL `libraryId` FK. The API enforces this via the `requireLibrary` preHandler, which injects `request.libraryId` from the session — clients never supply it.
+- Tag and model_tags exist as database-level optimizations. At the API level, tags are just metadata values of type `multi_enum`. MetadataService abstracts the storage routing.

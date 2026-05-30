@@ -21,7 +21,7 @@ const DEFAULT_AXIS: PivotAxis = 'collections';
  * The currently-selected value for the active pivot axis:
  * - axis 'collections': collectionId (string | undefined)
  * - axis 'artists': the value of metadataFilters['artist'] (string | undefined)
- * - axis 'tags': the selected tag slugs (string[])
+ * - axis 'tags': the selected tag names (string[])
  */
 export interface ActiveAxisValue {
   collectionId: string | undefined;
