@@ -4,11 +4,15 @@ import { db } from '../db/index.js';
 import { models, modelFiles, thumbnails } from '../db/schema/index.js';
 import { notFound, validationError } from '../utils/errors.js';
 import type { Model } from '../db/schema/model.js';
+import { libraryService } from './library.service.js';
 
 export interface CreateModelData {
   name: string;
   slug: string;
   userId: string;
+  // Library scope. Optional at the call site — defaults to the owner's default
+  // library — but the DB column is NOT NULL (resolved before insert).
+  libraryId?: string;
   sourceType: ModelSourceType;
   status: ModelStatus;
   originalFilename?: string;
@@ -40,12 +44,16 @@ export interface UpdateModelStatusData {
 
 export class ModelService {
   async createModel(data: CreateModelData): Promise<{ id: string }> {
+    // Every model is scoped to a library (library_id NOT NULL since 0007).
+    // Resolve the owner's default library when not explicitly provided.
+    const libraryId = data.libraryId ?? (await libraryService.resolveDefaultLibraryId(data.userId));
     const [row] = await db
       .insert(models)
       .values({
         name: data.name,
         slug: data.slug,
         userId: data.userId,
+        libraryId,
         sourceType: data.sourceType,
         status: data.status,
         originalFilename: data.originalFilename ?? null,

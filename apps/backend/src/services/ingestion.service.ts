@@ -22,6 +22,7 @@ export class IngestionService {
   async handleUpload(
     file: { tempFilePath: string; originalFilename: string },
     userId: string,
+    libraryId: string,
   ): Promise<{ modelId: string; jobId: string }> {
     const name = stripArchiveExtension(file.originalFilename);
     const slug = generateSlug(name);
@@ -30,6 +31,7 @@ export class IngestionService {
       name,
       slug,
       userId,
+      libraryId,
       sourceType: 'archive_upload',
       status: 'processing',
       originalFilename: file.originalFilename,
@@ -42,6 +44,7 @@ export class IngestionService {
         tempFilePath: file.tempFilePath,
         originalFilename: file.originalFilename,
         userId,
+        libraryId,
       });
     } catch (err) {
       logger.error({ modelId, error: String(err) }, 'Failed to enqueue ingestion job');
@@ -49,7 +52,7 @@ export class IngestionService {
       throw err;
     }
 
-    logger.info({ modelId, jobId }, 'Upload accepted, ingestion job enqueued');
+    logger.info({ service: 'IngestionService', modelId, jobId, libraryId }, 'Upload accepted, ingestion job enqueued');
     return { modelId, jobId };
   }
 
@@ -126,6 +129,7 @@ export class IngestionService {
   async handleFolderImport(
     importConfig: ImportConfig,
     userId: string,
+    libraryId: string,
   ): Promise<{ jobId: string }> {
     // Validate pattern
     parsePattern(importConfig.pattern);
@@ -156,6 +160,7 @@ export class IngestionService {
       pattern: importConfig.pattern,
       strategy: importConfig.strategy,
       userId,
+      libraryId,
     });
 
     logger.info({ jobId, sourcePath: importConfig.sourcePath, pattern: importConfig.pattern }, 'Folder import job enqueued');
@@ -165,7 +170,7 @@ export class IngestionService {
   async processFolderImportJob(
     job: Job<FolderImportJobPayload>,
   ): Promise<void> {
-    const { sourcePath, pattern, strategy, userId } = job.data;
+    const { sourcePath, pattern, strategy, userId, libraryId } = job.data;
     const parsedPattern = parsePattern(pattern);
     const importStrategy = createImportStrategy(strategy);
 
@@ -188,7 +193,7 @@ export class IngestionService {
 
       for (const model of discovered) {
         try {
-          await this.processDiscoveredModel(model, importStrategy, userId, job);
+          await this.processDiscoveredModel(model, importStrategy, userId, libraryId, job);
           processed++;
         } catch (err) {
           failed++;
@@ -264,15 +269,18 @@ export class IngestionService {
     discovered: import('./file-processing.service.js').DiscoveredModel,
     importStrategy: import('./import-strategy.service.js').IImportStrategy,
     userId: string,
+    libraryId: string,
     job: Job,
   ): Promise<void> {
     const slug = generateSlug(discovered.name);
 
-    // Create model record in processing state
+    // Create model record in processing state. libraryId comes from the job
+    // payload which was captured at request time from request.libraryId.
     const { id: modelId } = await modelService.createModel({
       name: discovered.name,
       slug,
       userId,
+      libraryId,
       sourceType: 'folder_import',
       status: 'processing',
     });
@@ -314,11 +322,13 @@ export class IngestionService {
         await metadataService.setModelMetadata(modelId, discovered.metadata);
       }
 
-      // Assign collection from pattern
+      // Assign collection from pattern. Pass the job's libraryId so the
+      // collection is created in the same library as the model.
       if (discovered.collectionName) {
         const collection = await collectionService.findOrCreateByName(
           discovered.collectionName,
           userId,
+          libraryId,
         );
         await collectionService.addModelToCollection(collection.id, modelId);
       }

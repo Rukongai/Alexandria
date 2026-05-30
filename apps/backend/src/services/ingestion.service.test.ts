@@ -108,12 +108,13 @@ describe('IngestionService – handleUpload', () => {
     const result = await service.handleUpload(
       { tempFilePath: '/tmp/upload.zip', originalFilename: 'my-model.zip' },
       'user-1',
+      'library-1',
     );
 
     // Returns both IDs
     expect(result).toEqual({ modelId: 'model-abc', jobId: 'job-xyz' });
 
-    // Model created with status 'processing' and archive_upload source
+    // Model created with status 'processing', archive_upload source, and explicit libraryId
     expect(modelService.createModel).toHaveBeenCalledOnce();
     expect(modelService.createModel).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -121,10 +122,11 @@ describe('IngestionService – handleUpload', () => {
         sourceType: 'archive_upload',
         originalFilename: 'my-model.zip',
         userId: 'user-1',
+        libraryId: 'library-1',
       }),
     );
 
-    // Job enqueued with correct payload
+    // Job enqueued with correct payload including libraryId
     expect(jobService.enqueueIngestionJob).toHaveBeenCalledOnce();
     expect(jobService.enqueueIngestionJob).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -132,6 +134,7 @@ describe('IngestionService – handleUpload', () => {
         tempFilePath: '/tmp/upload.zip',
         originalFilename: 'my-model.zip',
         userId: 'user-1',
+        libraryId: 'library-1',
       }),
     );
   });
@@ -143,6 +146,7 @@ describe('IngestionService – handleUpload', () => {
     await service.handleUpload(
       { tempFilePath: '/tmp/upload.zip', originalFilename: 'Cool Model.zip' },
       'user-1',
+      'library-1',
     );
 
     expect(modelService.createModel).toHaveBeenCalledWith(
@@ -157,6 +161,7 @@ describe('IngestionService – handleUpload', () => {
     await service.handleUpload(
       { tempFilePath: '/tmp/upload.rar', originalFilename: 'Cool Model.rar' },
       'user-1',
+      'library-1',
     );
 
     expect(modelService.createModel).toHaveBeenCalledWith(
@@ -171,6 +176,7 @@ describe('IngestionService – handleUpload', () => {
     await service.handleUpload(
       { tempFilePath: '/tmp/upload.tar.gz', originalFilename: 'Cool Model.tar.gz' },
       'user-1',
+      'library-1',
     );
 
     expect(modelService.createModel).toHaveBeenCalledWith(

@@ -3,6 +3,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   users,
+  libraries,
   models,
   modelFiles,
   thumbnails,
@@ -22,6 +23,7 @@ import type { FileTreeNode } from '@alexandria/shared';
 // ---------------------------------------------------------------------------
 
 let testUserId: string;
+let testLibraryId: string;
 let testModelId: string;
 let imageFileId: string;
 let gridThumbnailId: string;
@@ -39,6 +41,7 @@ beforeAll(async () => {
     const ids = leftoverUsers.map((u) => u.id);
     await db.delete(collections).where(inArray(collections.userId, ids));
     await db.delete(models).where(inArray(models.userId, ids));
+    await db.delete(libraries).where(inArray(libraries.userId, ids));
     await db.delete(users).where(eq(users.email, 'presenter-test@example.com'));
   }
   await db.delete(tags).where(eq(tags.name, 'PresenterTestTag'));
@@ -55,6 +58,18 @@ beforeAll(async () => {
     .returning();
   testUserId = user.id;
 
+  // Create the user's default library — models/collections require a libraryId (NOT NULL).
+  const [library] = await db
+    .insert(libraries)
+    .values({
+      name: 'Presenter Test Library',
+      slug: `presenter-test-library-${Date.now()}`,
+      userId: testUserId,
+      isDefault: true,
+    })
+    .returning();
+  testLibraryId = library.id;
+
   // Create test model
   const [model] = await db
     .insert(models)
@@ -63,6 +78,7 @@ beforeAll(async () => {
       slug: `presenter-test-model-${Date.now()}`,
       description: 'A test model for presenter service',
       userId: testUserId,
+      libraryId: testLibraryId,
       sourceType: 'zip_upload',
       status: 'ready',
       totalSizeBytes: 5000,
@@ -141,6 +157,7 @@ beforeAll(async () => {
       name: 'Presenter Test Collection',
       slug: `presenter-test-collection-${Date.now()}`,
       userId: testUserId,
+      libraryId: testLibraryId,
     })
     .returning();
   collectionId = coll.id;
@@ -178,6 +195,9 @@ afterAll(async () => {
   await db.delete(collections).where(eq(collections.id, collectionId));
   await db.delete(models).where(eq(models.id, testModelId));
   await db.delete(tags).where(eq(tags.name, 'PresenterTestTag'));
+  if (testLibraryId) {
+    await db.delete(libraries).where(eq(libraries.id, testLibraryId));
+  }
   await db.delete(users).where(eq(users.id, testUserId));
 });
 
@@ -405,6 +425,7 @@ describe('buildModelCardsFromRows', () => {
         name: 'Fallback Thumbnail Test Model',
         slug: `fallback-thumb-test-${ts}`,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: 'ready',
         totalSizeBytes: 1000,
@@ -516,5 +537,65 @@ describe('buildMetadataFieldList', () => {
     expect(artistField).toBeDefined();
     expect(artistField!.type).toBe('text');
     expect(artistField!.isDefault).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildCollectionList — delegates to CollectionService with libraryId scoping
+// ---------------------------------------------------------------------------
+
+describe('buildCollectionList', () => {
+  it('should return the collection created for this library', async () => {
+    const result = await presenterService.buildCollectionList(testUserId, testLibraryId, {});
+
+    expect(Array.isArray(result)).toBe(true);
+    const found = result.find((c) => c.id === collectionId);
+    expect(found).toBeDefined();
+    expect(found!.name).toBe('Presenter Test Collection');
+    expect(typeof found!.modelCount).toBe('number');
+    expect(Array.isArray(found!.children)).toBe(true);
+  });
+
+  it('should return ONLY collections belonging to the specified library (cross-library isolation)', async () => {
+    // Create a second library for the same user
+    const [libraryB] = await db
+      .insert(libraries)
+      .values({
+        name: 'Presenter Isolation Library B',
+        slug: `presenter-iso-lib-b-${Date.now()}`,
+        userId: testUserId,
+        isDefault: false,
+      })
+      .returning();
+
+    try {
+      // Insert a collection directly into library B
+      const [colB] = await db
+        .insert(collections)
+        .values({
+          name: 'Presenter Library B Collection',
+          slug: `presenter-lib-b-col-${Date.now()}`,
+          userId: testUserId,
+          libraryId: libraryB.id,
+        })
+        .returning();
+
+      // buildCollectionList scoped to library A must NOT return library B's collection
+      const resultA = await presenterService.buildCollectionList(testUserId, testLibraryId, {});
+      const resultAIds = resultA.map((c) => c.id);
+      expect(resultAIds).toContain(collectionId);
+      expect(resultAIds).not.toContain(colB.id);
+
+      // buildCollectionList scoped to library B must NOT return library A's collection
+      const resultB = await presenterService.buildCollectionList(testUserId, libraryB.id, {});
+      const resultBIds = resultB.map((c) => c.id);
+      expect(resultBIds).toContain(colB.id);
+      expect(resultBIds).not.toContain(collectionId);
+
+      // FK-ordered cleanup: delete collection before library
+      await db.delete(collections).where(eq(collections.id, colB.id));
+    } finally {
+      await db.delete(libraries).where(eq(libraries.id, libraryB.id));
+    }
   });
 });

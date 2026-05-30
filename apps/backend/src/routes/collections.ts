@@ -14,6 +14,7 @@ import {
   modelSearchParamsSchema,
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
+import { requireLibrary } from '../middleware/library.js';
 import { validate } from '../middleware/validate.js';
 import { collectionService } from '../services/collection.service.js';
 import { presenterService } from '../services/presenter.service.js';
@@ -22,9 +23,11 @@ import { validationError } from '../utils/errors.js';
 
 export async function collectionRoutes(app: FastifyInstance): Promise<void> {
   // GET / — list top-level collections with optional depth expansion
+  // requireLibrary is mandatory: libraryId comes ONLY from request.libraryId,
+  // never from query or body parameters.
   app.get(
     '/',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const rawQuery = request.query as Record<string, unknown>;
       const parseResult = collectionListParamsSchema.safeParse(rawQuery);
@@ -39,7 +42,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
 
       const params = parseResult.data;
       const userId = request.user!.id;
-      const collections = await presenterService.buildCollectionList(userId, params);
+      const collections = await presenterService.buildCollectionList(userId, request.libraryId!, params);
 
       return reply.status(200).send({
         data: collections,
@@ -50,13 +53,15 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // POST / — create a collection
+  // requireLibrary is mandatory: libraryId comes ONLY from request.libraryId,
+  // never from query or body parameters.
   app.post(
     '/',
-    { preHandler: [requireAuth, validate(createCollectionSchema)] },
+    { preHandler: [requireAuth, requireLibrary, validate(createCollectionSchema)] },
     async (request, reply) => {
       const body = request.body as CreateCollectionRequest;
       const userId = request.user!.id;
-      const collection = await collectionService.createCollection(body, userId);
+      const collection = await collectionService.createCollection(body, userId, request.libraryId!);
 
       return reply.status(201).send({ data: collection, meta: null, errors: null });
     },
@@ -103,7 +108,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
   // GET /:id/models — models in a collection (delegates to SearchService)
   app.get(
     '/:id/models',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const rawQuery = request.query as Record<string, unknown>;
@@ -136,7 +141,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const params = parseResult.data as ModelSearchParams;
-      const result = await searchService.searchModels(params);
+      const result = await searchService.searchModels(params, request.libraryId!);
 
       return reply.status(200).send({
         data: result.models,

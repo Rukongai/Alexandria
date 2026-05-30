@@ -3,6 +3,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   users,
+  libraries,
   models,
   modelFiles,
   thumbnails,
@@ -40,6 +41,7 @@ import type { ModelCard } from '@alexandria/shared';
 // ---------------------------------------------------------------------------
 
 let testUserId: string;
+let testLibraryId: string;
 const modelIds: string[] = [];
 let collectionId: string;
 const tagIds: Record<string, string> = {};
@@ -59,6 +61,7 @@ beforeAll(async () => {
     const leftoverUserIds = leftoverUsers.map((u) => u.id);
     await db.delete(collections).where(inArray(collections.userId, leftoverUserIds));
     await db.delete(models).where(inArray(models.userId, leftoverUserIds));
+    await db.delete(libraries).where(inArray(libraries.userId, leftoverUserIds));
     await db.delete(users).where(eq(users.email, 'search-test@example.com'));
   }
   // Clean up orphaned test tags from previous runs
@@ -78,6 +81,22 @@ beforeAll(async () => {
     .returning();
 
   testUserId = testUser.id;
+
+  // -------------------------------------------------------------------------
+  // Create the user's default library — models/collections require a libraryId
+  // (NOT NULL since migration 0007).
+  // -------------------------------------------------------------------------
+  const [testLibrary] = await db
+    .insert(libraries)
+    .values({
+      name: 'Search Test Library',
+      slug: `search-test-library-${Date.now()}`,
+      userId: testUserId,
+      isDefault: true,
+    })
+    .returning();
+
+  testLibraryId = testLibrary.id;
 
   // -------------------------------------------------------------------------
   // Resolve default field definition IDs from seed
@@ -145,6 +164,7 @@ beforeAll(async () => {
         slug: `search-test-${def.name.toLowerCase().replace(/\s+/g, '-')}-${ts}-${i}`,
         description: def.description,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: def.status,
         totalSizeBytes: def.totalSizeBytes,
@@ -254,9 +274,11 @@ beforeAll(async () => {
   // -------------------------------------------------------------------------
   // Create thumbnail for model[0]'s image file (grid size = 400px wide)
   // -------------------------------------------------------------------------
+  // storagePath MUST carry the `_grid` suffix: the presenter resolves grid
+  // thumbnails by storage-path suffix (LIKE '%_grid.webp'), not by width.
   await db.insert(thumbnails).values({
     sourceFileId: imageFileModel0.id,
-    storagePath: '/storage/thumbnails/m0/thumb.webp',
+    storagePath: '/storage/thumbnails/m0/thumb_grid.webp',
     width: 400,
     height: 300,
     format: 'webp',
@@ -271,6 +293,7 @@ beforeAll(async () => {
       name: 'Dragon Collection',
       slug: `dragon-collection-${ts}`,
       userId: testUserId,
+      libraryId: testLibraryId,
     })
     .returning();
 
@@ -301,6 +324,11 @@ afterAll(async () => {
     await db.delete(collections).where(eq(collections.id, collectionId));
   }
 
+  // Delete the test library (after models/collections that reference it via FK)
+  if (testLibraryId) {
+    await db.delete(libraries).where(eq(libraries.id, testLibraryId));
+  }
+
   // Delete test user
   if (testUserId) {
     await db.delete(users).where(eq(users.id, testUserId));
@@ -320,7 +348,7 @@ function onlyTestModels(cards: ModelCard[]): ModelCard[] {
 
 describe('browse all models', () => {
   it('should return only ready models with default sort (createdAt desc) when no filters applied', async () => {
-    const result = await searchService.searchModels({ pageSize: 100 });
+    const result = await searchService.searchModels({ pageSize: 100 }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     // Default filter excludes error/processing — only 4 ready models returned.
@@ -335,7 +363,7 @@ describe('browse all models', () => {
   });
 
   it('should include total count reflecting all matching rows', async () => {
-    const result = await searchService.searchModels({ pageSize: 100 });
+    const result = await searchService.searchModels({ pageSize: 100 }, testLibraryId);
     // total >= 4 because the test DB may have other ready models
     expect(result.total).toBeGreaterThanOrEqual(4);
     expect(typeof result.total).toBe('number');
@@ -344,7 +372,7 @@ describe('browse all models', () => {
   it('should return empty result with total 0 when no models match', async () => {
     const result = await searchService.searchModels({
       q: 'zzz-this-query-matches-nothing-absolutely-unique-xyzzy',
-    });
+    }, testLibraryId);
 
     expect(result.models).toHaveLength(0);
     expect(result.total).toBe(0);
@@ -355,7 +383,7 @@ describe('browse all models', () => {
     const result = await searchService.searchModels({
       status: 'ready',
       pageSize: 1,
-    });
+    }, testLibraryId);
 
     expect(result.models.length).toBeGreaterThanOrEqual(1);
     const card = result.models[0];
@@ -382,7 +410,7 @@ describe('browse all models', () => {
 
 describe('text search', () => {
   it('should return models matching search query in name', async () => {
-    const result = await searchService.searchModels({ q: 'Alpha Dragon' });
+    const result = await searchService.searchModels({ q: 'Alpha Dragon' }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -392,7 +420,7 @@ describe('text search', () => {
   it('should return models matching search query in description', async () => {
     // "Beta Fantasy Set" description: "Collection featuring a dragon warrior and elves"
     // Searching "warrior" should surface it via description tsvector (weight B)
-    const result = await searchService.searchModels({ q: 'warrior elves' });
+    const result = await searchService.searchModels({ q: 'warrior elves' }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -406,7 +434,7 @@ describe('text search', () => {
     //
     // With no explicit sort, searchModels uses relevance (ts_rank_cd) when q is provided.
     // model[0] should rank above model[1].
-    const result = await searchService.searchModels({ q: 'dragon' });
+    const result = await searchService.searchModels({ q: 'dragon' }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const idxAlpha = ours.findIndex((m) => m.id === modelIds[0]);
@@ -421,7 +449,7 @@ describe('text search', () => {
   });
 
   it('should return total matching the full result set, not the page', async () => {
-    const result = await searchService.searchModels({ q: 'dragon', pageSize: 1 });
+    const result = await searchService.searchModels({ q: 'dragon', pageSize: 1 }, testLibraryId);
     // total reflects all DB matches; our test data has at least 3 "dragon" hits
     // (Alpha name, Beta desc, Epsilon Medieval desc mentions medieval not dragon...
     //  actually Alpha + Beta + Epsilon-medieval doesn't mention dragon.
@@ -439,7 +467,7 @@ describe('metadata filtering', () => {
     const result = await searchService.searchModels({
       tags: 'Dragon',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -457,7 +485,7 @@ describe('metadata filtering', () => {
     const result = await searchService.searchModels({
       tags: 'Dragon,Fantasy',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -472,7 +500,7 @@ describe('metadata filtering', () => {
     const result = await searchService.searchModels({
       metadataFilters: { artist: 'sculptor-a' },
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -486,7 +514,7 @@ describe('metadata filtering', () => {
   it('should return zero results when metadata filter matches no models', async () => {
     const result = await searchService.searchModels({
       metadataFilters: { artist: 'nonexistent-artist-xyz' },
-    });
+    }, testLibraryId);
 
     expect(result.total).toBe(0);
     expect(result.models).toHaveLength(0);
@@ -502,7 +530,7 @@ describe('collection filtering', () => {
     const result = await searchService.searchModels({
       collectionId,
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -525,13 +553,14 @@ describe('collection filtering', () => {
         name: 'Empty Test Collection',
         slug: `empty-collection-${ts}`,
         userId: testUserId,
+        libraryId: testLibraryId,
       })
       .returning();
 
     try {
       const result = await searchService.searchModels({
         collectionId: emptyCollection.id,
-      });
+      }, testLibraryId);
       expect(result.models).toHaveLength(0);
       expect(result.total).toBe(0);
       expect(result.cursor).toBeNull();
@@ -550,7 +579,7 @@ describe('file type filtering', () => {
     const result = await searchService.searchModels({
       fileType: 'stl',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -567,7 +596,7 @@ describe('file type filtering', () => {
     const result = await searchService.searchModels({
       fileType: 'document',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -582,7 +611,7 @@ describe('file type filtering', () => {
     const result = await searchService.searchModels({
       fileType: 'image',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -603,7 +632,7 @@ describe('status filtering', () => {
     const result = await searchService.searchModels({
       status: 'ready',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     // model[0], [1], [2], [4] are ready; [3] is error; [5] is processing
@@ -621,7 +650,7 @@ describe('status filtering', () => {
     const result = await searchService.searchModels({
       status: 'error',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     expect(ours).toHaveLength(1);
@@ -632,7 +661,7 @@ describe('status filtering', () => {
     const result = await searchService.searchModels({
       status: 'processing',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     expect(ours).toHaveLength(1);
@@ -640,7 +669,7 @@ describe('status filtering', () => {
   });
 
   it('should return only ready models when status filter is omitted', async () => {
-    const result = await searchService.searchModels({ pageSize: 100 });
+    const result = await searchService.searchModels({ pageSize: 100 }, testLibraryId);
     const ours = onlyTestModels(result.models);
     // Default browse excludes processing/error models — only 4 ready models
     expect(ours).toHaveLength(4);
@@ -661,7 +690,7 @@ describe('combined filters', () => {
       q: 'dragon',
       metadataFilters: { artist: 'sculptor-a' },
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     expect(ours).toHaveLength(1);
@@ -676,7 +705,7 @@ describe('combined filters', () => {
       tags: 'Dragon',
       status: 'ready',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -693,7 +722,7 @@ describe('combined filters', () => {
       collectionId,
       q: 'dragon',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     const ourIds = ours.map((m) => m.id);
@@ -713,7 +742,7 @@ describe('sorting', () => {
       sortDir: 'asc',
       status: 'ready', // narrow to our known 4 ready models
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     // Ready test models: Alpha, Beta, Gamma, Epsilon
@@ -730,7 +759,7 @@ describe('sorting', () => {
       sortDir: 'desc',
       status: 'ready',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     // Reverse alphabetical: Gamma, Epsilon, Beta, Alpha
@@ -746,7 +775,7 @@ describe('sorting', () => {
       sortDir: 'asc',
       status: 'ready',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     // Ready models in creation order: Alpha(0), Beta(1), Gamma(2), Epsilon(4)
@@ -760,7 +789,7 @@ describe('sorting', () => {
       sortDir: 'desc',
       status: 'ready',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     // Ready models in reverse creation order: Epsilon(4), Gamma(2), Beta(1), Alpha(0)
@@ -774,7 +803,7 @@ describe('sorting', () => {
       sortDir: 'desc',
       status: 'ready',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     // Ready model sizes: Alpha=1M, Beta=2M, Gamma=3M, Epsilon=4M
@@ -791,7 +820,7 @@ describe('sorting', () => {
       sortDir: 'asc',
       status: 'ready',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const ours = onlyTestModels(result.models);
     // Ready model sizes ascending: Alpha(1M), Beta(2M), Gamma(3M), Epsilon(4M)
@@ -814,7 +843,7 @@ describe('cursor pagination', () => {
       sortDir: 'asc',
       status: 'ready',
       pageSize: 2,
-    });
+    }, testLibraryId);
 
     expect(result.pageSize).toBe(2);
     expect(result.cursor).not.toBeNull();
@@ -833,7 +862,7 @@ describe('cursor pagination', () => {
       sortDir: 'asc',
       status: 'ready',
       pageSize: 2,
-    });
+    }, testLibraryId);
 
     expect(page1.cursor).not.toBeNull();
 
@@ -843,7 +872,7 @@ describe('cursor pagination', () => {
       status: 'ready',
       pageSize: 2,
       cursor: page1.cursor!,
-    });
+    }, testLibraryId);
 
     const page1Ids = onlyTestModels(page1.models).map((m) => m.id);
     const page2Ids = onlyTestModels(page2.models).map((m) => m.id);
@@ -868,7 +897,7 @@ describe('cursor pagination', () => {
       sortDir: 'asc',
       collectionId,
       pageSize: 10, // collection only has 2 models
-    });
+    }, testLibraryId);
 
     // Both collection models are returned and there is no next page
     expect(result.total).toBe(2);
@@ -883,7 +912,7 @@ describe('cursor pagination', () => {
       sortDir: 'asc',
       collectionId,
       pageSize: 1,
-    });
+    }, testLibraryId);
     expect(page1.cursor).not.toBeNull();
 
     // page2 → uses cursor from page1, pageSize:10 → gets the remaining 1 model
@@ -894,7 +923,7 @@ describe('cursor pagination', () => {
       collectionId,
       pageSize: 10,
       cursor: page1.cursor!,
-    });
+    }, testLibraryId);
 
     expect(page2.cursor).toBeNull();
     expect(onlyTestModels(page2.models)).toHaveLength(1);
@@ -906,7 +935,7 @@ describe('cursor pagination', () => {
       sortDir: 'asc',
       status: 'ready',
       pageSize: 2,
-    });
+    }, testLibraryId);
 
     const page2 = await searchService.searchModels({
       sort: 'createdAt',
@@ -914,7 +943,7 @@ describe('cursor pagination', () => {
       status: 'ready',
       pageSize: 2,
       cursor: page1.cursor!,
-    });
+    }, testLibraryId);
 
     // Both pages report the same total (total is always the full count)
     expect(page1.total).toBe(page2.total);
@@ -926,7 +955,7 @@ describe('cursor pagination', () => {
       sortDir: 'desc',
       status: 'ready',
       pageSize: 2,
-    });
+    }, testLibraryId);
 
     expect(page1.cursor).not.toBeNull();
 
@@ -936,7 +965,7 @@ describe('cursor pagination', () => {
       status: 'ready',
       pageSize: 2,
       cursor: page1.cursor!,
-    });
+    }, testLibraryId);
 
     const p1Ids = onlyTestModels(page1.models).map((m) => m.id);
     const p2Ids = onlyTestModels(page2.models).map((m) => m.id);
@@ -948,7 +977,7 @@ describe('cursor pagination', () => {
 
   it('should throw a validation error for an invalid cursor', async () => {
     await expect(
-      searchService.searchModels({ cursor: 'this-is-not-a-valid-cursor!!!' }),
+      searchService.searchModels({ cursor: 'this-is-not-a-valid-cursor!!!' }, testLibraryId),
     ).rejects.toMatchObject({
       code: 'VALIDATION_ERROR',
     });
@@ -957,7 +986,7 @@ describe('cursor pagination', () => {
   it('should throw AppError for a base64 cursor that decodes to non-JSON', async () => {
     const badCursor = Buffer.from('not-json-at-all').toString('base64');
     await expect(
-      searchService.searchModels({ cursor: badCursor }),
+      searchService.searchModels({ cursor: badCursor }, testLibraryId),
     ).rejects.toMatchObject({
       code: 'VALIDATION_ERROR',
     });
@@ -973,7 +1002,7 @@ describe('response shape', () => {
     // model[0] has an image file + a 400px thumbnail
     const result = await searchService.searchModels({
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const alpha = result.models.find((m) => m.id === modelIds[0]);
     expect(alpha).toBeDefined();
@@ -985,7 +1014,7 @@ describe('response shape', () => {
     // model[2] has only an STL file — no thumbnail
     const result = await searchService.searchModels({
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const gamma = result.models.find((m) => m.id === modelIds[2]);
     expect(gamma).toBeDefined();
@@ -995,7 +1024,7 @@ describe('response shape', () => {
   it('should include tags in metadata array for models that have tags', async () => {
     const result = await searchService.searchModels({
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const alpha = result.models.find((m) => m.id === modelIds[0]);
     expect(alpha).toBeDefined();
@@ -1011,7 +1040,7 @@ describe('response shape', () => {
   it('should include generic metadata (artist) in ModelCard for models that have it', async () => {
     const result = await searchService.searchModels({
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const alpha = result.models.find((m) => m.id === modelIds[0]);
     expect(alpha).toBeDefined();
@@ -1027,7 +1056,7 @@ describe('response shape', () => {
     const result = await searchService.searchModels({
       status: 'error',
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const delta = result.models.find((m) => m.id === modelIds[3]);
     expect(delta).toBeDefined();
@@ -1038,7 +1067,7 @@ describe('response shape', () => {
     // model[0] has: dragon tag + artist metadata
     const result = await searchService.searchModels({
       pageSize: 100,
-    });
+    }, testLibraryId);
 
     const alpha = result.models.find((m) => m.id === modelIds[0]);
     expect(alpha).toBeDefined();
@@ -1049,17 +1078,121 @@ describe('response shape', () => {
   });
 
   it('should return pageSize matching the requested value', async () => {
-    const result = await searchService.searchModels({ pageSize: 7 });
+    const result = await searchService.searchModels({ pageSize: 7 }, testLibraryId);
     expect(result.pageSize).toBe(7);
   });
 
   it('should cap pageSize at MAX_PAGE_SIZE (200)', async () => {
-    const result = await searchService.searchModels({ pageSize: 999 });
+    const result = await searchService.searchModels({ pageSize: 999 }, testLibraryId);
     expect(result.pageSize).toBe(200);
   });
 
   it('should apply default pageSize of 50 when not specified', async () => {
-    const result = await searchService.searchModels({});
+    const result = await searchService.searchModels({}, testLibraryId);
     expect(result.pageSize).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// describe: cross-library isolation
+// ---------------------------------------------------------------------------
+//
+// Proves that searchModels scopes BOTH the main query and the count query to
+// the supplied libraryId — models in a different library never leak through.
+// ---------------------------------------------------------------------------
+
+describe('cross-library isolation', () => {
+  let libraryBId: string;
+  let modelBId: string;
+
+  beforeAll(async () => {
+    const ts = Date.now();
+
+    // Create a second library for the same test user (non-default)
+    const [libB] = await db
+      .insert(libraries)
+      .values({
+        name: 'Isolation Test Library B',
+        slug: `isolation-lib-b-${ts}`,
+        userId: testUserId,
+        isDefault: false,
+      })
+      .returning();
+
+    libraryBId = libB.id;
+
+    // Insert a model in library B that would match a broad "status=ready" query
+    const [modelB] = await db
+      .insert(models)
+      .values({
+        name: 'Library B Dragon Model',
+        slug: `lib-b-dragon-${ts}`,
+        description: 'A model that belongs to library B',
+        userId: testUserId,
+        libraryId: libraryBId,
+        sourceType: 'zip_upload',
+        status: 'ready',
+        totalSizeBytes: 999_999,
+        fileCount: 1,
+      })
+      .returning();
+
+    modelBId = modelB.id;
+  });
+
+  afterAll(async () => {
+    // Delete in FK order: model first, then library
+    if (modelBId) {
+      await db.delete(models).where(eq(models.id, modelBId));
+    }
+    if (libraryBId) {
+      await db.delete(libraries).where(eq(libraries.id, libraryBId));
+    }
+  });
+
+  it('should not return library B models when searching library A', async () => {
+    // Broad query — would match library B's model if not scoped
+    const result = await searchService.searchModels({ status: 'ready', pageSize: 200 }, testLibraryId);
+
+    const returnedIds = result.models.map((m) => m.id);
+    // Library A models (ready: 0, 1, 2, 4) must be present
+    expect(returnedIds).toContain(modelIds[0]);
+    expect(returnedIds).toContain(modelIds[1]);
+    expect(returnedIds).toContain(modelIds[2]);
+    expect(returnedIds).toContain(modelIds[4]);
+    // Library B model must NOT appear
+    expect(returnedIds).not.toContain(modelBId);
+  });
+
+  it('should exclude library B model from total count when scoped to library A', async () => {
+    // The count query must also be scoped — total must not include library B's model
+    const resultA = await searchService.searchModels({ status: 'ready', pageSize: 200 }, testLibraryId);
+    const resultB = await searchService.searchModels({ status: 'ready', pageSize: 200 }, libraryBId);
+
+    // Library A total must not include library B's model
+    const aIds = resultA.models.map((m) => m.id);
+    expect(aIds).not.toContain(modelBId);
+    // total for A equals number of ready models in A (our 4 test models)
+    const aOurs = aIds.filter((id) => modelIds.includes(id));
+    expect(resultA.total).toBe(aOurs.length);
+
+    // Library B sees only its own model
+    const bIds = resultB.models.map((m) => m.id);
+    expect(bIds).toContain(modelBId);
+    expect(bIds.filter((id) => modelIds.includes(id))).toHaveLength(0);
+    // total for B is exactly 1 (the one model we inserted)
+    expect(resultB.total).toBe(1);
+  });
+
+  it('should not return library A models when searching library B', async () => {
+    const result = await searchService.searchModels({ status: 'ready', pageSize: 200 }, libraryBId);
+
+    const returnedIds = result.models.map((m) => m.id);
+    // Library B's model must appear
+    expect(returnedIds).toContain(modelBId);
+    // None of library A's models should appear
+    for (const id of modelIds) {
+      expect(returnedIds).not.toContain(id);
+    }
   });
 });

@@ -10,6 +10,7 @@ import type {
   SetModelMetadataRequest,
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
+import { requireLibrary } from '../middleware/library.js';
 import { validate } from '../middleware/validate.js';
 import { metadataService } from '../services/metadata.service.js';
 import { presenterService } from '../services/presenter.service.js';
@@ -59,13 +60,13 @@ export async function metadataFieldRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // GET /:slug/values — list known values for a field
+  // GET /:slug/values — list known values for a field (scoped to the request library)
   app.get(
     '/:slug/values',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const { slug } = request.params as { slug: string };
-      const values = await metadataService.listFieldValues(slug);
+      const values = await metadataService.listFieldValues(slug, request.libraryId!);
       return reply.status(200).send({ data: values, meta: null, errors: null });
     },
   );

@@ -1,4 +1,4 @@
-import { and, asc, desc, sql, SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, sql, SQL } from 'drizzle-orm';
 import type {
   ModelSearchParams,
   ModelCard,
@@ -19,7 +19,7 @@ const MAX_PAGE_SIZE = 200;
 // ---------------------------------------------------------------------------
 
 export interface ISearchService {
-  searchModels(params: ModelSearchParams): Promise<SearchResult>;
+  searchModels(params: ModelSearchParams, libraryId: string): Promise<SearchResult>;
 }
 
 export interface SearchResult {
@@ -102,7 +102,7 @@ function buildCursorWhere(
 // ---------------------------------------------------------------------------
 
 export class PostgresSearchService implements ISearchService {
-  async searchModels(params: ModelSearchParams): Promise<SearchResult> {
+  async searchModels(params: ModelSearchParams, libraryId: string): Promise<SearchResult> {
     const pageSize = Math.min(params.pageSize ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
     const sortField = params.sort ?? 'createdAt';
     const sortDir = params.sortDir ?? 'desc';
@@ -111,6 +111,7 @@ export class PostgresSearchService implements ISearchService {
     logger.debug(
       {
         service: 'SearchService',
+        libraryId,
         q: params.q,
         tags: params.tags,
         collectionId: params.collectionId,
@@ -129,6 +130,9 @@ export class PostgresSearchService implements ISearchService {
     // -----------------------------------------------------------------------
 
     const conditions: SQL[] = [];
+
+    // Library scope — always enforced; server-injected, never from query params
+    conditions.push(eq(models.libraryId, libraryId));
 
     // Full-text search
     let tsQuery: string | null = null;

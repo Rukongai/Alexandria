@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { useAuth } from './hooks/use-auth';
 import { AppShell } from './components/layout/AppShell';
 import { LoginPage } from './pages/LoginPage';
-import { LibraryPage } from './pages/LibraryPage';
+import { PivotPage } from './pages/PivotPage';
 import { ModelDetailPage } from './pages/ModelDetailPage';
 import { CollectionsPage } from './pages/CollectionsPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
@@ -41,7 +41,7 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<LibraryPage />} />
+        <Route index element={<PivotPage />} />
         <Route path="models/:id" element={<ModelDetailPage />} />
         <Route path="collections" element={<CollectionsPage />} />
         <Route path="collections/:id" element={<CollectionDetailPage />} />

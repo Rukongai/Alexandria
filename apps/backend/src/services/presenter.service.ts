@@ -46,7 +46,7 @@ export interface IPresenterService {
   buildFileTree(files: ModelFileRow[]): FileTreeNode[];
   buildCollectionDetail(collectionId: string): Promise<CollectionDetail>;
   buildMetadataFieldList(): Promise<MetadataFieldDetail[]>;
-  buildCollectionList(userId: string, params: { depth?: number }): Promise<CollectionDetail[]>;
+  buildCollectionList(userId: string, libraryId: string, params: { depth?: number }): Promise<CollectionDetail[]>;
 }
 
 /** Minimal row shape expected from SearchService. */
@@ -351,9 +351,10 @@ export class PresenterService implements IPresenterService {
 
   async buildCollectionList(
     userId: string,
+    libraryId: string,
     params: { depth?: number },
   ): Promise<CollectionDetail[]> {
-    return collectionService.listCollections(userId, params);
+    return collectionService.listCollections(userId, libraryId, params);
   }
 
   // -----------------------------------------------------------------------

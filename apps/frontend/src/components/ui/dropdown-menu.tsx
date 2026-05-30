@@ -49,10 +49,12 @@ function DropdownMenuContent({
   children,
   className,
   align = 'end',
+  side = 'bottom',
 }: {
   children: React.ReactNode;
   className?: string;
   align?: 'start' | 'end' | 'center';
+  side?: 'top' | 'bottom';
 }) {
   const { open, setOpen } = React.useContext(DropdownMenuContext);
   const ref = React.useRef<HTMLDivElement>(null);
@@ -75,11 +77,15 @@ function DropdownMenuContent({
   const alignClass =
     align === 'start' ? 'left-0' : align === 'center' ? 'left-1/2 -translate-x-1/2' : 'right-0';
 
+  // side='top' positions the menu above the trigger; side='bottom' (default) positions it below
+  const sideClass = side === 'top' ? 'bottom-full mb-1' : 'mt-1';
+
   return (
     <div
       ref={ref}
       className={cn(
-        'absolute z-50 mt-1 min-w-[8rem] overflow-hidden rounded-lg border bg-popover p-1 text-popover-foreground shadow-md',
+        'absolute z-50 min-w-[8rem] overflow-hidden rounded-lg border bg-popover p-1 text-popover-foreground shadow-md',
+        sideClass,
         alignClass,
         className
       )}

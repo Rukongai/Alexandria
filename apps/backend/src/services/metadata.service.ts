@@ -368,16 +368,17 @@ export class MetadataService {
   // Value Listing
   // ---------------------------------------------------------------------------
 
-  async listFieldValues(slug: string): Promise<MetadataFieldValue[]> {
+  async listFieldValues(slug: string, libraryId: string): Promise<MetadataFieldValue[]> {
     const field = await this.getFieldBySlug(slug);
 
     logger.debug(
-      { service: 'MetadataService', slug },
+      { service: 'MetadataService', slug, libraryId },
       'Listing known values for metadata field',
     );
 
     if (this.isTagField(field)) {
-      // Count models per tag
+      // Count models per tag, scoped to the current library.
+      // Inner joins naturally exclude tags with zero models in this library.
       const rows = await db
         .select({
           value: tags.name,
@@ -385,20 +386,28 @@ export class MetadataService {
         })
         .from(tags)
         .innerJoin(modelTags, eq(modelTags.tagId, tags.id))
+        .innerJoin(models, eq(modelTags.modelId, models.id))
+        .where(eq(models.libraryId, libraryId))
         .groupBy(tags.id, tags.name)
         .orderBy(desc(sql`count(${modelTags.modelId})`));
 
       return rows.map((r) => ({ value: r.value, modelCount: r.modelCount }));
     }
 
-    // Generic field — group by value in model_metadata
+    // Generic field — group by value in model_metadata, scoped to the current library.
     const rows = await db
       .select({
         value: modelMetadata.value,
         modelCount: sql<number>`cast(count(distinct ${modelMetadata.modelId}) as int)`,
       })
       .from(modelMetadata)
-      .where(eq(modelMetadata.fieldDefinitionId, field.id))
+      .innerJoin(models, eq(modelMetadata.modelId, models.id))
+      .where(
+        and(
+          eq(modelMetadata.fieldDefinitionId, field.id),
+          eq(models.libraryId, libraryId),
+        ),
+      )
       .groupBy(modelMetadata.value)
       .orderBy(desc(sql`count(distinct ${modelMetadata.modelId})`));
 

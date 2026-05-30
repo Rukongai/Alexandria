@@ -44,7 +44,7 @@ export function CollectionsPage() {
   });
 
   return (
-    <div className="flex gap-0 min-h-full -mx-6 -my-6">
+    <div className="flex gap-0 min-h-full">
       {/* Left panel — tree */}
       <div className="w-64 shrink-0 border-r bg-muted/30 flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b">

@@ -1,6 +1,8 @@
 import argon2 from 'argon2';
+import { and, eq } from 'drizzle-orm';
 import { db, pool } from './index.js';
 import { users } from './schema/user.js';
+import { libraries } from './schema/library.js';
 import { metadataFieldDefinitions } from './schema/metadata.js';
 
 // Default admin credentials — override via environment variables
@@ -101,6 +103,40 @@ export async function runSeed(logger: SeedLogger = consoleLogger): Promise<void>
     .onConflictDoNothing({ target: users.email });
 
   logger.info({ service: 'Seed' }, `Admin user ready: ${ADMIN_EMAIL}`);
+
+  // --- Admin default library ---
+  // Fetch the admin user's id so we can derive the deterministic slug.
+  const [adminUser] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, ADMIN_EMAIL))
+    .limit(1);
+
+  if (adminUser) {
+    const adminId = adminUser.id;
+    // Check whether a default library already exists for this user.
+    // The partial unique index guarantees at most one row matches.
+    const [existingLibrary] = await db
+      .select({ id: libraries.id })
+      .from(libraries)
+      .where(and(eq(libraries.userId, adminId), eq(libraries.isDefault, true)))
+      .limit(1);
+
+    if (!existingLibrary) {
+      // Name and slug match the 0006 backfill convention exactly:
+      //   name: display_name + "'s Library"
+      //   slug: 'library-' + uuid (dashes stripped)
+      await db.insert(libraries).values({
+        name: `${ADMIN_DISPLAY_NAME}'s Library`,
+        slug: `library-${adminId.replace(/-/g, '')}`,
+        userId: adminId,
+        isDefault: true,
+      });
+      logger.info({ service: 'Seed' }, `Default library created for admin: ${ADMIN_EMAIL}`);
+    } else {
+      logger.info({ service: 'Seed' }, `Default library already exists for admin: ${ADMIN_EMAIL}`);
+    }
+  }
 
   // --- Default metadata field definitions ---
   // Insert all default fields; skip any that already exist (idempotent by slug unique constraint)

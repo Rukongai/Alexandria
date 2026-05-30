@@ -10,6 +10,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   users,
+  libraries,
   models,
   metadataFieldDefinitions,
   modelMetadata,
@@ -38,6 +39,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 let testUserId: string;
+let testLibraryId: string;
 let testModelId: string;
 
 // Default field slugs as seeded — they have no random suffix.
@@ -73,6 +75,7 @@ beforeAll(async () => {
   if (leftoverUsers.length > 0) {
     const leftoverUserIds = leftoverUsers.map((u) => u.id);
     await db.delete(models).where(inArray(models.userId, leftoverUserIds));
+    await db.delete(libraries).where(inArray(libraries.userId, leftoverUserIds));
     await db.delete(users).where(eq(users.email, 'metadata-test@example.com'));
   }
 
@@ -89,6 +92,18 @@ beforeAll(async () => {
 
   testUserId = testUser.id;
 
+  // Create the user's default library — models require a libraryId (NOT NULL).
+  const [testLibrary] = await db
+    .insert(libraries)
+    .values({
+      name: 'Metadata Test Library',
+      slug: `metadata-test-library-${Date.now()}`,
+      userId: testUserId,
+      isDefault: true,
+    })
+    .returning();
+  testLibraryId = testLibrary.id;
+
   // Create a test model owned by the test user
   const [testModel] = await db
     .insert(models)
@@ -96,6 +111,7 @@ beforeAll(async () => {
       name: 'Metadata Test Model',
       slug: `metadata-test-model-${Date.now()}`,
       userId: testUserId,
+      libraryId: testLibraryId,
       sourceType: 'zip_upload',
       status: 'ready',
     })
@@ -120,6 +136,11 @@ afterAll(async () => {
   // Remove model (CASCADE removes model_tags and model_metadata)
   if (testModelId) {
     await db.delete(models).where(eq(models.id, testModelId));
+  }
+
+  // Remove the test library (after the models that reference it via FK)
+  if (testLibraryId) {
+    await db.delete(libraries).where(eq(libraries.id, testLibraryId));
   }
 
   // Remove test user
@@ -652,7 +673,7 @@ describe('MetadataService – listFieldValues()', () => {
       [DEFAULT_SLUG_TAGS]: ['list-test-dragon', 'list-test-fantasy'],
     });
 
-    const values = await metadataService.listFieldValues(DEFAULT_SLUG_TAGS);
+    const values = await metadataService.listFieldValues(DEFAULT_SLUG_TAGS, testLibraryId);
 
     expect(Array.isArray(values)).toBe(true);
 
@@ -671,7 +692,7 @@ describe('MetadataService – listFieldValues()', () => {
       [DEFAULT_SLUG_TAGS]: ['shape-check-tag'],
     });
 
-    const values = await metadataService.listFieldValues(DEFAULT_SLUG_TAGS);
+    const values = await metadataService.listFieldValues(DEFAULT_SLUG_TAGS, testLibraryId);
     const entry = values.find((v) => v.value === 'shape-check-tag');
 
     expect(entry).toBeDefined();
@@ -684,7 +705,7 @@ describe('MetadataService – listFieldValues()', () => {
       [DEFAULT_SLUG_ARTIST]: 'Value List Artist',
     });
 
-    const values = await metadataService.listFieldValues(DEFAULT_SLUG_ARTIST);
+    const values = await metadataService.listFieldValues(DEFAULT_SLUG_ARTIST, testLibraryId);
 
     expect(Array.isArray(values)).toBe(true);
 
@@ -695,12 +716,126 @@ describe('MetadataService – listFieldValues()', () => {
 
   it('should throw NOT_FOUND when the field slug does not exist', async () => {
     await expect(
-      metadataService.listFieldValues('ghost-field-zzz'),
+      metadataService.listFieldValues('ghost-field-zzz', testLibraryId),
     ).rejects.toThrow(AppError);
 
     await expect(
-      metadataService.listFieldValues('ghost-field-zzz'),
+      metadataService.listFieldValues('ghost-field-zzz', testLibraryId),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-library isolation tests
+// ---------------------------------------------------------------------------
+
+describe('MetadataService – listFieldValues() cross-library isolation', () => {
+  // These tests create library B and a model inside it, apply shared tags and
+  // unique metadata, then assert that each library only sees its own counts.
+  // Cleanup is done in FK order: modelTags/modelMetadata → models → libraries.
+
+  it('shared tag: counts are scoped per library, not global', async () => {
+    // Create library B for the same test user
+    const [libraryB] = await db
+      .insert(libraries)
+      .values({
+        name: 'Isolation Test Library B',
+        slug: `isolation-lib-b-${Date.now()}`,
+        userId: testUserId,
+        isDefault: false,
+      })
+      .returning();
+
+    // Create a model in library B
+    const [modelB] = await db
+      .insert(models)
+      .values({
+        name: 'Isolation Model B',
+        slug: `isolation-model-b-${Date.now()}`,
+        userId: testUserId,
+        libraryId: libraryB.id,
+        sourceType: 'zip_upload',
+        status: 'ready',
+      })
+      .returning();
+
+    try {
+      // Apply the shared tag to the library-A model (testModelId → testLibraryId)
+      await metadataService.setModelMetadata(testModelId, {
+        [DEFAULT_SLUG_TAGS]: ['shared-isolation-tag'],
+      });
+
+      // Apply the same shared tag to the library-B model
+      await metadataService.setModelMetadata(modelB.id, {
+        [DEFAULT_SLUG_TAGS]: ['shared-isolation-tag'],
+      });
+
+      // Library A: should report count of 1 (only its own model)
+      const valuesA = await metadataService.listFieldValues(DEFAULT_SLUG_TAGS, testLibraryId);
+      const entryA = valuesA.find((v) => v.value === 'shared-isolation-tag');
+      expect(entryA).toBeDefined();
+      expect(entryA!.modelCount).toBe(1);
+
+      // Library B: should also report count of 1 (only its own model)
+      const valuesB = await metadataService.listFieldValues(DEFAULT_SLUG_TAGS, libraryB.id);
+      const entryB = valuesB.find((v) => v.value === 'shared-isolation-tag');
+      expect(entryB).toBeDefined();
+      expect(entryB!.modelCount).toBe(1);
+    } finally {
+      // FK-ordered cleanup: modelTags → models → libraries
+      await db.delete(modelTags).where(eq(modelTags.modelId, modelB.id));
+      await db.delete(models).where(eq(models.id, modelB.id));
+      await db.delete(libraries).where(eq(libraries.id, libraryB.id));
+    }
+  });
+
+  it('artist value only in library B does not appear in library A results', async () => {
+    // Create library B for the same test user
+    const [libraryB] = await db
+      .insert(libraries)
+      .values({
+        name: 'Artist Isolation Library B',
+        slug: `artist-isolation-lib-b-${Date.now()}`,
+        userId: testUserId,
+        isDefault: false,
+      })
+      .returning();
+
+    // Create a model in library B
+    const [modelB] = await db
+      .insert(models)
+      .values({
+        name: 'Artist Isolation Model B',
+        slug: `artist-isolation-model-b-${Date.now()}`,
+        userId: testUserId,
+        libraryId: libraryB.id,
+        sourceType: 'zip_upload',
+        status: 'ready',
+      })
+      .returning();
+
+    try {
+      // Set a unique artist only on the library-B model
+      await metadataService.setModelMetadata(modelB.id, {
+        [DEFAULT_SLUG_ARTIST]: 'Library B Exclusive Artist',
+      });
+
+      // Library B: the artist should appear with count 1
+      const valuesB = await metadataService.listFieldValues(DEFAULT_SLUG_ARTIST, libraryB.id);
+      const entryB = valuesB.find((v) => v.value === 'Library B Exclusive Artist');
+      expect(entryB).toBeDefined();
+      expect(entryB!.modelCount).toBe(1);
+
+      // Library A: the artist must NOT appear (no library-A model has this value)
+      const valuesA = await metadataService.listFieldValues(DEFAULT_SLUG_ARTIST, testLibraryId);
+      const entryA = valuesA.find((v) => v.value === 'Library B Exclusive Artist');
+      expect(entryA).toBeUndefined();
+    } finally {
+      // FK-ordered cleanup: modelMetadata → models → libraries
+      await db.delete(modelMetadata).where(eq(modelMetadata.modelId, modelB.id));
+      await db.delete(models).where(eq(models.id, modelB.id));
+      await db.delete(libraries).where(eq(libraries.id, libraryB.id));
+    }
   });
 });
 
@@ -717,6 +852,7 @@ describe('MetadataService – bulkSetMetadata()', () => {
         name: 'Bulk Test Model B',
         slug: `bulk-test-model-b-${Date.now()}`,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: 'ready',
       })
@@ -768,6 +904,7 @@ describe('MetadataService – bulkSetMetadata()', () => {
         name: 'Bulk Remove Test Model',
         slug: `bulk-remove-test-${Date.now()}`,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: 'ready',
       })
@@ -810,6 +947,7 @@ describe('MetadataService – bulkSetMetadata()', () => {
         name: 'Bulk Tag Test Model',
         slug: `bulk-tag-test-${Date.now()}`,
         userId: testUserId,
+        libraryId: testLibraryId,
         sourceType: 'zip_upload',
         status: 'ready',
       })

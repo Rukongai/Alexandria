@@ -32,7 +32,7 @@ export function ModelDetailPage() {
   const isLoading = modelLoading || filesLoading;
 
   return (
-    <div className="flex flex-col gap-5 max-w-6xl mx-auto">
+    <div className="flex flex-col gap-5 max-w-6xl mx-auto p-6">
       {/* Back nav */}
       <div>
         <Link
