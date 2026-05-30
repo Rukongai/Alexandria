@@ -5,7 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { Readable } from 'node:stream';
-import type { ImportConfig, ModelSearchParams, UpdateModelRequest } from '@alexandria/shared';
+import type {
+  ImportConfig,
+  ModelSearchParams,
+  UpdateModelRequest,
+  BatchUploadMetadata,
+} from '@alexandria/shared';
 import {
   importConfigSchema,
   modelSearchParamsSchema,
@@ -13,12 +18,15 @@ import {
   uploadInitSchema,
   chunkIndexParamsSchema,
   uploadCompleteParamsSchema,
+  commitImportSessionSchema,
+  importSessionIdParamsSchema,
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
 import { requireLibrary } from '../middleware/library.js';
 import { validate } from '../middleware/validate.js';
 import { detectArchiveExtension } from '../utils/archive.js';
 import { ingestionService } from '../services/ingestion.service.js';
+import { importSessionService } from '../services/import-session.service.js';
 import { modelService } from '../services/model.service.js';
 import { searchService } from '../services/search.service.js';
 import { presenterService } from '../services/presenter.service.js';
@@ -146,13 +154,13 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const userId = request.user!.id;
 
       const { tempFilePath, originalFilename } = await uploadService.assembleFile(uploadId, userId);
-      const { modelId, jobId } = await ingestionService.handleUpload(
+      const { sessionId } = await ingestionService.handleScan(
         { tempFilePath, originalFilename },
         userId,
         request.libraryId!,
       );
 
-      return reply.status(202).send({ data: { modelId, jobId }, meta: null, errors: null });
+      return reply.status(202).send({ data: { sessionId }, meta: null, errors: null });
     },
   );
 
@@ -186,13 +194,80 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const userId = request.user!.id;
-      const { modelId, jobId } = await ingestionService.handleUpload(
+      const { sessionId } = await ingestionService.handleScan(
         { tempFilePath, originalFilename },
         userId,
         request.libraryId!,
       );
 
+      return reply.status(202).send({ data: { sessionId }, meta: null, errors: null });
+    },
+  );
+
+  // --- Staged import sessions (scan → review → commit) ---
+
+  // GET /import-sessions — list the current user's active sessions (the queue)
+  app.get(
+    '/import-sessions',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const sessions = await importSessionService.listActive(request.user!.id, request.libraryId!);
+      return reply.status(200).send({ data: sessions, meta: null, errors: null });
+    },
+  );
+
+  // GET /import-sessions/:id — poll a single session (status + detected metadata)
+  app.get(
+    '/import-sessions/:id',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const parseResult = importSessionIdParamsSchema.safeParse(request.params);
+      if (!parseResult.success) {
+        throw validationError(parseResult.error.issues[0]?.message ?? 'Validation failed');
+      }
+      const row = await importSessionService.getOwnedRow(parseResult.data.id, request.user!.id);
+      return reply.status(200).send({ data: importSessionService.toDto(row), meta: null, errors: null });
+    },
+  );
+
+  // POST /import-sessions/:id/commit — apply batch metadata and create the model
+  app.post(
+    '/import-sessions/:id/commit',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const paramsResult = importSessionIdParamsSchema.safeParse(request.params);
+      if (!paramsResult.success) {
+        throw validationError(paramsResult.error.issues[0]?.message ?? 'Validation failed');
+      }
+      const bodyResult = commitImportSessionSchema.safeParse(request.body ?? {});
+      if (!bodyResult.success) {
+        const firstIssue = bodyResult.error.issues[0];
+        throw validationError(firstIssue?.message ?? 'Validation failed', firstIssue?.path.join('.'));
+      }
+
+      const batchMetadata = bodyResult.data.batchMetadata as BatchUploadMetadata | undefined;
+      const { modelId, jobId } = await ingestionService.handleCommit(
+        paramsResult.data.id,
+        batchMetadata,
+        request.user!.id,
+        request.libraryId!,
+      );
+
       return reply.status(202).send({ data: { modelId, jobId }, meta: null, errors: null });
+    },
+  );
+
+  // DELETE /import-sessions/:id — discard a session and its staged files
+  app.delete(
+    '/import-sessions/:id',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const parseResult = importSessionIdParamsSchema.safeParse(request.params);
+      if (!parseResult.success) {
+        throw validationError(parseResult.error.issues[0]?.message ?? 'Validation failed');
+      }
+      await ingestionService.discardSession(parseResult.data.id, request.user!.id);
+      return reply.status(200).send({ data: null, meta: null, errors: null });
     },
   );
 

@@ -22,6 +22,33 @@ export const uploadCompleteParamsSchema = z.object({
   uploadId: z.string().uuid(),
 });
 
+// ---------------------------------------------------------------------------
+// Staged upload: review/commit
+// ---------------------------------------------------------------------------
+
+export const uploadOptionsSchema = z.object({
+  markPreSupported: z.boolean().optional(),
+  autoThumbnails: z.boolean().optional(),
+  markNsfw: z.boolean().optional(),
+  skipDuplicatesByHash: z.boolean().optional(),
+});
+
+export const batchUploadMetadataSchema = z.object({
+  collectionId: z.string().uuid().optional(),
+  newCollectionName: z.string().min(1).max(255).optional(),
+  artist: z.string().max(255).optional(),
+  tags: z.array(z.string().min(1).max(100)).max(50).optional(),
+  options: uploadOptionsSchema.optional(),
+});
+
+export const commitImportSessionSchema = z.object({
+  batchMetadata: batchUploadMetadataSchema.optional(),
+});
+
+export const importSessionIdParamsSchema = z.object({
+  id: z.string().uuid(),
+});
+
 export type UploadInitRequest = z.infer<typeof uploadInitSchema>;
 export type ChunkIndexParams = z.infer<typeof chunkIndexParamsSchema>;
 export type UploadCompleteParams = z.infer<typeof uploadCompleteParamsSchema>;

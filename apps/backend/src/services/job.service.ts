@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import type { ImportStrategy } from '@alexandria/shared';
+import type { ImportStrategy, BatchUploadMetadata } from '@alexandria/shared';
 import { config } from '../config/index.js';
 import { parseRedisUrl } from '../utils/redis.js';
 
@@ -21,12 +21,34 @@ export interface FolderImportJobPayload {
   libraryId: string;
 }
 
+/** Scan phase of a staged upload: extract + detect, no commit. */
+export interface ScanJobPayload {
+  sessionId: string;
+  tempFilePath: string;
+  originalFilename: string;
+  userId: string;
+  libraryId: string;
+}
+
+/** Commit phase of a staged upload: persist files + apply batch metadata. */
+export interface CommitJobPayload {
+  sessionId: string;
+  modelId: string;
+  userId: string;
+  libraryId: string;
+  batchMetadata?: BatchUploadMetadata;
+}
+
 const INGESTION_QUEUE = 'ingestion';
 const IMPORT_QUEUE = 'folder-import';
+const IMPORT_SCAN_QUEUE = 'import-scan';
+const IMPORT_COMMIT_QUEUE = 'import-commit';
 
 export class JobService {
   private readonly ingestionQueue: Queue;
   private readonly importQueue: Queue;
+  private readonly importScanQueue: Queue;
+  private readonly importCommitQueue: Queue;
 
   constructor() {
     const connection = parseRedisUrl(config.redisUrl);
@@ -40,6 +62,12 @@ export class JobService {
 
     this.ingestionQueue = new Queue(INGESTION_QUEUE, { connection, defaultJobOptions });
     this.importQueue = new Queue(IMPORT_QUEUE, { connection, defaultJobOptions });
+    // Scan runs once (no retry — a corrupt archive won't fix itself); commit retries.
+    this.importScanQueue = new Queue(IMPORT_SCAN_QUEUE, {
+      connection,
+      defaultJobOptions: { attempts: 1 },
+    });
+    this.importCommitQueue = new Queue(IMPORT_COMMIT_QUEUE, { connection, defaultJobOptions });
   }
 
   async enqueueIngestionJob(payload: IngestionJobPayload): Promise<string> {
@@ -49,6 +77,16 @@ export class JobService {
 
   async enqueueFolderImportJob(payload: FolderImportJobPayload): Promise<string> {
     const job = await this.importQueue.add('import', payload);
+    return job.id!;
+  }
+
+  async enqueueScanJob(payload: ScanJobPayload): Promise<string> {
+    const job = await this.importScanQueue.add('scan', payload);
+    return job.id!;
+  }
+
+  async enqueueCommitJob(payload: CommitJobPayload): Promise<string> {
+    const job = await this.importCommitQueue.add('commit', payload);
     return job.id!;
   }
 
@@ -73,6 +111,14 @@ export class JobService {
 
   get folderImportQueueName(): string {
     return IMPORT_QUEUE;
+  }
+
+  get importScanQueueName(): string {
+    return IMPORT_SCAN_QUEUE;
+  }
+
+  get importCommitQueueName(): string {
+    return IMPORT_COMMIT_QUEUE;
   }
 }
 

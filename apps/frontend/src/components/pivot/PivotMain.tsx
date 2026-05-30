@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useModelFilters } from '../../hooks/use-model-filters';
 import { useModelResults } from '../../hooks/use-model-results';
@@ -64,6 +64,7 @@ function deriveContextTitle(
  * full pivot workspace page.
  */
 export function PivotMain() {
+  const navigate = useNavigate();
   const { filters, toApiParams, setQ, axis, activeAxisValue, hasActiveFilters } =
     useModelFilters();
   const { view, showThumbnails } = useDisplayPreferences();
@@ -117,29 +118,37 @@ export function PivotMain() {
 
         {/* Right: search + upload */}
         <div className="flex items-center gap-2 flex-shrink-0">
-          {/* Search input */}
-          <label className="relative flex items-center">
-            <span className="sr-only">Search models</span>
-            <SearchIcon
-              className="absolute left-2.5 h-3.5 w-3.5 pointer-events-none"
-              style={{ color: 'var(--ax-fg-muted)' }}
-              aria-hidden
-            />
-            <input
-              type="search"
-              placeholder="Search…"
-              value={filters.q}
-              onChange={(e) => setQ(e.target.value)}
-              aria-label="Search models"
-              className="h-8 rounded-lg pl-8 pr-3 text-sm outline-none transition-colors"
-              style={{
-                width: 200,
-                background: 'var(--ax-bg-elev)',
-                border: '1px solid var(--ax-border)',
-                color: 'var(--ax-fg)',
-              }}
-            />
-          </label>
+          {/* Search input — Enter navigates to the global search page */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const val = filters.q.trim();
+              if (val) navigate(`/search?q=${encodeURIComponent(val)}`);
+            }}
+          >
+            <label className="relative flex items-center">
+              <span className="sr-only">Search models</span>
+              <SearchIcon
+                className="absolute left-2.5 h-3.5 w-3.5 pointer-events-none"
+                style={{ color: 'var(--ax-fg-muted)' }}
+                aria-hidden
+              />
+              <input
+                type="search"
+                placeholder="Search…"
+                value={filters.q}
+                onChange={(e) => setQ(e.target.value)}
+                aria-label="Search models"
+                className="h-8 rounded-lg pl-8 pr-3 text-sm outline-none transition-colors"
+                style={{
+                  width: 200,
+                  background: 'var(--ax-bg-elev)',
+                  border: '1px solid var(--ax-border)',
+                  color: 'var(--ax-fg)',
+                }}
+              />
+            </label>
+          </form>
 
           {/* Upload action */}
           <Link

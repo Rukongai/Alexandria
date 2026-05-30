@@ -9,6 +9,7 @@ import { CollectionsPage } from './pages/CollectionsPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UploadPage } from './pages/UploadPage';
+import { SearchPage } from './pages/SearchPage';
 import { DesignSystemPage } from './pages/DesignSystemPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -47,6 +48,7 @@ export default function App() {
         <Route path="collections/:id" element={<CollectionDetailPage />} />
         <Route path="upload" element={<UploadPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="search" element={<SearchPage />} />
       </Route>
       {import.meta.env.DEV && (
         <Route path="/design-system" element={<DesignSystemPage />} />
