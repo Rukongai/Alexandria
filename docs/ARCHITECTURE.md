@@ -80,11 +80,12 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 │         │           ┌──────▼───────┐                     │
 │         └──────────→│StorageService│                     │
 │                     └──────────────┘                     │
-│  ┌──────────────┐  ┌──────────────┐                      │
-│  │ JobService    │  │UploadService │  BullMQ + Redis      │
-│  │ (queue mgmt)  │  │(chunked      │                      │
-│  └──────────────┘  │ upload sess) │                      │
-│                     └──────────────┘                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────┐  │
+│  │ JobService    │  │UploadService │  │ImportSessionSvc │  │
+│  │ (queue mgmt)  │  │(chunked      │  │(staged upload   │  │
+│  │ import-scan / │  │ upload sess) │  │ sessions)       │  │
+│  │ import-commit │  └──────────────┘  └─────────────────┘  │
+│  └──────────────┘                   BullMQ + Redis          │
 └──────────────────────┬──────────────────────────────────┘
                        │
           ┌────────────▼────────────┐
@@ -124,15 +125,23 @@ The seed (`runSeed`) calls this method for the admin user on startup, so the adm
 
 **Security invariant:** `libraryId` is server-injected only. No route accepts a `libraryId` from the client in the query string, path, or request body. The value is always derived from the authenticated session. This prevents one user from accessing another user's library by supplying a different `libraryId`.
 
-Routes that apply `requireLibrary` (as of P1):
+Routes that apply `requireLibrary` (as of P3):
 
 - `GET /models`
 - `GET /collections`, `POST /collections`
 - `GET /collections/:id/models`
 - `GET /metadata/fields/:slug/values`
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/import`
+- `GET /models/import-sessions`, `POST /models/import-sessions/:id/commit`
+- `GET /search`
 
 By-id detail routes (`GET /models/:id`, `GET /collections/:id`, `PATCH /models/:id`, etc.) remain owned by `userId` and are not yet library-scoped. Library scoping for detail routes is deferred to P5 multi-library.
+
+### P4 Deferrals
+
+The following are deferred to the Smart Collections phase:
+
+- Smart (rule-based) collections entity and rule engine. `SearchService.searchAll` returns only manual collections. When smart collections ship, `searchAll` will need to union both types.
 
 ### P5 Deferrals
 
@@ -156,15 +165,27 @@ The following are explicitly deferred to the multi-library phase:
 
 ### IngestionService
 
-**Owns:** Upload and import orchestration, pipeline sequencing, Model record creation in "processing" state.
+**Owns:** Upload and import orchestration, pipeline sequencing, Model record creation in "processing" state, staged scan/commit coordination.
 
 **Does not own:** File I/O, thumbnail generation, extraction logic, storage.
 
-**Behavior:** Receives upload or import requests. Creates a Model record in `processing` state. Enqueues a processing job via JobService. The job worker calls back into IngestionService's pipeline methods, which coordinate FileProcessingService, ThumbnailService, StorageService, and MetadataService in sequence. On completion, updates model status to `ready` or `error`.
+**Behavior:** Receives upload or import requests and coordinates the full pipeline. The job worker calls back into IngestionService's pipeline methods, which coordinate FileProcessingService, ThumbnailService, StorageService, and MetadataService in sequence. On completion, updates model status to `ready` or `error`.
 
-Two entry paths:
-- **Zip upload**: Receives multipart file, stores temp file, enqueues processing job.
-- **Folder import**: Receives ImportConfig (source path, pattern, strategy). Uses PatternParser to validate and parse the hierarchy pattern. Uses FileProcessingService to walk the directory. Uses the selected ImportStrategy to move files into managed storage. Then continues with the standard processing pipeline.
+Three entry paths:
+
+- **Staged upload (scan phase):** `handleScan` receives a temp file path, creates an `ImportSession` (via ImportSessionService), and enqueues a scan job on the `import-scan` BullMQ queue. The worker's `processScanJob` extracts the archive, detects metadata heuristically, and updates the session to `ready_for_review`. No model is created at this stage.
+
+- **Staged upload (commit phase):** `handleCommit` validates the session is `ready_for_review`, creates a Model record in `processing` state, transitions the session to `committing`, and enqueues a commit job on the `import-commit` BullMQ queue. The worker's `processCommitJob` copies staged files to managed storage, runs the thumbnail pipeline, and applies any `BatchUploadMetadata` supplied at commit time.
+
+- **Folder import:** `handleFolderImport` receives an `ImportConfig` (source path, pattern, strategy). Uses PatternParser to validate and parse the hierarchy pattern, FileProcessingService to walk the directory, and the selected ImportStrategy to move files into managed storage. Folder import retains its existing immediate behavior — it does not use the staged session model.
+
+### ImportSessionService
+
+**Owns:** `import_sessions` table CRUD — creating sessions, updating their status and detected metadata, listing active sessions, ownership validation.
+
+**Does not own:** File extraction (FileProcessingService), ingestion pipeline (IngestionService), storage cleanup.
+
+**Behavior:** `create` inserts a session in `scanning` status with a 24-hour `expiresAt`. `update` patches status and any combination of `detected`, `manifest`, `stagingPath`, `modelId`, and `error`. `listActive` returns sessions in `scanning`, `ready_for_review`, `committing`, or `error` status for a given user and library. `getOwnedRow` fetches a session and throws `NOT_FOUND` if it doesn't exist or belongs to a different user. `toDto` maps the DB row to the `ImportSession` API shape (omitting `manifest` and `stagingPath`).
 
 ### FileProcessingService
 
@@ -200,11 +221,15 @@ Uses the **PatternParser** utility (located in `utils/pattern-parser.ts`) — a 
 
 ### SearchService
 
-**Owns:** All query execution — browse, search, filter, sort, pagination. This is the single entry point for "give me models matching criteria."
+**Owns:** All query execution — browse, search, filter, sort, pagination, and cross-entity global search. This is the single entry point for "give me models matching criteria" and for the global search bar.
 
 **Does not own:** Data indexing, data mutation. SearchService is read-only.
 
-**Behavior:** Accepts query parameters (text search, metadata filters, collection filter, sort, pagination cursor). Executes against Postgres full-text search in MVP. Understands which metadata fields use optimized storage (tags → join table query) vs. generic storage (other fields → model_metadata table query). Returns paginated results as model IDs which PresenterService then assembles into response payloads.
+**Behavior:** Two public methods:
+
+- `searchModels(params, libraryId)` — accepts query parameters (text search, metadata filters, collection filter, sort, pagination cursor). Executes against Postgres full-text search. Understands which metadata fields use optimized storage (tags → join table query) vs. generic storage (other fields → model_metadata table query). Returns paginated results as `ModelCard` objects assembled by PresenterService.
+
+- `searchAll(params, userId, libraryId)` — cross-entity search. Calls `searchModels` for models (full-text), then filters in-memory against collections (by name substring, sorted by `modelCount`), artist values, and tag values (both by name substring, drawn from `listFieldValues`). Results for each entity type are limited to `params.limit` (default 6). Returns a `GlobalSearchResult`.
 
 **Abstraction:** The search implementation is behind an interface. Postgres FTS is the MVP implementation. A future MeiliSearch or Typesense implementation can be swapped in without changing any callers.
 
@@ -429,11 +454,15 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | GET | /models | Browse/search with filters | SearchService → PresenterService | Yes |
 | GET | /models/:id | Model detail | ModelService → PresenterService | No (userId) |
 | GET | /models/:id/files | File tree | ModelService → PresenterService | No (userId) |
-| POST | /models/upload | Upload archive (zip/rar/7z/tar.gz, ≤100 MB) | IngestionService → JobService | Yes |
+| POST | /models/upload | Upload archive → scan (returns sessionId) | IngestionService → ImportSessionService → JobService | Yes |
 | POST | /models/upload/init | Initiate chunked upload session | UploadService | No |
 | PUT | /models/upload/:uploadId/chunk/:index | Upload a single chunk | UploadService | No |
-| POST | /models/upload/:uploadId/complete | Assemble chunks, start ingestion | UploadService → IngestionService → JobService | Yes |
-| POST | /models/import | Folder import | IngestionService → JobService | Yes |
+| POST | /models/upload/:uploadId/complete | Assemble chunks → scan (returns sessionId) | UploadService → IngestionService → JobService | Yes |
+| POST | /models/import | Folder import (immediate; no staged session) | IngestionService → JobService | Yes |
+| GET | /models/import-sessions | List active staged sessions | ImportSessionService | Yes |
+| GET | /models/import-sessions/:id | Poll a single session | ImportSessionService | No (userId) |
+| POST | /models/import-sessions/:id/commit | Commit session → create model | IngestionService → JobService | Yes |
+| DELETE | /models/import-sessions/:id | Discard session + staged files | IngestionService | No (userId) |
 | GET | /models/:id/status | Processing status | JobService | No (userId) |
 | PATCH | /models/:id | Update model | ModelService → PresenterService | No (userId) |
 | DELETE | /models/:id | Delete model + files | ModelService → StorageService | No (userId) |
@@ -475,6 +504,11 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 |--------|-------|---------|---------------|
 | GET | /files/thumbnails/:id.webp | Serve thumbnail | StorageService |
 | GET | /files/models/:modelId/* | Serve model file | StorageService |
+
+**Search**
+| Method | Route | Purpose | Service Chain | Library-scoped |
+|--------|-------|---------|---------------|---------------|
+| GET | /search | Cross-entity search (models, collections, artists, tags) | SearchService | Yes |
 
 **Bulk Operations**
 | Method | Route | Purpose | Service Chain |
@@ -533,3 +567,11 @@ The active pivot axis (`?axis=collections|artists|tags`) is stored in the URL so
 
 ### D15: three.js is isolated in a single lazy-loaded module
 `ModelViewer3DScene` is the only file in the frontend that imports `three`, `@react-three/fiber`, or `@react-three/drei`. All other code reaches it through `ModelViewer3DModal` via `React.lazy`, which causes Vite to emit three.js as a separate async chunk (~924 KB). The chunk is never fetched unless the 3D viewer is opened. This isolation is intentional: adding any static import of three anywhere else in the app would pull the entire bundle into the critical path. If the viewer grows to need additional three.js utilities, they must be added inside `ModelViewer3DScene` or co-located lazy modules — not imported at the app or component level.
+
+### D16: Staged ingestion — scan before commit
+Archive uploads no longer create a model immediately. Instead they create an `ImportSession`, extract the archive, and expose detected metadata for review before the user commits. This gives users a chance to verify and supplement auto-detected artist, tags, and collection assignment before the model record is created. Folder imports retain the existing immediate behavior because they operate on server-side directories where the user has already organized the content.
+
+The consequence is that `POST /models/upload` (and the chunked `complete` endpoint) return `{ sessionId }` rather than `{ modelId, jobId }`. Callers that previously polled `GET /models/:id/status` now poll `GET /models/import-sessions/:id`, then call `POST /models/import-sessions/:id/commit` to get a `{ modelId, jobId }` to track the final ingestion.
+
+### D17: Cross-entity global search is in-memory for non-model types
+`SearchService.searchAll` runs Postgres full-text search for models, but for collections, artists, and tags it fetches the full library-scoped list and filters in memory. This is acceptable because these lists are small (hundreds at most), require no dedicated index, and avoids schema complexity. If list sizes grow to a point where in-memory filtering is measurably slow, the internal implementation can be replaced with index-backed queries without changing the API or callers. Smart collections (P4) may warrant a dedicated index at that point.
