@@ -184,6 +184,35 @@ interface Collection {
 
 Join table `collection_models`: `{ collectionId: string, modelId: string }`
 
+### ImportSession
+
+A staged archive upload awaiting review and commit. Created by `POST /models/upload` (and the chunked complete endpoint); destroyed by commit or discard. The database schema is in `apps/backend/src/db/schema/import-session.ts` and migration `0008_add_import_sessions.sql`.
+
+```typescript
+interface ImportSession {
+  id: string;
+  userId: string;
+  libraryId: string;
+  originalFilename: string;
+  status: ImportSessionStatus;
+  detected: DetectedImportMetadata | null; // null while scanning
+  manifest: unknown | null;                // internal file manifest; not exposed in API responses
+  stagingPath: string | null;              // server-side path to extracted files; not exposed in API responses
+  modelId: string | null;                  // set during commit; FK → models (set null on model delete)
+  error: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt: Date | null;                  // sessions expire after 24 hours if not committed
+}
+
+type ImportSessionStatus =
+  | 'scanning'          // scan job running
+  | 'ready_for_review'  // scan complete; waiting for user to commit or discard
+  | 'committing'        // commit job running
+  | 'committed'         // model created; session complete (not returned by list endpoint)
+  | 'error';            // scan or commit failed
+```
+
 ---
 
 ## API Response Types
@@ -390,6 +419,113 @@ interface ImportJob {
 type ImportPhase = 'scanning' | 'importing' | 'processing' | 'complete' | 'error';
 ```
 
+### Staged Upload Types
+
+These types support the scan → review → commit ingestion workflow introduced in P3. All are defined in `packages/shared/src/types/upload.ts`.
+
+```typescript
+// API response from POST /models/upload and POST /models/upload/:uploadId/complete
+interface ScanUploadResponse {
+  sessionId: string;
+}
+
+// A node in the folder-structure preview detected during scan
+interface DetectedFolderNode {
+  name: string;
+  type: 'folder' | 'file';
+  fileType?: FileType;          // present for file nodes
+  children?: DetectedFolderNode[]; // present for folder nodes
+}
+
+// Heuristic metadata detected from archive contents and filename during the scan phase
+interface DetectedImportMetadata {
+  modelCount: number;           // count of detected sub-models (display only; one model is created on commit)
+  fileCount: number;
+  totalSizeBytes: number;
+  artist: string | null;        // extracted from folder structure or filename
+  tagsGuessed: string[];        // guessed from directory names; stopwords filtered
+  folderStructure: DetectedFolderNode[];
+}
+
+// The DTO returned by GET /models/import-sessions and GET /models/import-sessions/:id
+interface ImportSession {
+  id: string;
+  originalFilename: string;
+  status: ImportSessionStatus;
+  detected: DetectedImportMetadata | null; // null until scan completes
+  modelId: string | null;       // set once commit begins
+  error: string | null;
+  createdAt: string;
+}
+
+type ImportSessionStatus =
+  | 'scanning'
+  | 'ready_for_review'
+  | 'committing'
+  | 'committed'
+  | 'error';
+
+// Optional per-import options sent in the commit request body
+interface UploadOptions {
+  markPreSupported?: boolean;
+  autoThumbnails?: boolean;     // informational; auto-thumbnails always run during ingestion
+  markNsfw?: boolean;
+  skipDuplicatesByHash?: boolean;
+}
+
+// Batch metadata applied to the model at commit time
+interface BatchUploadMetadata {
+  collectionId?: string;        // assign to an existing collection
+  newCollectionName?: string;   // or create and assign a new collection by name
+  artist?: string;
+  tags?: string[];
+  options?: UploadOptions;
+}
+```
+
+### Global Search Types
+
+Defined in `packages/shared/src/types/search.ts`. Used by `GET /search`.
+
+```typescript
+interface GlobalSearchParams {
+  q: string;
+  limit?: number; // max hits per entity type; default 6, max 50
+}
+
+// A collection matched by name substring
+interface SearchCollectionHit {
+  id: string;
+  name: string;
+  slug: string;
+  modelCount: number;
+}
+
+// An artist metadata value matched by name substring
+interface SearchArtistHit {
+  name: string;
+  modelCount: number;
+}
+
+// A tag metadata value matched by name substring
+interface SearchTagHit {
+  name: string;
+  modelCount: number;
+}
+
+// Aggregated response from GET /search
+interface GlobalSearchResult {
+  q: string;
+  models: {
+    items: ModelCard[];
+    total: number; // total matching models, not capped by limit
+  };
+  collections: SearchCollectionHit[];
+  artists: SearchArtistHit[];
+  tags: SearchTagHit[];
+}
+```
+
 ---
 
 ## API Request Types
@@ -492,6 +628,17 @@ interface BulkDeleteRequest {
 }
 ```
 
+### Staged Upload Requests
+
+```typescript
+// POST /models/import-sessions/:id/commit request body
+interface CommitImportSessionRequest {
+  batchMetadata?: BatchUploadMetadata;
+}
+```
+
+Validation schemas: `commitImportSessionSchema`, `importSessionIdParamsSchema`, `batchUploadMetadataSchema` in `packages/shared/src/validation/upload.ts`.
+
 ### Query Parameters
 
 ```typescript
@@ -513,7 +660,15 @@ interface ModelSearchParams {
 interface CollectionListParams {
   depth?: number; // default: 1 (top-level only)
 }
+
+// GET /search query parameters
+interface GlobalSearchParams {
+  q: string;     // required; 1–500 characters
+  limit?: number; // max hits per entity type; default 6, max 50
+}
 ```
+
+Validation schema: `globalSearchParamsSchema` in `packages/shared/src/validation/search.ts`.
 
 ---
 
@@ -560,7 +715,10 @@ User ──owns──→ Library ──scopes──→ Model ──has many─�
   │               │                   └──many to many──→ Collection ──self-references──→ Collection
   │               │                       (via collection_models)     (via parentCollectionId)
   │               │
-  │               └──scopes──→ Collection
+  │               ├──scopes──→ Collection
+  │               │
+  │               └──scopes──→ ImportSession ──(on commit)──→ Model
+  │                              (staged upload; expires 24h; FK set null on model delete)
   │
   └──owns──→ Collection (via userId, for ownership; libraryId for scope)
 ```
@@ -569,3 +727,4 @@ The key insights:
 
 - Library is the top-level scope for models and collections. Every model and collection has a NOT NULL `libraryId` FK. The API enforces this via the `requireLibrary` preHandler, which injects `request.libraryId` from the session — clients never supply it.
 - Tag and model_tags exist as database-level optimizations. At the API level, tags are just metadata values of type `multi_enum`. MetadataService abstracts the storage routing.
+- `ImportSession` is a transient entity. It exists between `POST /models/upload` (scan enqueued) and `POST /models/import-sessions/:id/commit` (model created). The `modelId` FK is set to null on model deletion; the session row itself is deleted by the discard endpoint or reaped by the expiry cleanup.

@@ -14,3 +14,4 @@ test-files/
 /apps/frontend/.claude/agent-memory/
 .claude/ToDo.md
 /apps/backend/data
+/data

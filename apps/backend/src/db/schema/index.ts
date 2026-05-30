@@ -7,3 +7,4 @@ export * from './thumbnail.js';
 export * from './metadata.js';
 export * from './tag.js';
 export * from './collection.js';
+export * from './import-session.js';

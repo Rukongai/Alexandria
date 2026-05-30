@@ -42,6 +42,8 @@ The session mechanism uses `@fastify/cookie` with signed cookies. The cookie val
 
 For single-request uploads (`POST /models/upload`), archive files are capped at 100 MB. For larger files, use the chunked upload protocol (`POST /models/upload/init` + chunk PUTs + `POST /models/upload/:uploadId/complete`), which supports files up to 5 GB with 10 MB chunks and per-chunk retry.
 
+Both upload paths now use the staged ingestion workflow. They return a `sessionId` (not a `modelId`) — the model is created only after the session is committed. See the Import Sessions section below for the full scan → review → commit protocol.
+
 ---
 
 ## Error Format
@@ -290,11 +292,11 @@ Each item in `data` is a `ModelCard`.
 
 ### POST /models/upload
 
-Upload an archive file to create a new model. The upload is accepted immediately and processed asynchronously. Returns a `modelId` and `jobId` to track progress.
+Upload an archive file to begin the staged ingestion workflow. The file is accepted, an import session is created, and a scan job is enqueued. Returns a `sessionId` — not a model ID. The model is created only after the session is committed via `POST /models/import-sessions/:id/commit`.
 
 **Auth required:** Yes
 
-**Library scope:** The new model is created in the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
+**Library scope:** The import session is created in the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
 
 **Request:** `multipart/form-data` with a single file field. The file must have a supported archive extension (`.zip`, `.rar`, `.7z`, `.tar.gz`, or `.tgz`) and must be 100 MB or smaller.
 
@@ -303,15 +305,14 @@ Upload an archive file to create a new model. The upload is accepted immediately
 ```json
 {
   "data": {
-    "modelId": "uuid",
-    "jobId": "string"
+    "sessionId": "uuid"
   },
   "meta": null,
   "errors": null
 }
 ```
 
-Poll `GET /models/:id/status` with the returned `modelId` to track processing.
+Poll `GET /models/import-sessions/:id` with the returned `sessionId` to track scan progress and retrieve detected metadata. Once the session reaches `ready_for_review`, commit it with `POST /models/import-sessions/:id/commit`.
 
 For files larger than 100 MB, use the chunked upload protocol described below.
 
@@ -384,11 +385,11 @@ Upload a single chunk of a file. The request body must be the raw binary chunk d
 
 ### POST /models/upload/:uploadId/complete
 
-Assemble all uploaded chunks and start ingestion processing. All chunks (0 through `totalChunks - 1`) must have been uploaded. The assembled file size must match the `totalSize` declared during init.
+Assemble all uploaded chunks and begin the staged ingestion workflow. All chunks (0 through `totalChunks - 1`) must have been uploaded. The assembled file size must match the `totalSize` declared during init.
 
 **Auth required:** Yes
 
-**Library scope:** The new model is created in the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
+**Library scope:** The import session is created in the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
 
 **Path parameter:** `uploadId` — UUID from `POST /models/upload/init`
 
@@ -397,15 +398,14 @@ Assemble all uploaded chunks and start ingestion processing. All chunks (0 throu
 ```json
 {
   "data": {
-    "modelId": "uuid",
-    "jobId": "string"
+    "sessionId": "uuid"
   },
   "meta": null,
   "errors": null
 }
 ```
 
-Same response shape as `POST /models/upload`. Poll `GET /models/:id/status` with the returned `modelId` to track processing.
+Same staged contract as `POST /models/upload`. Poll `GET /models/import-sessions/:id` with the returned `sessionId` to track scan progress, then commit via `POST /models/import-sessions/:id/commit`.
 
 ---
 
@@ -448,6 +448,164 @@ Start a folder import. Discovers models by walking a directory on the server's f
 ```
 
 Unlike archive upload, this response does not include a `modelId` because the import may create multiple models.
+
+---
+
+### GET /models/import-sessions
+
+List the authenticated user's active import sessions for the current library. Active sessions include those with status `scanning`, `ready_for_review`, `committing`, or `error`. Committed and expired sessions are not returned.
+
+**Auth required:** Yes
+
+**Library scope:** Results are scoped to the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
+
+**Response (200):**
+
+```json
+{
+  "data": [
+    {
+      "id": "uuid",
+      "originalFilename": "dragon-bust.zip",
+      "status": "ready_for_review",
+      "detected": {
+        "modelCount": 1,
+        "fileCount": 14,
+        "totalSizeBytes": 8388608,
+        "artist": "Maker Name",
+        "tagsGuessed": ["fantasy", "bust"],
+        "folderStructure": [
+          { "name": "parts", "type": "folder", "children": [
+            { "name": "body.stl", "type": "file", "fileType": "stl" }
+          ]}
+        ]
+      },
+      "modelId": null,
+      "error": null,
+      "createdAt": "2026-05-30T10:00:00.000Z"
+    }
+  ],
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is an array of `ImportSession`. The `detected` field is `null` while the session is still scanning. Session TTL is 24 hours — sessions not committed within that window may be reaped.
+
+---
+
+### GET /models/import-sessions/:id
+
+Retrieve a single import session. Use this to poll scan progress and retrieve detected metadata.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — import session UUID
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "id": "uuid",
+    "originalFilename": "dragon-bust.zip",
+    "status": "ready_for_review",
+    "detected": {
+      "modelCount": 1,
+      "fileCount": 14,
+      "totalSizeBytes": 8388608,
+      "artist": "Maker Name",
+      "tagsGuessed": ["fantasy", "bust"],
+      "folderStructure": [...]
+    },
+    "modelId": null,
+    "error": null,
+    "createdAt": "2026-05-30T10:00:00.000Z"
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on success, or `scanning` → `error` on failure. Poll until status leaves `scanning`.
+
+---
+
+### POST /models/import-sessions/:id/commit
+
+Commit a reviewed import session, creating a model and enqueuing the full ingestion pipeline. The session must be in `ready_for_review` status.
+
+**Auth required:** Yes
+
+**Library scope:** The model is created in the authenticated user's default library, resolved server-side from the session.
+
+**Path parameter:** `id` — import session UUID
+
+**Request body (optional):**
+
+```json
+{
+  "batchMetadata": {
+    "collectionId": "uuid-of-existing-collection",
+    "newCollectionName": "My New Collection",
+    "artist": "Maker Name",
+    "tags": ["fantasy", "bust"],
+    "options": {
+      "markPreSupported": false,
+      "markNsfw": false,
+      "skipDuplicatesByHash": false
+    }
+  }
+}
+```
+
+`batchMetadata` is fully optional. `collectionId` and `newCollectionName` are mutually exclusive — use one or neither. All metadata detected during scan can be overridden or supplemented here.
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `batchMetadata` | object (optional) | Batch metadata to apply to the committed model |
+| `batchMetadata.collectionId` | UUID string (optional) | Assign model to an existing collection |
+| `batchMetadata.newCollectionName` | string (optional) | Create a new collection and assign the model to it (1–255 chars) |
+| `batchMetadata.artist` | string (optional) | Override detected artist (max 255 chars) |
+| `batchMetadata.tags` | string[] (optional) | Override detected tags (max 50 tags, each max 100 chars) |
+| `batchMetadata.options.markPreSupported` | boolean (optional) | Mark model as pre-supported |
+| `batchMetadata.options.markNsfw` | boolean (optional) | Mark model as NSFW |
+| `batchMetadata.options.skipDuplicatesByHash` | boolean (optional) | Skip if a model with the same file hash already exists |
+
+**Response (202):**
+
+```json
+{
+  "data": {
+    "modelId": "uuid",
+    "jobId": "string"
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+Poll `GET /models/:id/status` with the returned `modelId` to track ingestion progress.
+
+---
+
+### DELETE /models/import-sessions/:id
+
+Discard an import session and delete its staged files. The session can be in any active status.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — import session UUID
+
+**Response (200):**
+
+```json
+{
+  "data": null,
+  "meta": null,
+  "errors": null
+}
+```
 
 ---
 
@@ -1229,6 +1387,66 @@ Delete multiple models and clean up their storage in a single request. Storage c
 ```
 
 `deletedIds` reflects the models that were actually removed from the database. Models that did not exist are silently skipped.
+
+---
+
+## Search
+
+### GET /search
+
+Cross-entity search across models, collections, artists, and tags in a single request. Each result type is scored and limited independently. Requires an active library.
+
+**Auth required:** Yes
+
+**Library scope:** All results are scoped to the authenticated user's default library, resolved server-side from the session. Clients do not pass a `libraryId`.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `q` | string | — | Required. Search query (1–500 characters) |
+| `limit` | integer | 6 | Maximum results per entity type (1–50) |
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "q": "dragon",
+    "models": {
+      "items": [
+        {
+          "id": "uuid",
+          "name": "Dragon Bust",
+          "slug": "dragon-bust-a3f2",
+          "thumbnailUrl": "/files/thumbnails/uuid.webp",
+          "metadata": [...],
+          "fileCount": 4,
+          "totalSizeBytes": 8388608,
+          "status": "ready",
+          "createdAt": "2026-01-15T10:30:00.000Z"
+        }
+      ],
+      "total": 3
+    },
+    "collections": [
+      { "id": "uuid", "name": "Dragons", "slug": "dragons-b1c2", "modelCount": 8 }
+    ],
+    "artists": [
+      { "name": "DragonArtist", "modelCount": 5 }
+    ],
+    "tags": [
+      { "name": "dragon", "modelCount": 12 }
+    ]
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is a `GlobalSearchResult`. `models.items` contains up to `limit` `ModelCard` objects; `models.total` reflects the full count of matching models regardless of `limit`. `collections`, `artists`, and `tags` each contain up to `limit` hits.
+
+Models are ranked by full-text relevance. Collections are filtered by name substring and sorted by `modelCount` descending. Artists and tags are filtered by name substring, drawn from library-scoped metadata values, and sorted by `modelCount` descending. There is no unified cross-type relevance score.
 
 ---
 

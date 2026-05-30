@@ -1,9 +1,20 @@
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import type { Job } from 'bullmq';
-import type { ImportConfig } from '@alexandria/shared';
-import { jobService, type IngestionJobPayload, type FolderImportJobPayload } from './job.service.js';
-import { fileProcessingService } from './file-processing.service.js';
+import type {
+  ImportConfig,
+  BatchUploadMetadata,
+  DetectedImportMetadata,
+  DetectedFolderNode,
+} from '@alexandria/shared';
+import {
+  jobService,
+  type IngestionJobPayload,
+  type FolderImportJobPayload,
+  type CommitJobPayload,
+} from './job.service.js';
+import { fileProcessingService, type FileManifest } from './file-processing.service.js';
+import { importSessionService } from './import-session.service.js';
 import { thumbnailService } from './thumbnail.service.js';
 import { modelService } from './model.service.js';
 import { metadataService } from './metadata.service.js';
@@ -17,6 +28,14 @@ import { createLogger } from '../utils/logger.js';
 import { AppError, validationError } from '../utils/errors.js';
 
 const logger = createLogger('IngestionService');
+
+/** File extensions treated as 3D model files when counting sub-models. */
+const MODEL_FILE_EXTENSIONS = new Set(['stl', 'obj', '3mf', 'step', 'stp', 'ply']);
+/** Path tokens too generic to ever be a useful auto-tag. */
+const TAG_STOPWORDS = new Set([
+  'stl', 'obj', 'zip', 'rar', 'files', 'file', 'model', 'models', 'the', 'and',
+  'supported', 'unsupported', 'presupported', 'lys', 'renders', 'render', 'images',
+]);
 
 export class IngestionService {
   async handleUpload(
@@ -54,6 +73,402 @@ export class IngestionService {
 
     logger.info({ service: 'IngestionService', modelId, jobId, libraryId }, 'Upload accepted, ingestion job enqueued');
     return { modelId, jobId };
+  }
+
+  // -------------------------------------------------------------------------
+  // Staged upload: scan → review → commit
+  // -------------------------------------------------------------------------
+
+  /**
+   * Accept an uploaded archive and enqueue a scan. Creates an import session
+   * (not a model) — the archive is extracted + inspected without being committed.
+   */
+  async handleScan(
+    file: { tempFilePath: string; originalFilename: string },
+    userId: string,
+    libraryId: string,
+  ): Promise<{ sessionId: string }> {
+    const { id: sessionId } = await importSessionService.create({
+      userId,
+      libraryId,
+      originalFilename: file.originalFilename,
+    });
+
+    try {
+      await jobService.enqueueScanJob({
+        sessionId,
+        tempFilePath: file.tempFilePath,
+        originalFilename: file.originalFilename,
+        userId,
+        libraryId,
+      });
+    } catch (err) {
+      logger.error({ sessionId, error: String(err) }, 'Failed to enqueue scan job');
+      await importSessionService.update(sessionId, { status: 'error', error: 'Failed to start scan' });
+      throw err;
+    }
+
+    logger.info({ service: 'IngestionService', sessionId, libraryId }, 'Upload accepted, scan job enqueued');
+    return { sessionId };
+  }
+
+  /** Worker entry: extract the archive, detect metadata, mark ready for review. */
+  async processScanJob(
+    sessionId: string,
+    tempFilePath: string,
+    originalFilename: string,
+    libraryId: string,
+  ): Promise<void> {
+    const extractDir = `${tempFilePath}_extracted`;
+    try {
+      const manifest = await fileProcessingService.processArchive(tempFilePath, extractDir);
+      const detected = await this.detectImportMetadata(manifest, originalFilename, libraryId);
+      await importSessionService.update(sessionId, {
+        status: 'ready_for_review',
+        manifest,
+        detected,
+        stagingPath: extractDir,
+      });
+      logger.info({ sessionId, fileCount: manifest.entries.length }, 'Scan complete — ready for review');
+    } catch (err) {
+      logger.error({ sessionId, error: String(err) }, 'Scan failed');
+      await importSessionService.update(sessionId, {
+        status: 'error',
+        error: err instanceof Error ? err.message : 'Could not process this archive',
+      });
+      await fsPromises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
+    } finally {
+      // The uploaded archive is no longer needed once extracted (or on failure).
+      await fsPromises.rm(tempFilePath, { force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * Promote a reviewed session into a real model. Creates the model row up front
+   * (so the client can poll status), then enqueues the commit job.
+   */
+  async handleCommit(
+    sessionId: string,
+    batchMetadata: BatchUploadMetadata | undefined,
+    userId: string,
+    libraryId: string,
+  ): Promise<{ modelId: string; jobId: string }> {
+    const session = await importSessionService.getOwnedRow(sessionId, userId);
+    if (session.status !== 'ready_for_review') {
+      throw validationError(`Import session is not ready to commit (status: ${session.status})`);
+    }
+    if (session.libraryId !== libraryId) {
+      throw validationError('Import session belongs to a different library');
+    }
+
+    // B1: validate collectionId ownership synchronously here, before enqueuing,
+    // so an unauthorized or non-existent collectionId returns a 4xx to the
+    // caller rather than silently failing inside the non-fatal worker catch.
+    if (batchMetadata?.collectionId) {
+      await collectionService.requireOwnedCollection(batchMetadata.collectionId, userId, libraryId);
+    }
+
+    const name = stripArchiveExtension(session.originalFilename);
+    const slug = generateSlug(name);
+    const { id: modelId } = await modelService.createModel({
+      name,
+      slug,
+      userId,
+      libraryId,
+      sourceType: 'archive_upload',
+      status: 'processing',
+      originalFilename: session.originalFilename,
+    });
+    await importSessionService.update(sessionId, { status: 'committing', modelId });
+
+    let jobId: string;
+    try {
+      jobId = await jobService.enqueueCommitJob({ sessionId, modelId, userId, libraryId, batchMetadata });
+    } catch (err) {
+      logger.error({ sessionId, modelId, error: String(err) }, 'Failed to enqueue commit job');
+      await modelService.updateModelStatus(modelId, 'error');
+      await importSessionService.update(sessionId, { status: 'error', error: 'Failed to start commit' });
+      throw err;
+    }
+
+    logger.info({ service: 'IngestionService', sessionId, modelId, jobId }, 'Commit accepted, job enqueued');
+    return { modelId, jobId };
+  }
+
+  /** Worker entry: copy staged files to storage, finalize the model, apply metadata. */
+  async processCommitJob(job: Job<CommitJobPayload>): Promise<void> {
+    const { sessionId, modelId, userId, libraryId, batchMetadata } = job.data;
+
+    const session = await importSessionService.getRow(sessionId);
+    if (!session) {
+      logger.error({ sessionId }, 'Commit job: session not found');
+      return;
+    }
+    const manifest = session.manifest as FileManifest | null;
+    const stagingPath = session.stagingPath;
+    if (!manifest || !stagingPath) {
+      await modelService.updateModelStatus(modelId, 'error');
+      await importSessionService.update(sessionId, { status: 'error', error: 'Missing scanned data' });
+      return;
+    }
+
+    try {
+      await job.updateProgress(10);
+      await fileProcessingService.copyManifestToStorage(stagingPath, modelId, manifest, storageService);
+      await job.updateProgress(50);
+
+      const modelFileInputs = manifest.entries.map((entry) => ({
+        filename: entry.filename,
+        relativePath: entry.relativePath,
+        fileType: entry.fileType,
+        mimeType: entry.mimeType,
+        sizeBytes: entry.sizeBytes,
+        storagePath: `models/${modelId}/${entry.relativePath}`,
+        hash: entry.hash,
+      }));
+
+      const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
+      await job.updateProgress(75);
+      await this.generateAndStoreThumbnails(modelId, modelFileInputs, createdFiles, stagingPath);
+
+      await modelService.updateModelStatus(modelId, 'ready', {
+        totalSizeBytes: manifest.totalSizeBytes,
+        fileCount: manifest.entries.length,
+      });
+      await job.updateProgress(100);
+
+      // Apply user-reviewed metadata after the model is ready — non-fatal.
+      await this.applyBatchMetadata(modelId, userId, libraryId, batchMetadata);
+
+      await importSessionService.update(sessionId, { status: 'committed' });
+      logger.info({ sessionId, modelId }, 'Commit complete — model is ready');
+    } catch (err) {
+      logger.error({ sessionId, modelId, error: String(err) }, 'Commit failed');
+      const maxAttempts = job.opts.attempts ?? 1;
+      if (job.attemptsMade >= maxAttempts - 1) {
+        await modelService.updateModelStatus(modelId, 'error');
+        await importSessionService.update(sessionId, {
+          status: 'error',
+          error: err instanceof Error ? err.message : 'Commit failed',
+        });
+      }
+      throw err;
+    } finally {
+      const maxAttempts = job.opts.attempts ?? 1;
+      const isFinalAttempt = job.attemptsMade >= maxAttempts - 1;
+      if (!job.failedReason || isFinalAttempt) {
+        await fsPromises.rm(stagingPath, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  }
+
+  /** Discard a session that has not been committed, removing staged files. */
+  async discardSession(sessionId: string, userId: string): Promise<void> {
+    const session = await importSessionService.getOwnedRow(sessionId, userId);
+    if (session.stagingPath) {
+      await fsPromises.rm(session.stagingPath, { recursive: true, force: true }).catch(() => {});
+    }
+    await importSessionService.delete(sessionId);
+  }
+
+  /** Apply reviewed batch metadata to a committed model. Failures are non-fatal. */
+  private async applyBatchMetadata(
+    modelId: string,
+    userId: string,
+    libraryId: string,
+    batchMetadata: BatchUploadMetadata | undefined,
+  ): Promise<void> {
+    if (!batchMetadata) return;
+    try {
+      const metadata: Record<string, string | string[]> = {};
+      if (batchMetadata.artist) metadata.artist = batchMetadata.artist;
+      if (batchMetadata.tags && batchMetadata.tags.length > 0) metadata.tags = batchMetadata.tags;
+      const opts = batchMetadata.options;
+      if (opts?.markPreSupported) metadata['pre-supported'] = 'true';
+      if (opts?.markNsfw) metadata.nsfw = 'true';
+      if (Object.keys(metadata).length > 0) {
+        await metadataService.setModelMetadata(modelId, metadata);
+      }
+
+      if (batchMetadata.collectionId) {
+        await collectionService.addModelToCollection(batchMetadata.collectionId, modelId);
+      } else if (batchMetadata.newCollectionName) {
+        const collection = await collectionService.findOrCreateByName(
+          batchMetadata.newCollectionName,
+          userId,
+          libraryId,
+        );
+        await collectionService.addModelToCollection(collection.id, modelId);
+      }
+    } catch (err) {
+      logger.warn(
+        { modelId, error: String(err) },
+        'Failed to apply batch metadata (non-fatal) — model remains ready',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Scan-phase detection helpers (all best-effort)
+  // -------------------------------------------------------------------------
+
+  private async detectImportMetadata(
+    manifest: FileManifest,
+    originalFilename: string,
+    libraryId: string,
+  ): Promise<DetectedImportMetadata> {
+    const entries = manifest.entries;
+    const folderStructure = this.buildFolderStructure(entries);
+
+    const topLevelModelDirs = new Set<string>();
+    let looseModelFiles = 0;
+    for (const e of entries) {
+      if (!this.isModelFile(e.filename)) continue;
+      const segs = e.relativePath.split('/').filter(Boolean);
+      if (segs.length > 1) topLevelModelDirs.add(segs[0]);
+      else looseModelFiles++;
+    }
+    const modelCount = Math.max(1, topLevelModelDirs.size + (looseModelFiles > 0 ? 1 : 0));
+
+    const [artist, tagsGuessed] = await Promise.all([
+      this.guessArtist(entries, originalFilename, libraryId),
+      this.guessTags(entries, libraryId),
+    ]);
+
+    return {
+      modelCount,
+      fileCount: entries.length,
+      totalSizeBytes: manifest.totalSizeBytes,
+      artist,
+      tagsGuessed,
+      folderStructure,
+    };
+  }
+
+  private isModelFile(filename: string): boolean {
+    const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+    return MODEL_FILE_EXTENSIONS.has(ext);
+  }
+
+  /** Build a compact folder tree (depth/breadth capped) for the review preview. */
+  private buildFolderStructure(
+    entries: FileManifest['entries'],
+    maxDepth = 3,
+    maxChildren = 12,
+  ): DetectedFolderNode[] {
+    interface MutableNode {
+      name: string;
+      type: 'folder' | 'file';
+      fileType?: DetectedFolderNode['fileType'];
+      children: Map<string, MutableNode>;
+    }
+    const root = new Map<string, MutableNode>();
+
+    for (const entry of entries) {
+      const segs = entry.relativePath.split('/').filter(Boolean);
+      if (segs.length === 0) continue;
+      let level = root;
+      for (let i = 0; i < segs.length && i < maxDepth; i++) {
+        const isLeaf = i === segs.length - 1;
+        const name = segs[i];
+        let node = level.get(name);
+        if (!node) {
+          node = {
+            name,
+            type: isLeaf ? 'file' : 'folder',
+            fileType: isLeaf ? entry.fileType : undefined,
+            children: new Map(),
+          };
+          level.set(name, node);
+        }
+        level = node.children;
+      }
+    }
+
+    const toNodes = (level: Map<string, MutableNode>): DetectedFolderNode[] => {
+      return [...level.values()]
+        .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'folder' ? -1 : 1))
+        .slice(0, maxChildren)
+        .map((n) => {
+          const node: DetectedFolderNode = { name: n.name, type: n.type };
+          if (n.fileType) node.fileType = n.fileType;
+          if (n.children.size > 0) node.children = toNodes(n.children);
+          return node;
+        });
+    };
+
+    return toNodes(root);
+  }
+
+  private async guessArtist(
+    entries: FileManifest['entries'],
+    originalFilename: string,
+    libraryId: string,
+  ): Promise<string | null> {
+    // Candidate names: the top-level folder, and the archive filename stem.
+    const candidates: string[] = [];
+    const firstWithDir = entries.find((e) => e.relativePath.includes('/'));
+    if (firstWithDir) candidates.push(firstWithDir.relativePath.split('/')[0]);
+    candidates.push(stripArchiveExtension(originalFilename));
+
+    let existing: string[] = [];
+    try {
+      existing = (await metadataService.listFieldValues('artist', libraryId)).map((v) => v.value);
+    } catch {
+      existing = [];
+    }
+    const existingLower = new Map(existing.map((v) => [v.toLowerCase(), v]));
+
+    for (const candidate of candidates) {
+      const humanized = this.humanize(candidate);
+      const match = existingLower.get(humanized.toLowerCase());
+      if (match) return match;
+    }
+    // No existing artist matched — offer a humanized guess if it looks name-like.
+    const guess = this.humanize(candidates[0] ?? '');
+    return /[a-z]/i.test(guess) ? guess : null;
+  }
+
+  private async guessTags(
+    entries: FileManifest['entries'],
+    libraryId: string,
+  ): Promise<string[]> {
+    let existing: string[] = [];
+    try {
+      existing = (await metadataService.listFieldValues('tags', libraryId)).map((v) => v.value);
+    } catch {
+      existing = [];
+    }
+    if (existing.length === 0) return [];
+    const existingLower = new Map(existing.map((v) => [v.toLowerCase(), v]));
+
+    const tokens = new Set<string>();
+    for (const e of entries) {
+      for (const seg of e.relativePath.split(/[/\\]/)) {
+        for (const token of seg.toLowerCase().split(/[\s._-]+/)) {
+          if (token.length >= 3 && !TAG_STOPWORDS.has(token) && !/^\d+$/.test(token)) {
+            tokens.add(token);
+          }
+        }
+      }
+    }
+
+    const matched: string[] = [];
+    for (const token of tokens) {
+      const canonical = existingLower.get(token);
+      if (canonical && !matched.includes(canonical)) {
+        matched.push(canonical);
+        if (matched.length >= 8) break;
+      }
+    }
+    return matched;
+  }
+
+  private humanize(raw: string): string {
+    return raw
+      .replace(/[._-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   async processIngestionJob(

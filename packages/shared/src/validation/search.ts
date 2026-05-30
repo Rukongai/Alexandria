@@ -27,3 +27,12 @@ export const modelSearchParamsSchema = z.object({
 
   metadataFilters: z.record(z.string(), z.string()).optional(),
 });
+
+/**
+ * Parameters for the cross-entity global search endpoint.
+ * `limit` caps hits returned per result type.
+ */
+export const globalSearchParamsSchema = z.object({
+  q: z.string().trim().min(1).max(500),
+  limit: z.coerce.number().int().min(1).max(50).default(6),
+});
