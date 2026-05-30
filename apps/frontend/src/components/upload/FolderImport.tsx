@@ -168,8 +168,14 @@ export function FolderImport() {
       )}
 
       {importState.phase === 'submitted' && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-50 dark:bg-emerald-950/20 px-4 py-3 space-y-2">
-          <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
+        <div
+          className="rounded-lg px-4 py-3 space-y-2"
+          style={{
+            border: '1px solid var(--ax-success)',
+            background: 'color-mix(in srgb, var(--ax-success) 8%, transparent)',
+          }}
+        >
+          <p className="text-sm font-medium" style={{ color: 'var(--ax-success)' }}>
             Import job queued successfully.
           </p>
           <div className="flex gap-3">

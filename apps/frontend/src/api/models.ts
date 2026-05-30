@@ -7,6 +7,9 @@ import type {
   ModelSearchParams,
   UpdateModelRequest,
   ImportConfig,
+  ImportSession,
+  BatchUploadMetadata,
+  ScanUploadResponse,
 } from '@alexandria/shared';
 import { get, post, patch, del, putRaw } from './client';
 import { buildQueryString } from '../lib/query';
@@ -52,10 +55,15 @@ export async function deleteModel(id: string): Promise<void> {
 const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_CHUNK_RETRIES = 3;
 
-export async function uploadModel(
+/**
+ * Upload an archive file using chunked upload. Creates an import session
+ * (status: scanning) instead of immediately creating a model.
+ * Returns { sessionId } — poll the session to track scan progress.
+ */
+export async function scanUpload(
   file: File,
   onProgress?: (pct: number) => void
-): Promise<{ modelId: string }> {
+): Promise<ScanUploadResponse> {
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
   // 1. Initiate chunked upload session
@@ -89,7 +97,6 @@ export async function uploadModel(
         break;
       } catch (err) {
         lastError = err;
-        // Exponential backoff: 1s, 2s, 4s
         if (attempt < MAX_CHUNK_RETRIES - 1) {
           await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
         }
@@ -100,14 +107,39 @@ export async function uploadModel(
 
   onProgress?.(95);
 
-  // 3. Complete — assemble and start ingestion
-  const completeResponse = await post<{ modelId: string; jobId: string }>(
+  // 3. Complete — assemble and start scan; returns { sessionId }
+  const completeResponse = await post<ScanUploadResponse>(
     `/models/upload/${uploadId}/complete`,
   );
 
   onProgress?.(100);
 
-  return { modelId: completeResponse.data.modelId };
+  return completeResponse.data;
+}
+
+export async function listImportSessions(): Promise<ImportSession[]> {
+  const response = await get<ImportSession[]>('/models/import-sessions');
+  return response.data;
+}
+
+export async function getImportSession(id: string): Promise<ImportSession> {
+  const response = await get<ImportSession>(`/models/import-sessions/${id}`);
+  return response.data;
+}
+
+export async function commitImportSession(
+  id: string,
+  batchMetadata?: BatchUploadMetadata
+): Promise<{ modelId: string; jobId: string }> {
+  const response = await post<{ modelId: string; jobId: string }>(
+    `/models/import-sessions/${id}/commit`,
+    batchMetadata ? { batchMetadata } : undefined
+  );
+  return response.data;
+}
+
+export async function discardImportSession(id: string): Promise<void> {
+  await del(`/models/import-sessions/${id}`);
 }
 
 export async function importFolder(config: ImportConfig): Promise<{ modelId: string }> {

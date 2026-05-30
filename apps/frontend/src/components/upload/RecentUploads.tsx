@@ -8,7 +8,7 @@ import type { ModelCard } from '@alexandria/shared';
 function StatusBadge({ status }: { status: ModelCard['status'] }) {
   if (status === 'processing') {
     return (
-      <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+      <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--ax-warning)' }}>
         <Loader2 className="h-3 w-3 animate-spin" />
         Processing
       </span>
@@ -16,14 +16,14 @@ function StatusBadge({ status }: { status: ModelCard['status'] }) {
   }
   if (status === 'error') {
     return (
-      <span className="flex items-center gap-1 text-xs text-destructive">
+      <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--ax-danger)' }}>
         <AlertCircle className="h-3 w-3" />
         Error
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-500">
+    <span className="flex items-center gap-1 text-xs" style={{ color: 'var(--ax-success)' }}>
       <CheckCircle2 className="h-3 w-3" />
       Ready
     </span>
