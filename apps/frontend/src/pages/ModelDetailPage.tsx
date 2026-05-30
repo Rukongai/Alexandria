@@ -1,13 +1,14 @@
+import * as React from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronLeft, AlertTriangle } from 'lucide-react';
 import { getModel, getModelFiles } from '../api/models';
-import { ImageGallery } from '../components/models/ImageGallery';
-import { FileTree } from '../components/models/FileTree';
-import { MetadataPanel } from '../components/models/MetadataPanel';
-import { ModelInfo } from '../components/models/ModelInfo';
-import { CollectionsList } from '../components/models/CollectionsList';
+import { ModelHero } from '../components/models/ModelHero';
+import { ModelDetailPanel } from '../components/models/ModelDetailPanel';
+import { ModelBreadcrumb } from '../components/models/ModelBreadcrumb';
+import { ModelViewer3DModal } from '../components/models/ModelViewer3DModal';
 import { ModelDetailSkeleton } from '../components/models/ModelDetailSkeleton';
+import { collectStlFiles, type StlFileRef } from '../lib/model-files';
 
 export function ModelDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -31,17 +32,37 @@ export function ModelDetailPage() {
 
   const isLoading = modelLoading || filesLoading;
 
+  // STL files discovered from the file tree (drives the 3D viewer).
+  const stlFiles = React.useMemo(
+    () => (id ? collectStlFiles(fileTree, id) : []),
+    [fileTree, id],
+  );
+
+  const [viewerOpen, setViewerOpen] = React.useState(false);
+  const [activeStl, setActiveStl] = React.useState<StlFileRef | null>(null);
+
+  function openViewer(stl: StlFileRef) {
+    setActiveStl(stl);
+    setViewerOpen(true);
+  }
+
   return (
-    <div className="flex flex-col gap-5 max-w-6xl mx-auto p-6">
-      {/* Back nav */}
-      <div>
+    <div className="flex flex-col gap-4 max-w-[1400px] mx-auto p-6">
+      {/* Header: back link + breadcrumb */}
+      <div className="flex flex-col gap-2">
         <Link
           to="/"
-          className="inline-flex items-center gap-0.5 h-8 px-2 -ml-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          className="inline-flex items-center gap-0.5 h-8 px-2 -ml-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors self-start"
         >
           <ChevronLeft className="h-4 w-4" />
           Back to Library
         </Link>
+        {model && !isLoading && (
+          <ModelBreadcrumb
+            collection={model.collections[0] ?? null}
+            modelName={model.name}
+          />
+        )}
       </div>
 
       {isLoading && <ModelDetailSkeleton />}
@@ -66,27 +87,28 @@ export function ModelDetailPage() {
 
       {model && !isLoading && (
         <div className="flex flex-col lg:flex-row gap-6">
-          {/* Left column: gallery + file tree */}
-          <div className="flex-1 min-w-0 flex flex-col gap-4">
-            <ImageGallery
-              images={model.images}
-              previewImageFileId={model.previewImageFileId}
-              previewCropX={model.previewCropX}
-              previewCropY={model.previewCropY}
-              previewCropScale={model.previewCropScale}
-              modelId={model.id}
-            />
-            <FileTree tree={fileTree} />
+          {/* Hero column */}
+          <div className="flex-1 min-w-0">
+            <ModelHero model={model} stlFiles={stlFiles} onOpenViewer={openViewer} />
           </div>
 
-          {/* Right column: info, metadata, collections */}
-          <div className="lg:w-80 xl:w-96 flex flex-col gap-4 flex-shrink-0">
-            <ModelInfo model={model} />
-            <MetadataPanel metadata={model.metadata} modelId={model.id} />
-            <CollectionsList collections={model.collections} />
+          {/* Tabbed panel column */}
+          <div className="lg:w-[380px] xl:w-[420px] flex-shrink-0">
+            <ModelDetailPanel
+              model={model}
+              fileTree={fileTree}
+              onOpenStl={openViewer}
+            />
           </div>
         </div>
       )}
+
+      <ModelViewer3DModal
+        open={viewerOpen}
+        onOpenChange={setViewerOpen}
+        stlFiles={stlFiles}
+        initialStl={activeStl}
+      />
     </div>
   );
 }

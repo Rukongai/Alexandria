@@ -25,7 +25,7 @@ export function CollectionsList({ collections }: CollectionsListProps) {
                   to={`/collections/${col.id}`}
                   className="flex items-center gap-2 text-sm text-foreground hover:text-primary transition-colors py-0.5 group"
                 >
-                  <FolderOpen className="h-4 w-4 text-amber-500 flex-shrink-0 group-hover:text-primary transition-colors" />
+                  <FolderOpen className="h-4 w-4 text-muted-foreground flex-shrink-0 group-hover:text-primary transition-colors" />
                   <span className="truncate">{col.name}</span>
                 </Link>
               </li>

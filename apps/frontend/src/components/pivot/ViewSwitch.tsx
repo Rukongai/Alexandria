@@ -1,7 +1,7 @@
 import { useDisplayPreferences, type ViewMode } from '../../hooks/use-display-preferences';
 import { GridViewIcon, ListViewIcon, GroupViewIcon } from '../icons';
 
-const VIEWS: Array<{ mode: ViewMode; label: string; Icon: React.ElementType }> = [
+const VIEWS: Array<{ mode: ViewMode; label: string; Icon: React.ComponentType<{ className?: string }> }> = [
   { mode: 'grid', label: 'Grid view', Icon: GridViewIcon },
   { mode: 'list', label: 'List view', Icon: ListViewIcon },
   { mode: 'group', label: 'Group view', Icon: GroupViewIcon },
