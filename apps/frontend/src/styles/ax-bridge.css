@@ -1,0 +1,49 @@
+/* Bridge: point shadcn's semantic HSL-triplet vars at the design-token channel
+ * vars (--ax-*-h). Because these resolve to bare "H S% L%" triplets, Tailwind's
+ * `hsl(var(--x) / <alpha-value>)` opacity modifiers keep working unchanged.
+ * The --ax-*-h vars are re-declared per palette and under .ax-dark by
+ * ax-tokens.css, so every shadcn component follows palette + theme automatically.
+ *
+ * tailwind.config.js stays as `hsl(var(--primary))` etc. — DO NOT change it.
+ *
+ * Note: @layer base is intentionally omitted here — this file is imported
+ * standalone (without @tailwind directives), so the :root block is plain CSS.
+ * index.css owns the @tailwind directives and the @layer base for utility
+ * application rules. */
+:root {
+  --background: var(--ax-bg-h);
+  --foreground: var(--ax-fg-h);
+
+  --card: var(--ax-bg-elev-h);
+  --card-foreground: var(--ax-fg-h);
+
+  --popover: var(--ax-bg-elev-h);
+  --popover-foreground: var(--ax-fg-h);
+
+  --primary: var(--ax-amber-h);
+  --primary-foreground: var(--ax-amber-fg-h);
+
+  --secondary: var(--ax-bg-sunk-h);
+  --secondary-foreground: var(--ax-fg-muted-h);
+
+  --muted: var(--ax-bg-sunk-h);
+  --muted-foreground: var(--ax-fg-muted-h);
+
+  --accent: var(--ax-amber-tint-h);
+  --accent-foreground: var(--ax-amber-tint-fg-h);
+
+  --destructive: var(--ax-danger-h);
+  --destructive-foreground: 0 0% 100%;
+
+  --border: var(--ax-border-h);
+  --input: var(--ax-border-h);
+  --ring: var(--ax-amber-h);
+
+  --radius: 0.5rem; /* keep shadcn radius scale in P0; revisit per-component in P1 */
+
+  --sidebar: var(--ax-rail-h);
+  --sidebar-foreground: var(--ax-rail-fg-h);
+  --sidebar-border: var(--ax-rail-border-h);
+  --sidebar-accent: var(--ax-rail-hover-h);
+  --sidebar-accent-foreground: var(--ax-rail-fg-h);
+}

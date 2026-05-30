@@ -21,9 +21,9 @@ function applyTheme(theme: Theme): 'light' | 'dark' {
   const resolved = theme === 'system' ? getSystemTheme() : theme;
   const root = document.documentElement;
   if (resolved === 'dark') {
-    root.classList.add('dark');
+    root.classList.add('dark', 'ax-dark');
   } else {
-    root.classList.remove('dark');
+    root.classList.remove('dark', 'ax-dark');
   }
   return resolved;
 }

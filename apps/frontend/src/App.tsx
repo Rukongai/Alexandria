@@ -9,6 +9,7 @@ import { CollectionsPage } from './pages/CollectionsPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UploadPage } from './pages/UploadPage';
+import { DesignSystemPage } from './pages/DesignSystemPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -47,6 +48,9 @@ export default function App() {
         <Route path="upload" element={<UploadPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
+      {import.meta.env.DEV && (
+        <Route path="/design-system" element={<DesignSystemPage />} />
+      )}
       {/* Catch-all */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
