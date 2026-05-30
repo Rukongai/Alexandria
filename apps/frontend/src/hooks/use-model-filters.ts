@@ -12,6 +12,23 @@ export interface ModelFilters {
   metadataFilters: Record<string, string>;
 }
 
+export type PivotAxis = 'collections' | 'artists' | 'tags';
+
+const VALID_AXES: PivotAxis[] = ['collections', 'artists', 'tags'];
+const DEFAULT_AXIS: PivotAxis = 'collections';
+
+/**
+ * The currently-selected value for the active pivot axis:
+ * - axis 'collections': collectionId (string | undefined)
+ * - axis 'artists': the value of metadataFilters['artist'] (string | undefined)
+ * - axis 'tags': the selected tag slugs (string[])
+ */
+export interface ActiveAxisValue {
+  collectionId: string | undefined;
+  artist: string | undefined;
+  tags: string[];
+}
+
 function parseMetaFilters(params: URLSearchParams): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [key, value] of params.entries()) {
@@ -34,6 +51,20 @@ export function useModelFilters() {
     status: (searchParams.get('status') as ModelSearchParams['status']) ?? undefined,
     collectionId: searchParams.get('collectionId') ?? undefined,
     metadataFilters: parseMetaFilters(searchParams),
+  };
+
+  // axis is pure UI — NOT in ModelFilters, NOT in toApiParams, NOT in the query key
+  const rawAxis = searchParams.get('axis');
+  const axis: PivotAxis =
+    rawAxis !== null && VALID_AXES.includes(rawAxis as PivotAxis)
+      ? (rawAxis as PivotAxis)
+      : DEFAULT_AXIS;
+
+  // activeAxisValue reflects what is selected for the current axis
+  const activeAxisValue: ActiveAxisValue = {
+    collectionId: axis === 'collections' ? filters.collectionId : undefined,
+    artist: axis === 'artists' ? filters.metadataFilters['artist'] : undefined,
+    tags: axis === 'tags' ? filters.tags : [],
   };
 
   const toApiParams = useCallback(
@@ -153,6 +184,23 @@ export function useModelFilters() {
     filters.collectionId !== undefined ||
     Object.keys(filters.metadataFilters).length > 0;
 
+  // setAxis writes ?axis= to the URL while preserving all other params.
+  // The default axis ('collections') is omitted from the URL for cleaner links.
+  const setAxis = useCallback(
+    (a: PivotAxis) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (a === DEFAULT_AXIS) {
+          next.delete('axis');
+        } else {
+          next.set('axis', a);
+        }
+        return next;
+      });
+    },
+    [setSearchParams]
+  );
+
   return {
     filters,
     toApiParams,
@@ -164,5 +212,9 @@ export function useModelFilters() {
     clearMetaFilter,
     clearAllFilters,
     hasActiveFilters,
+    // Pivot UI state — separate from filters and the query key
+    axis,
+    setAxis,
+    activeAxisValue,
   };
 }
