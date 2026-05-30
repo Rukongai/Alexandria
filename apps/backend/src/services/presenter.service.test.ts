@@ -539,3 +539,63 @@ describe('buildMetadataFieldList', () => {
     expect(artistField!.isDefault).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// buildCollectionList — delegates to CollectionService with libraryId scoping
+// ---------------------------------------------------------------------------
+
+describe('buildCollectionList', () => {
+  it('should return the collection created for this library', async () => {
+    const result = await presenterService.buildCollectionList(testUserId, testLibraryId, {});
+
+    expect(Array.isArray(result)).toBe(true);
+    const found = result.find((c) => c.id === collectionId);
+    expect(found).toBeDefined();
+    expect(found!.name).toBe('Presenter Test Collection');
+    expect(typeof found!.modelCount).toBe('number');
+    expect(Array.isArray(found!.children)).toBe(true);
+  });
+
+  it('should return ONLY collections belonging to the specified library (cross-library isolation)', async () => {
+    // Create a second library for the same user
+    const [libraryB] = await db
+      .insert(libraries)
+      .values({
+        name: 'Presenter Isolation Library B',
+        slug: `presenter-iso-lib-b-${Date.now()}`,
+        userId: testUserId,
+        isDefault: false,
+      })
+      .returning();
+
+    try {
+      // Insert a collection directly into library B
+      const [colB] = await db
+        .insert(collections)
+        .values({
+          name: 'Presenter Library B Collection',
+          slug: `presenter-lib-b-col-${Date.now()}`,
+          userId: testUserId,
+          libraryId: libraryB.id,
+        })
+        .returning();
+
+      // buildCollectionList scoped to library A must NOT return library B's collection
+      const resultA = await presenterService.buildCollectionList(testUserId, testLibraryId, {});
+      const resultAIds = resultA.map((c) => c.id);
+      expect(resultAIds).toContain(collectionId);
+      expect(resultAIds).not.toContain(colB.id);
+
+      // buildCollectionList scoped to library B must NOT return library A's collection
+      const resultB = await presenterService.buildCollectionList(testUserId, libraryB.id, {});
+      const resultBIds = resultB.map((c) => c.id);
+      expect(resultBIds).toContain(colB.id);
+      expect(resultBIds).not.toContain(collectionId);
+
+      // FK-ordered cleanup: delete collection before library
+      await db.delete(collections).where(eq(collections.id, colB.id));
+    } finally {
+      await db.delete(libraries).where(eq(libraries.id, libraryB.id));
+    }
+  });
+});

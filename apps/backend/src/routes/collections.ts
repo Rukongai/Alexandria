@@ -23,9 +23,11 @@ import { validationError } from '../utils/errors.js';
 
 export async function collectionRoutes(app: FastifyInstance): Promise<void> {
   // GET / — list top-level collections with optional depth expansion
+  // requireLibrary is mandatory: libraryId comes ONLY from request.libraryId,
+  // never from query or body parameters.
   app.get(
     '/',
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireLibrary] },
     async (request, reply) => {
       const rawQuery = request.query as Record<string, unknown>;
       const parseResult = collectionListParamsSchema.safeParse(rawQuery);
@@ -40,7 +42,7 @@ export async function collectionRoutes(app: FastifyInstance): Promise<void> {
 
       const params = parseResult.data;
       const userId = request.user!.id;
-      const collections = await presenterService.buildCollectionList(userId, params);
+      const collections = await presenterService.buildCollectionList(userId, request.libraryId!, params);
 
       return reply.status(200).send({
         data: collections,

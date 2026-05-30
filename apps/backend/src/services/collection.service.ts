@@ -169,18 +169,28 @@ export class CollectionService {
   }
 
   /**
-   * List all collections for a user as a flat array. Each entry includes its
-   * direct children as CollectionSummary[]. The caller is responsible for
-   * filtering top-level vs nested collections using parentCollectionId.
+   * List all collections for a user within a specific library as a flat array.
+   * Each entry includes its direct children as CollectionSummary[].
+   * The caller is responsible for filtering top-level vs nested collections
+   * using parentCollectionId.
+   *
+   * libraryId MUST come from request.libraryId (set by requireLibrary preHandler).
+   * Never accept it from query/body parameters.
    */
   async listCollections(
     userId: string,
+    libraryId: string,
     params: { depth?: number } = {},
   ): Promise<CollectionDetail[]> {
     const allRows = await db
       .select()
       .from(collections)
-      .where(eq(collections.userId, userId))
+      .where(
+        and(
+          eq(collections.userId, userId),
+          eq(collections.libraryId, libraryId),
+        ),
+      )
       .orderBy(collections.createdAt);
 
     if (allRows.length === 0) {
@@ -192,7 +202,7 @@ export class CollectionService {
 
     const results: CollectionDetail[] = [];
     for (const row of allRows) {
-      const children = await this._loadChildren(row.id);
+      const children = await this._loadChildren(row.id, libraryId);
       results.push({
         id: row.id,
         name: row.name,
@@ -373,12 +383,19 @@ export class CollectionService {
    * Load direct children of a collection as CollectionSummary[].
    * CollectionDetail.children is typed as CollectionSummary[], which cannot
    * carry nested data, so we only load direct children regardless of depth.
+   *
+   * Scoped to libraryId when provided, so children from a different library
+   * cannot bleed into the result even if parentCollectionId matches.
    */
-  private async _loadChildren(parentId: string): Promise<CollectionSummary[]> {
+  private async _loadChildren(parentId: string, libraryId?: string): Promise<CollectionSummary[]> {
+    const whereClause = libraryId
+      ? and(eq(collections.parentCollectionId, parentId), eq(collections.libraryId, libraryId))
+      : eq(collections.parentCollectionId, parentId);
+
     const rows = await db
       .select({ id: collections.id, name: collections.name, slug: collections.slug })
       .from(collections)
-      .where(eq(collections.parentCollectionId, parentId))
+      .where(whereClause)
       .orderBy(collections.createdAt);
 
     return rows.map(toCollectionSummary);

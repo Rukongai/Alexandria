@@ -357,7 +357,7 @@ describe('CollectionService – getCollectionDetail()', () => {
 
 describe('CollectionService – listCollections()', () => {
   it('should return an empty array when the user has no collections', async () => {
-    const result = await collectionService.listCollections(testUserId);
+    const result = await collectionService.listCollections(testUserId, testLibraryId);
 
     expect(result).toEqual([]);
   });
@@ -376,7 +376,7 @@ describe('CollectionService – listCollections()', () => {
       testUserId,
     );
 
-    const result = await collectionService.listCollections(testUserId);
+    const result = await collectionService.listCollections(testUserId, testLibraryId);
 
     expect(result.length).toBe(3);
     const resultIds = result.map((c) => c.id);
@@ -395,7 +395,7 @@ describe('CollectionService – listCollections()', () => {
       testUserId,
     );
 
-    const result = await collectionService.listCollections(testUserId, { depth: 1 });
+    const result = await collectionService.listCollections(testUserId, testLibraryId, { depth: 1 });
 
     const topDetail = result.find((c) => c.id === top.id);
     expect(topDetail).toBeDefined();
@@ -410,7 +410,7 @@ describe('CollectionService – listCollections()', () => {
     );
     await collectionService.addModelsToCollection(col.id, [testModelId1]);
 
-    const result = await collectionService.listCollections(testUserId);
+    const result = await collectionService.listCollections(testUserId, testLibraryId);
 
     const found = result.find((c) => c.id === col.id);
     expect(found).toBeDefined();
@@ -429,10 +429,59 @@ describe('CollectionService – listCollections()', () => {
       testUserId,
     );
 
-    const result = await collectionService.listCollections(testUserId);
+    const result = await collectionService.listCollections(testUserId, testLibraryId);
 
     const ids = result.map((c) => c.id);
     expect(ids.indexOf(first.id)).toBeLessThan(ids.indexOf(second.id));
+  });
+
+  it('should return ONLY collections belonging to the specified library (cross-library isolation)', async () => {
+    // Create a second library for the same user
+    const [libraryB] = await db
+      .insert(libraries)
+      .values({
+        name: 'Isolation Test Library B',
+        slug: `isolation-test-lib-b-${Date.now()}`,
+        userId: testUserId,
+        isDefault: false,
+      })
+      .returning();
+
+    try {
+      // Create a collection directly in library B (bypassing service which resolves default library)
+      const [colB] = await db
+        .insert(collections)
+        .values({
+          name: 'Library B Collection',
+          slug: `lib-b-col-${Date.now()}`,
+          userId: testUserId,
+          libraryId: libraryB.id,
+        })
+        .returning();
+
+      // Create a collection in library A (the default library)
+      const colA = await collectionService.createCollection(
+        { name: 'Library A Collection' },
+        testUserId,
+      );
+
+      // listCollections scoped to library A must NOT return library B's collection
+      const resultA = await collectionService.listCollections(testUserId, testLibraryId);
+      const resultAIds = resultA.map((c) => c.id);
+      expect(resultAIds).toContain(colA.id);
+      expect(resultAIds).not.toContain(colB.id);
+
+      // listCollections scoped to library B must NOT return library A's collection
+      const resultB = await collectionService.listCollections(testUserId, libraryB.id);
+      const resultBIds = resultB.map((c) => c.id);
+      expect(resultBIds).toContain(colB.id);
+      expect(resultBIds).not.toContain(colA.id);
+
+      // FK-ordered cleanup: collection_models cascade from collections, delete collections before library
+      await db.delete(collections).where(eq(collections.id, colB.id));
+    } finally {
+      await db.delete(libraries).where(eq(libraries.id, libraryB.id));
+    }
   });
 });
 
@@ -1033,7 +1082,7 @@ describe('CollectionService – parent-child nesting', () => {
       testUserId,
     );
 
-    const result = await collectionService.listCollections(testUserId);
+    const result = await collectionService.listCollections(testUserId, testLibraryId);
 
     // Both top-level and nested collections are returned
     expect(result.length).toBe(2);
