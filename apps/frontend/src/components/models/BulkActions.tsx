@@ -87,8 +87,7 @@ function CollectionPicker({ selectedIds, onClose, onDone }: CollectionPickerProp
 
   const { data } = useQuery({
     queryKey: ['collections'],
-    queryFn: () => getCollections(),
-    select: (res) => res.data,
+    queryFn: () => getCollections().then((res) => res.data),
   });
 
   const collections: CollectionDetail[] = data ?? [];

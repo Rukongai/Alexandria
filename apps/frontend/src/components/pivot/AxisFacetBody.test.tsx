@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import type { MetadataFieldValue } from '@alexandria/shared';
+import type { CollectionDetail, MetadataFieldValue } from '@alexandria/shared';
 import { AxisFacetBody } from './AxisFacetBody';
+import { BatchMetadataForm } from '../upload/BatchMetadataForm';
 
 // ---------------------------------------------------------------------------
 // Mock API modules
@@ -35,6 +36,18 @@ const ARTISTS: MetadataFieldValue[] = [
   { value: 'Prusa', modelCount: 22 },
   { value: 'Bambu', modelCount: 11 },
 ];
+
+const COLLECTION: CollectionDetail = {
+  id: 'collection-1',
+  name: 'Figures',
+  slug: 'figures',
+  description: null,
+  parentCollectionId: null,
+  children: [],
+  modelCount: 3,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -194,5 +207,57 @@ describe('AxisFacetBody — collections axis', () => {
       // CollectionTree renders empty state
       expect(container).toBeTruthy();
     });
+  });
+
+  it('keeps upload-form collection data from corrupting the shared collection cache', async () => {
+    mockGetCollections.mockResolvedValue({ data: [COLLECTION], meta: null, errors: null });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter>{children}</MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    const { rerender } = render(
+      <BatchMetadataForm
+        sessionId="session-1"
+        detected={{
+          modelCount: 1,
+          fileCount: 1,
+          totalSizeBytes: 100,
+          artist: null,
+          tagsGuessed: [],
+          folderStructure: [],
+        }}
+        onCommitted={() => {}}
+      />,
+      { wrapper },
+    );
+
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Figures' })).toBeTruthy());
+
+    rerender(
+      <>
+        <BatchMetadataForm
+          sessionId="session-1"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+          }}
+          onCommitted={() => {}}
+        />
+        <AxisFacetBody axis="collections" />
+      </>,
+    );
+
+    await waitFor(() => expect(screen.getAllByText('Figures').length).toBeGreaterThan(1));
+    expect(client.getQueryData(['collections'])).toEqual([COLLECTION]);
+    expect(client.getQueryData(['collections', { depth: 1 }])).toEqual([COLLECTION]);
   });
 });
