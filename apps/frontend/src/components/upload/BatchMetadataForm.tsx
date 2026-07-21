@@ -40,12 +40,12 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
     skipDuplicatesByHash: true,
   });
 
-  const { data: collectionsResponse } = useQuery({
-    queryKey: ['collections'],
-    queryFn: () => getCollections({ depth: 1 }),
+  const { data: collections } = useQuery({
+    queryKey: ['collections', { depth: 1 }],
+    queryFn: () => getCollections({ depth: 1 }).then((res) => res.data),
     staleTime: 30_000,
   });
-  const collections = collectionsResponse?.data ?? [];
+  const availableCollections = collections ?? [];
 
   const commitMutation = useCommitSession();
 
@@ -112,7 +112,7 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
           }}
         >
           <option value="">— None —</option>
-          {collections.map((c) => (
+          {availableCollections.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
             </option>
