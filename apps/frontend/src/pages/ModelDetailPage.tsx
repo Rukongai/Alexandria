@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronLeft, AlertTriangle } from 'lucide-react';
+import { ChevronLeft, AlertTriangle, Download } from 'lucide-react';
 import { getModel, getModelFiles } from '../api/models';
 import { ModelHero } from '../components/models/ModelHero';
 import { ModelDetailPanel } from '../components/models/ModelDetailPanel';
@@ -10,6 +10,8 @@ import { ModelViewer3DModal } from '../components/models/ModelViewer3DModal';
 import { ModelDetailSkeleton } from '../components/models/ModelDetailSkeleton';
 import { collectStlFiles, type StlFileRef } from '../lib/model-files';
 import { useLibraryPath } from '../hooks/use-libraries';
+import { buttonVariants } from '../components/ui/button';
+import { cn } from '../lib/utils';
 
 export function ModelDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -49,16 +51,32 @@ export function ModelDetailPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4 max-w-[1400px] mx-auto p-6">
-      {/* Header: back link + breadcrumb */}
+    <div className="flex flex-col gap-4 max-w-[1400px] mx-auto p-3 sm:p-6">
+      {/* Header: navigation, model action, and breadcrumb */}
       <div className="flex flex-col gap-2">
-        <Link
-          to={libPath('/')}
-          className="inline-flex items-center gap-0.5 h-8 px-2 -ml-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors self-start"
-        >
-          <ChevronLeft className="h-4 w-4" />
-          Back to Library
-        </Link>
+        <div className="flex items-center justify-between gap-3">
+          <Link
+            to={libPath('/')}
+            className="inline-flex items-center gap-0.5 h-8 px-2 -ml-2 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            aria-label="Back to Library"
+            title="Back to Library"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            <span className="hidden sm:inline">Back to Library</span>
+          </Link>
+          {model && !isLoading && (
+            <a
+              href={`/api/models/${model.id}/download`}
+              className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'gap-2')}
+              download={`${model.slug}.zip`}
+              aria-label="Download ZIP"
+              title="Download ZIP"
+            >
+              <Download className="h-4 w-4" />
+              <span className="hidden sm:inline">Download ZIP</span>
+            </a>
+          )}
+        </div>
         {model && !isLoading && (
           <ModelBreadcrumb
             collection={model.collections[0] ?? null}

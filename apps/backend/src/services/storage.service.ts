@@ -9,7 +9,7 @@ import { storageError } from '../utils/errors.js';
 export interface IStorageService {
   store(filePath: string, data: Buffer | NodeJS.ReadableStream): Promise<void>;
   retrieve(filePath: string): Promise<Buffer>;
-  retrieveStream(filePath: string): NodeJS.ReadableStream;
+  retrieveStream(filePath: string): Readable;
   delete(filePath: string): Promise<void>;
   exists(filePath: string): Promise<boolean>;
   getStorageRoot(): string;
@@ -71,7 +71,7 @@ export class StorageService implements IStorageService {
     }
   }
 
-  retrieveStream(filePath: string): NodeJS.ReadableStream {
+  retrieveStream(filePath: string): Readable {
     const absolute = this.resolve(filePath);
     return fs.createReadStream(absolute);
   }

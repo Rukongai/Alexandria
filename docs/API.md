@@ -739,6 +739,18 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
 
 ---
 
+### GET /models/:id/download
+
+Download all files belonging to a model as a ZIP archive. The archive is assembled and streamed from managed storage; the original directory structure is preserved and the full archive is never buffered in server memory.
+
+**Auth required:** Yes. The authenticated user must own the model.
+
+**Path parameter:** `id` — model UUID
+
+**Response (200):** A streamed `application/zip` attachment named `<model-slug>.zip`.
+
+---
+
 ### PATCH /models/:id
 
 Update a model's name, description, or cover image.

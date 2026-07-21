@@ -32,7 +32,8 @@ import { searchService } from '../services/search.service.js';
 import { presenterService } from '../services/presenter.service.js';
 import { storageService } from '../services/storage.service.js';
 import { uploadService } from '../services/upload.service.js';
-import { validationError } from '../utils/errors.js';
+import { createModelArchive } from '../services/model-download.service.js';
+import { notFound, validationError } from '../utils/errors.js';
 
 export async function modelRoutes(app: FastifyInstance): Promise<void> {
   // GET / — browse/search models with filters, sorting, pagination
@@ -344,6 +345,33 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const tree = presenterService.buildFileTree(files);
 
       return reply.status(200).send({ data: tree, meta: null, errors: null });
+    },
+  );
+
+  // GET /:id/download — stream all model files as a ZIP archive
+  app.get(
+    '/:id/download',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const model = await modelService.getModelById(id);
+
+      // Libraries are currently single-owner, so only the uploader may export.
+      if (model.userId !== request.user!.id) {
+        throw notFound(`Model not found: ${id}`);
+      }
+
+      const files = await modelService.getModelFiles(id);
+      const archive = createModelArchive(files);
+
+      archive.on('warning', (error) => request.log.warn({ error, modelId: id }, 'Archive warning'));
+      void archive.finalize();
+
+      return reply
+        .header('Content-Type', 'application/zip')
+        .header('Content-Disposition', `attachment; filename="${model.slug}.zip"`)
+        .header('Cache-Control', 'private, no-store')
+        .send(archive);
     },
   );
 
