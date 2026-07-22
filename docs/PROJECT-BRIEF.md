@@ -16,7 +16,7 @@ Alexandria fills this gap: a library manager that understands what a 3D printing
 
 ### What Alexandria Does (MVP)
 
-- **Ingests models** from zip uploads and existing folder-based libraries with user-defined hierarchy patterns
+- **Ingests models** from archive uploads, explicitly grouped archives, supported split archives (split ZIP or modern split RAR sets), and existing folder-based libraries with user-defined hierarchy patterns
 - **Processes uploaded files** asynchronously — extracts zips, classifies files by type, generates image thumbnails, computes file hashes
 - **Provides flexible metadata** — ships with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL) and supports user-defined custom fields. Tags have optimized query performance under the hood.
 - **Organizes via collections** — nestable collection hierarchy, models can belong to multiple collections
@@ -36,7 +36,7 @@ Alexandria fills this gap: a library manager that understands what a 3D printing
 
 These decisions were made deliberately during the architecture phase and should not be reversed without revisiting the rationale.
 
-**Zip = one model.** An uploaded zip always creates exactly one model entry. The contents are its files. No splitting, no multi-model extraction.
+**Upload session = one model.** A normal archive upload creates one model entry. An explicit multipart session may combine several independent complete archives or every part of one supported split archive, including modern `<base>.partN.rar` sets, but still creates one model. Archive contents are never automatically split into multiple models.
 
 **Metadata is unified.** Tags, Artist, Year, NSFW — all are metadata fields. The system doesn't have separate entity types for each. Some fields (like tags) have optimized database storage for query performance, but this is invisible to the API and UI. New attribute types are added by creating new metadata fields, not new database entities.
 
@@ -63,19 +63,29 @@ These decisions were made deliberately during the architecture phase and should 
 
 ## Architecture Summary
 
-The backend is organized around 11 services with clear ownership boundaries:
+The backend is organized around focused services with clear ownership boundaries. Principal services include:
 
 - **IngestionService** — orchestrates upload and import pipelines
 - **FileProcessingService** — extracts zips, walks folders, classifies files
 - **StorageService** — manages blob storage (local filesystem, future S3)
 - **ThumbnailService** — generates webp thumbnails from images
+- **UploadService** — manages bounded chunked uploads and multipart assembly
+- **ImportSessionService** — owns staged scan, review, and commit sessions
+- **ImportStrategyService** — moves folder imports into managed storage
 - **MetadataService** — manages field definitions and metadata values with hybrid storage
 - **ModelService** — CRUD for models and their files
+- **ModelDownloadService** — streams model downloads from managed storage
 - **SearchService** — all querying, filtering, sorting, pagination
 - **CollectionService** — collection management and nesting
+- **SmartCollectionService** — validates rules and resolves dynamic model sets
+- **LibraryService** — resolves user-owned libraries and defaults
 - **AuthService** — authentication and sessions
 - **JobService** — async job queue management
 - **PresenterService** — assembles API response payloads
+- **AiProviderService** — manages encrypted OpenAI-compatible BYOK providers
+- **AiAssistantService** — runs the bounded, library-scoped assistant tool loop
+- **AiProposalService** — validates immutable previews and atomically applies approved changes
+- **WebSearchService** — researches public metadata and image candidates without mutating the library
 
 The frontend communicates with the backend via a REST API using a consistent response envelope (`{ data, meta, errors }`) on every endpoint.
 
@@ -96,4 +106,4 @@ Implementation uses a team of 7 specialized Claude Code agents (Orchestrator, Ba
 
 ## Current Status
 
-Architecture complete. Implementation not yet started.
+The core application, staged ingestion workflow, multipart archive support, and preview-first AI assistant are implemented. Development continues through reviewed feature branches and pull requests.

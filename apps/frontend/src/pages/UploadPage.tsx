@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { FolderOpen } from 'lucide-react';
+import { useState, useEffect, useRef, type KeyboardEvent } from 'react';
+import { Files, FolderOpen } from 'lucide-react';
 import {
   useAddSessionFiles,
   useDiscardSession,
@@ -11,9 +11,11 @@ import { DropZone } from '../components/upload/DropZone';
 import { ReviewPane } from '../components/upload/ReviewPane';
 import { FolderImport } from '../components/upload/FolderImport';
 import { RecentUploads } from '../components/upload/RecentUploads';
+import { MultipartArchiveUpload } from '../components/upload/multipart-archive-upload';
 import { cn } from '../lib/utils';
 
-type Tab = 'queue' | 'folder';
+type Tab = 'queue' | 'multipart' | 'folder';
+const UPLOAD_TABS: Tab[] = ['queue', 'multipart', 'folder'];
 
 export function UploadPage() {
   const { data: sessions = [] } = useImportSessions();
@@ -21,6 +23,11 @@ export function UploadPage() {
   const addSessionFiles = useAddSessionFiles();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({
+    queue: null,
+    multipart: null,
+    folder: null,
+  });
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('queue');
   const [fileTargetId, setFileTargetId] = useState<string | null>(null);
@@ -92,6 +99,27 @@ export function UploadPage() {
     }
   };
 
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, currentTab: Tab) => {
+    const currentIndex = UPLOAD_TABS.indexOf(currentTab);
+    let nextIndex: number | null = null;
+
+    if (event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % UPLOAD_TABS.length;
+    } else if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + UPLOAD_TABS.length) % UPLOAD_TABS.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = UPLOAD_TABS.length - 1;
+    }
+
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextTab = UPLOAD_TABS[nextIndex];
+    setTab(nextTab);
+    tabRefs.current[nextTab]?.focus();
+  };
+
   return (
     <div className="flex h-screen overflow-hidden">
       <input
@@ -119,9 +147,19 @@ export function UploadPage() {
         <div
           className="flex items-center gap-1 px-7 pt-4 flex-shrink-0"
           style={{ borderBottom: '1px solid var(--ax-border)' }}
+          role="tablist"
+          aria-label="Upload method"
         >
           <button
+            ref={(element) => { tabRefs.current.queue = element; }}
+            id="upload-tab-archive"
+            type="button"
             onClick={() => setTab('queue')}
+            role="tab"
+            aria-selected={tab === 'queue'}
+            aria-controls="upload-panel-archive"
+            tabIndex={tab === 'queue' ? 0 : -1}
+            onKeyDown={(event) => handleTabKeyDown(event, 'queue')}
             className={cn(
               'flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium rounded-t-lg border-b-2 transition-colors',
               tab === 'queue'
@@ -132,7 +170,35 @@ export function UploadPage() {
             Archive upload
           </button>
           <button
+            ref={(element) => { tabRefs.current.multipart = element; }}
+            id="upload-tab-multipart"
+            type="button"
+            onClick={() => setTab('multipart')}
+            role="tab"
+            aria-selected={tab === 'multipart'}
+            aria-controls="upload-panel-multipart"
+            tabIndex={tab === 'multipart' ? 0 : -1}
+            onKeyDown={(event) => handleTabKeyDown(event, 'multipart')}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium rounded-t-lg border-b-2 transition-colors',
+              tab === 'multipart'
+                ? 'border-[var(--ax-amber)] text-[var(--ax-amber)]'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Files className="h-3.5 w-3.5" />
+            Multi-part archive
+          </button>
+          <button
+            ref={(element) => { tabRefs.current.folder = element; }}
+            id="upload-tab-folder"
+            type="button"
             onClick={() => setTab('folder')}
+            role="tab"
+            aria-selected={tab === 'folder'}
+            aria-controls="upload-panel-folder"
+            tabIndex={tab === 'folder' ? 0 : -1}
+            onKeyDown={(event) => handleTabKeyDown(event, 'folder')}
             className={cn(
               'flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium rounded-t-lg border-b-2 transition-colors',
               tab === 'folder'
@@ -146,7 +212,12 @@ export function UploadPage() {
         </div>
 
         {tab === 'folder' ? (
-          <div className="flex-1 overflow-y-auto">
+          <div
+            id="upload-panel-folder"
+            role="tabpanel"
+            aria-labelledby="upload-tab-folder"
+            className="flex-1 overflow-y-auto"
+          >
             <div className="max-w-2xl mx-auto px-7 py-6">
               <div className="space-y-2 mb-6">
                 <h1 className="text-xl font-bold" style={{ color: 'var(--ax-fg)' }}>
@@ -160,8 +231,28 @@ export function UploadPage() {
               <FolderImport />
             </div>
           </div>
+        ) : tab === 'multipart' ? (
+          <div
+            id="upload-panel-multipart"
+            role="tabpanel"
+            aria-labelledby="upload-tab-multipart"
+            className="flex-1 overflow-y-auto ax-scroll"
+          >
+            <MultipartArchiveUpload
+              onSessionCreated={(sessionId) => {
+                setActiveId(sessionId);
+                setTab('queue');
+                toast({ title: 'Archive group added to the review queue' });
+              }}
+            />
+          </div>
         ) : (
-          <div className="flex-1 overflow-hidden flex flex-col">
+          <div
+            id="upload-panel-archive"
+            role="tabpanel"
+            aria-labelledby="upload-tab-archive"
+            className="flex-1 overflow-hidden flex flex-col"
+          >
             {/* Drop zone — compact when sessions exist, full when empty */}
             {sessions.length > 0 ? (
               <DropZone compact onBrowseFolder={() => setTab('folder')} />

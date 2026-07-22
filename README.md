@@ -1,6 +1,6 @@
 # Alexandria
 
-A self-hosted personal library for managing 3D printing model collections. Think of it as Plex for 3D printing files — upload your zip archives, and Alexandria handles processing, thumbnail generation, metadata, organization, and search.
+A self-hosted personal library for managing 3D printing model collections. Think of it as Plex for 3D printing files — upload archives, and Alexandria handles processing, thumbnail generation, metadata, organization, and search.
 
 ![Alexandria preview](docs/preview.png)
 
@@ -9,8 +9,9 @@ A self-hosted personal library for managing 3D printing model collections. Think
 ## Features
 
 **Ingestion and storage**
-- Upload zip archives containing STL files, images, and supporting documents
-- Chunked uploads up to 5 GB with 10 MB chunks and automatic retry
+- Upload `.zip`, `.rar`, `.7z`, `.tar.gz`, and `.tgz` archives containing STL files, images, and supporting documents
+- Combine 2–100 independent archives into one model, or upload every part of one supported split archive (`.z01` … `.zip`, `.zip.001` …, or modern `.partN.rar`)
+- Chunked uploads up to 5 GB per file with 10 MB chunks and automatic retry
 - Async processing pipeline with thumbnail generation (WebP at multiple sizes)
 - Import existing library folders with pattern-based hierarchy parsing (e.g. `{artist}/{year}/{name}`) using hardlink, copy, or move strategies
 
@@ -30,7 +31,7 @@ A self-hosted personal library for managing 3D printing model collections. Think
 - Enforce preview-before-apply with immutable, expiring, single-use proposals applied atomically
 
 **API**
-- REST endpoints with a consistent `{ data, meta, errors }` envelope on every response
+- Typed REST endpoints with a consistent `{ data, meta, errors }` envelope on every response
 - Serves thumbnails and raw model files directly
 
 **Auth**
@@ -204,7 +205,7 @@ AI_ENCRYPTION_KEY=test-only-not-for-production docker compose -f docker/docker-c
 ## Documentation
 
 - `docs/ARCHITECTURE.md` — service boundaries, API design, and decision log
-- `docs/API.md` — full API reference (32 endpoints)
+- `docs/API.md` — full API reference (64 endpoints)
 - `docs/TYPES.md` — canonical type definitions
 - `docs/CONVENTIONS.md` — naming, patterns, and coding standards
 - `docs/PROJECT-BRIEF.md` — project overview and rationale
