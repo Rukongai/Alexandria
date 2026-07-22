@@ -12,7 +12,7 @@ The system follows a monorepo structure with a React frontend, a Fastify backend
 
 ### Core Principles
 
-- **Archive-as-entity**: An uploaded archive (zip, rar, 7z, tar.gz) defines one model. All contents belong to that single entry. No splitting.
+- **Upload-session-as-entity**: A staged upload session defines one model. A standard session contains one archive; an explicitly grouped session may combine several independent archives or all parts of one supported split archive. All extracted contents still belong to one model, and Alexandria never infers multiple models from archive contents.
 - **Structure preservation**: Internal folder hierarchy within archives is first-class data. Relative paths are preserved and navigable.
 - **Managed storage**: After import/upload, Alexandria owns all files in its managed storage root. External file references do not exist at runtime.
 - **Metadata unification**: All model attributes (tags, artist, year, custom fields) are conceptually metadata. Some fields have optimized backing storage for query performance. The API treats them uniformly.
@@ -134,7 +134,7 @@ Routes that apply `requireLibrary` (as of P5):
 - `GET /models`, `GET /models/:id`, `GET /models/:id/files`, `GET /models/:id/status`
 - `GET /collections`, `POST /collections`, `GET /collections/:id`, `GET /collections/:id/models`
 - `GET /metadata/fields/:slug/values`
-- `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/import`
+- `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/upload/multipart/complete`, `POST /models/import`
 - `GET /models/import-sessions`, `POST /models/import-sessions/:id/commit`
 - `GET /search`
 - All `/smart-collections` routes
@@ -190,7 +190,7 @@ Still deferred:
 
 Three entry paths:
 
-- **Staged upload (scan phase):** `handleScan` receives a temp file path, creates an `ImportSession` (via ImportSessionService), and enqueues a scan job on the `import-scan` BullMQ queue. The worker's `processScanJob` extracts the archive, detects metadata heuristically, and updates the session to `ready_for_review`. No model is created at this stage.
+- **Staged upload (scan phase):** `handleScan` receives one archive, creates an `ImportSession` (via ImportSessionService), and enqueues a scan job on the `import-scan` BullMQ queue. `handleMultipartScan` does the same for an explicit archive group, carrying either `combine` (independent complete archives extracted under collision-safe archive-name folders) or `split` (one recognized split ZIP or modern split RAR set, colocated and extracted as a unit) through the scan job. Split sessions use a selection-order-independent logical filename: the classic terminal `.zip`, the numbered set's base `.zip`, or `<base>.rar` derived from RAR part 1. The worker's `processScanJob` extracts the input, detects metadata heuristically, forces multipart `detected.modelCount` to `1`, and updates the session to `ready_for_review`. No model is created at this stage.
 
 - **Staged upload (commit phase):** `handleCommit` validates the session is `ready_for_review`, creates a Model record in `processing` state, transitions the session to `committing`, and enqueues a commit job on the `import-commit` BullMQ queue. The worker's `processCommitJob` copies staged files to managed storage, runs the thumbnail pipeline, and applies any `BatchUploadMetadata` supplied at commit time.
 
@@ -210,7 +210,7 @@ Three entry paths:
 
 **Does not own:** File storage, thumbnail generation, database record persistence.
 
-**Behavior:** Given an archive file (zip, rar, 7z, tar.gz) or directory path, produces a structured manifest describing what was found: files with their relative paths, classified types, sizes, and any metadata extractable from filenames or structure. This manifest is what IngestionService uses to create ModelFile records and route files to storage.
+**Behavior:** Given an archive file (zip, rar, 7z, tar.gz, tgz), an explicit multipart archive group, or a directory path, produces a structured manifest describing what was found: files with their relative paths, classified types, sizes, and any metadata extractable from filenames or structure. In `combine` mode every source must be an independent complete archive with a plain filename. Each archive is extracted beneath a folder derived from that filename, empty or dot-only folder names are rejected, folder collisions are resolved case-insensitively with `-2`, `-3`, and later suffixes, and the resolved folder must remain a strict descendant of the extraction root. In `split` mode the service validates either a contiguous classic `.z01` … `.z99` set plus one terminal `.zip`, a contiguous numbered `.zip.001` … `.zip.999` set, or a modern contiguous `<base>.partN.rar` set starting at part 1. Every set must use one case-insensitive base name; RAR members additionally require a safe base and consistent part-number padding. The service copies normalized member names into a temporary colocation directory, invokes 7-Zip on the ZIP entry member, or invokes the RAR handler on part 1 so the remaining volumes can be resolved beside it, then removes the temporary directory. Before 7-Zip-based extraction it requests technical metadata and rejects absolute, drive-qualified, UNC, or parent-traversal paths plus symbolic links, hard links, and reparse entries. Link detection covers dedicated fields and Unix link modes or reparse markers reported through `Mode` or `Attributes`; extraction-reported paths outside the destination are also rejected. This manifest is what IngestionService uses to create ModelFile records and route files to storage.
 
 Uses the **PatternParser** utility (located in `utils/pattern-parser.ts`) — a pure function that takes a user-defined hierarchy pattern string (e.g., `{Collection}/{metadata.Artist}/{model}`), validates it, and returns a structured representation. Validation rules: pattern must end with `{model}`, segments must be `{Collection}` or `{metadata.<fieldSlug>}`, and `{model}` cannot appear in the middle.
 
@@ -300,11 +300,11 @@ Collections are an organizational structure, not metadata. A model's relationshi
 
 ### UploadService
 
-**Owns:** Chunked upload session management. Tracks in-flight upload sessions in memory, stores individual chunks to a temporary directory, and assembles them into a single file for handoff to IngestionService.
+**Owns:** Chunked upload session management. Tracks in-flight upload sessions in memory, stores individual chunks to a temporary directory, and assembles them into files for handoff to IngestionService. Multipart grouping remains an explicit request-level concern; UploadService does not infer relationships between uploads.
 
 **Does not own:** Ingestion pipeline, storage, database.
 
-**Behavior:** `initUpload` creates a session with a UUID, a temporary chunks directory, and a 2-hour expiry. `receiveChunk` writes each binary chunk to disk by index, enabling per-chunk retry (re-uploading a chunk index overwrites the previous write). `assembleFile` concatenates all chunks in order, verifies the assembled size matches the declared `totalSize`, cleans up the temporary directory, and returns the path for IngestionService to consume. Expired sessions are purged on a 10-minute interval.
+**Behavior:** `initUpload` creates a session with a UUID, a temporary chunks directory, a 2-hour expiry, and an `uploading` lifecycle. Chunk receipt, abort, and completion are serialized by per-session promise locks; multi-session assembly acquires locks in stable upload-ID order. `receiveChunk` streams each request into a bounded pending file. The accepted sizes of all other chunks plus the pending chunk cannot exceed the declared `totalSize`; a successful pending write atomically replaces that chunk index, while a failed retry deletes only the pending file and preserves the prior chunk. `abortUpload` transitions an `uploading` session to `aborted`, removes its temporary directory, and deletes it from memory. Assembly atomically claims a session or complete group as `assembling`; after every size check succeeds it marks and removes them as `consumed`. Any group assembly failure removes assembled temporary files and returns all still-present members to `uploading`, so no partial group is consumed. Expiry cleanup skips active or queued locks and purges unlocked expired sessions on a 10-minute interval. IngestionService removes assembled input files when multipart validation or queueing fails, and the scan worker removes source files after either scan success or failure; failed scans also remove the extraction directory. FileProcessingService always removes the temporary colocation directory used for split ZIP or RAR parts.
 
 ### JobService
 
@@ -421,6 +421,16 @@ Routes unchanged from P0: `/models/:id`, `/collections`, `/collections/:id`, `/u
 
 ---
 
+## Frontend: Upload Page
+
+`UploadPage` exposes three upload methods as tabs: **Archive upload**, **Multi-part archive**, and **Server folder import**. Ordinary multi-select in Archive upload preserves the one-archive/one-session behavior. The Multi-part archive tab is the explicit grouping boundary and creates one review session from 2–100 selected files.
+
+`MultipartArchiveUpload` (`components/upload/multipart-archive-upload.tsx`) requires the user to select one of two modes. **Combine archives** accepts independent complete `.zip`, `.rar`, `.7z`, `.tar.gz`, or `.tgz` archives and preserves each archive under a separate archive-named folder. **Split archive** accepts a complete classic `.z01` … `.zip` set, numbered `.zip.001` … set, or modern `<base>.part1.rar` … `<base>.partN.rar` set. Client validation checks count, non-empty files, the 5 GB per-file limit, filename length, supported extensions, one naming scheme and base name, duplicate part numbers, and contiguous numbering from part 1. Modern RAR sets also require consistent part-number padding. The backend repeats the security- and integrity-relevant validation and derives a stable logical filename from the split set rather than selection order. The review queue always describes the result as one model, matching the forced multipart `modelCount`.
+
+The frontend initializes and uploads each file sequentially through the chunked protocol, reports byte-weighted progress across the group, and completes the group with the ordered upload IDs plus its selected mode. If upload or completion fails, it sends best-effort abort requests for every initialized ID and preserves the original error. A successful completion switches back to Archive upload and selects the single new review session in the queue.
+
+---
+
 ## Frontend: Model Detail Page (P2)
 
 The Model Detail page (`pages/ModelDetailPage.tsx`) was fully redesigned in P2. It fetches both `GET /models/:id` and `GET /models/:id/files` in parallel and composes three top-level regions:
@@ -483,8 +493,11 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | GET | /models/:id/files | File tree | ModelService → PresenterService | No (userId) |
 | POST | /models/upload | Upload archive → scan (returns sessionId) | IngestionService → ImportSessionService → JobService | Yes |
 | POST | /models/upload/init | Initiate chunked upload session | UploadService | No |
+| POST | /models/upload/multipart/init | Initiate one chunked member of a multipart group | UploadService | No |
 | PUT | /models/upload/:uploadId/chunk/:index | Upload a single chunk | UploadService | No |
+| DELETE | /models/upload/:uploadId | Abort and clean up a chunked upload session | UploadService | No |
 | POST | /models/upload/:uploadId/complete | Assemble chunks → scan (returns sessionId) | UploadService → IngestionService → JobService | Yes |
+| POST | /models/upload/multipart/complete | Assemble an explicit archive group → one scan session | UploadService → IngestionService → FileProcessingService → JobService | Yes |
 | POST | /models/import | Folder import (immediate; no staged session) | IngestionService → JobService | Yes |
 | GET | /models/import-sessions | List active staged sessions | ImportSessionService | Yes |
 | GET | /models/import-sessions/:id | Poll a single session | ImportSessionService | No (userId) |
@@ -563,8 +576,8 @@ All smart-collection by-id routes enforce ownership via `requireOwnedSmartCollec
 
 Decisions recorded here are intentional and should not be reversed without explicit discussion and an update to this document.
 
-### D1: Archive-as-atomic-entity
-An archive upload (zip, rar, 7z, tar.gz) creates exactly one Model. No splitting, no multi-model extraction. The archive boundary is the model boundary.
+### D1: Upload session is the atomic model boundary
+A staged upload session creates exactly one Model. Standard archive upload keeps the original one-archive/one-model behavior. An explicitly selected multipart session may contain several independent complete archives (`combine`) or all parts of one supported split ZIP or modern split RAR set (`split`), but it still produces one review session and one Model. Alexandria never auto-splits archive contents into multiple models. Making grouping explicit avoids accidentally merging files merely because a user selected several archives in the ordinary upload picker.
 
 ### D2: Managed storage only
 After import/upload, all files live in Alexandria's managed storage. No runtime references to external file locations. Import strategies (hardlink, copy, move) determine how files enter managed storage, but once imported, StorageService is the sole authority.

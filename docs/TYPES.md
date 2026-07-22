@@ -309,7 +309,7 @@ interface SmartCollectionDetail {
 
 ### ImportSession
 
-A staged archive upload awaiting review and commit. Created by `POST /models/upload` (and the chunked complete endpoint); destroyed by commit or discard. The database schema is in `apps/backend/src/db/schema/import-session.ts` and migration `0008_add_import_sessions.sql`.
+A staged archive upload awaiting review and commit. Created by `POST /models/upload`, the single-file chunked complete endpoint, or multipart complete; destroyed by commit or discard. One session always creates one model, even when its scan input contains several independent archives or one supported split ZIP or modern split RAR set. The database schema is in `apps/backend/src/db/schema/import-session.ts` and migration `0008_add_import_sessions.sql`.
 
 ```typescript
 interface ImportSession {
@@ -544,12 +544,50 @@ type ImportPhase = 'scanning' | 'importing' | 'processing' | 'complete' | 'error
 
 ### Staged Upload Types
 
-These types support the scan → review → commit ingestion workflow introduced in P3. All are defined in `packages/shared/src/types/upload.ts`.
+These types support the scan → review → commit ingestion workflow introduced in P3. Response and domain types are defined in `packages/shared/src/types/upload.ts`; request types are inferred from `packages/shared/src/validation/upload.ts`.
 
 ```typescript
-// API response from POST /models/upload and POST /models/upload/:uploadId/complete
+// POST /models/upload/init
+interface UploadInitRequest {
+  filename: string;             // complete supported archive; 1–512 characters
+  totalSize: number;            // positive integer; maximum 5 GB
+  totalChunks: number;          // positive integer; maximum 1000
+}
+
+// POST /models/upload/multipart/init uses the same numeric limits but also
+// permits split ZIP names in .z01–.z99 and .zip.001–.zip.999 ranges,
+// plus modern <base>.partN.rar member names.
+type MultipartUploadInitRequest = UploadInitRequest;
+
+// POST /models/upload/init and POST /models/upload/multipart/init
+interface UploadInitResponse {
+  uploadId: string;
+  expiresAt: string;            // ISO 8601 timestamp; two hours after init
+}
+
+// PUT /models/upload/:uploadId/chunk/:index
+interface ChunkUploadResponse {
+  received: number;             // bytes written for this chunk
+}
+
+// Shared completion response for either chunked complete endpoint.
+interface UploadCompleteResponse {
+  sessionId: string;
+}
+
+// Staged scan response used by POST /models/upload,
+// POST /models/upload/:uploadId/complete, and POST /models/upload/multipart/complete.
 interface ScanUploadResponse {
   sessionId: string;
+}
+
+// Explicit behavior for a multipart archive group.
+type MultipartArchiveMode = 'combine' | 'split';
+
+// POST /models/upload/multipart/complete
+interface CompleteMultipartUploadRequest {
+  uploadIds: string[];           // 2–100 unique chunked upload session IDs
+  mode: MultipartArchiveMode;    // combine independent complete archives or extract one split set
 }
 
 // A node in the folder-structure preview detected during scan
@@ -562,7 +600,7 @@ interface DetectedFolderNode {
 
 // Heuristic metadata detected from archive contents and filename during the scan phase
 interface DetectedImportMetadata {
-  modelCount: number;           // count of detected sub-models (display only; one model is created on commit)
+  modelCount: number;           // multipart scans force 1; display only; one model is created on commit
   fileCount: number;
   totalSizeBytes: number;
   artist: string | null;        // extracted from folder structure or filename
@@ -605,6 +643,8 @@ interface BatchUploadMetadata {
   options?: UploadOptions;
 }
 ```
+
+In `split` mode, ZIP sets use the classic `.z01` … terminal `.zip` scheme or numbered `.zip.001` … scheme. Modern RAR sets use contiguous `<base>.partN.rar` members starting at part 1, with one case-insensitive safe base name and consistent part-number padding. The service colocates normalized members temporarily, extracts RAR sets from part 1, and derives the stable logical filename `<base>.rar` independently of upload-ID order.
 
 ### Global Search Types
 

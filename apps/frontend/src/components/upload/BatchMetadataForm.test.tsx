@@ -58,6 +58,7 @@ describe('BatchMetadataForm', () => {
     expect(getCollections).toHaveBeenCalledWith({ depth: 1 });
     expect(client.getQueryData(['collections'])).toEqual([collection]);
     expect(client.getQueryData(['collections', { depth: 1 }])).toEqual([collection]);
+    expect(screen.getByRole('button', { name: 'Import one model' })).toBeVisible();
   });
 
   it('resets detected model metadata when the selected session changes', () => {

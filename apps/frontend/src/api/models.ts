@@ -13,6 +13,8 @@ import type {
   BatchUploadMetadata,
   ScanUploadResponse,
   UploadInitResponse,
+  MultipartArchiveMode,
+  CompleteMultipartUploadRequest,
   MergeModelsResponse,
   ExtractArchiveResponse,
 } from '@alexandria/shared';
@@ -123,6 +125,44 @@ export async function deleteModel(id: string): Promise<void> {
 const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_CHUNK_RETRIES = 3;
 
+async function uploadChunks(
+  file: File,
+  uploadId: string,
+  onChunkProgress?: (uploadedBytes: number) => void,
+): Promise<void> {
+  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < MAX_CHUNK_RETRIES; attempt++) {
+      try {
+        await putRaw(
+          `/models/upload/${uploadId}/chunk/${i}`,
+          chunk,
+          (chunkPct) => {
+            const currentChunkBytes = chunk.size * (chunkPct / 100);
+            onChunkProgress?.(start + currentChunkBytes);
+          },
+        );
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (attempt < MAX_CHUNK_RETRIES - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+        }
+      }
+    }
+    if (lastError) throw lastError;
+
+    onChunkProgress?.(end);
+  }
+}
+
 /**
  * Upload an archive file using chunked upload. Creates an import session
  * (status: scanning) instead of immediately creating a model.
@@ -142,36 +182,10 @@ export async function scanUpload(
   const { uploadId } = initResponse.data;
 
   // 2. Upload chunks sequentially with per-chunk retry
-  for (let i = 0; i < totalChunks; i++) {
-    const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, file.size);
-    const chunk = file.slice(start, end);
-
-    let lastError: unknown;
-    for (let attempt = 0; attempt < MAX_CHUNK_RETRIES; attempt++) {
-      try {
-        await putRaw(
-          `/models/upload/${uploadId}/chunk/${i}`,
-          chunk,
-          (chunkPct) => {
-            if (onProgress) {
-              const chunkFraction = chunkPct / 100;
-              const overallPct = Math.round(((i + chunkFraction) / totalChunks) * 95);
-              onProgress(overallPct);
-            }
-          },
-        );
-        lastError = null;
-        break;
-      } catch (err) {
-        lastError = err;
-        if (attempt < MAX_CHUNK_RETRIES - 1) {
-          await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
-        }
-      }
-    }
-    if (lastError) throw lastError;
-  }
+  await uploadChunks(file, uploadId, (uploadedBytes) => {
+    const ratio = file.size > 0 ? uploadedBytes / file.size : 1;
+    onProgress?.(Math.round(ratio * 95));
+  });
 
   onProgress?.(95);
 
@@ -183,6 +197,67 @@ export async function scanUpload(
   onProgress?.(100);
 
   return completeResponse.data;
+}
+
+/**
+ * Upload an explicit archive group and create one staged import session.
+ * Every member uses the chunked protocol, regardless of its individual size.
+ */
+export async function scanMultipartUpload(
+  files: File[],
+  mode: MultipartArchiveMode,
+  onProgress?: (pct: number) => void,
+): Promise<ScanUploadResponse> {
+  if (files.length < 2 || files.length > 100) {
+    throw new Error('Choose between 2 and 100 archive files.');
+  }
+
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  if (totalBytes <= 0) {
+    throw new Error('Archive files cannot be empty.');
+  }
+
+  const uploadIds: string[] = [];
+  let completedBytes = 0;
+  let reportedProgress = 0;
+  onProgress?.(0);
+
+  const reportProgress = (nextProgress: number) => {
+    reportedProgress = Math.max(reportedProgress, nextProgress);
+    onProgress?.(reportedProgress);
+  };
+
+  try {
+    for (const file of files) {
+      const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+      const initResponse = await post<UploadInitResponse>(
+        '/models/upload/multipart/init',
+        { filename: file.name, totalSize: file.size, totalChunks },
+      );
+      const { uploadId } = initResponse.data;
+      uploadIds.push(uploadId);
+
+      await uploadChunks(file, uploadId, (fileUploadedBytes) => {
+        const uploadedBytes = completedBytes + fileUploadedBytes;
+        reportProgress(Math.round((uploadedBytes / totalBytes) * 95));
+      });
+      completedBytes += file.size;
+    }
+
+    reportProgress(95);
+    const completeResponse = await post<ScanUploadResponse>(
+      '/models/upload/multipart/complete',
+      { uploadIds, mode } satisfies CompleteMultipartUploadRequest,
+    );
+    reportProgress(100);
+
+    return completeResponse.data;
+  } catch (error) {
+    await Promise.allSettled(
+      uploadIds.map((uploadId) => del(`/models/upload/${uploadId}`)),
+    );
+    throw error;
+  }
 }
 
 export async function listImportSessions(): Promise<ImportSession[]> {

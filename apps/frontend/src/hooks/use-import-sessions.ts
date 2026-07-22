@@ -1,5 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { BatchUploadMetadata, ImportSession } from '@alexandria/shared';
+import type {
+  BatchUploadMetadata,
+  ImportSession,
+  MultipartArchiveMode,
+} from '@alexandria/shared';
 import {
   listImportSessions,
   getImportSession,
@@ -8,6 +12,7 @@ import {
   extractImportSessionArchive,
   uploadImportSessionFiles,
   scanUpload,
+  scanMultipartUpload,
 } from '../api/models';
 
 const TERMINAL_STATUSES = new Set(['committed', 'error']);
@@ -66,6 +71,28 @@ export function useStartScan() {
     }) => scanUpload(file, onProgress),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['import-sessions'] });
+    },
+  });
+}
+
+/**
+ * Upload an explicit archive group as one import session, then refresh the
+ * review queue before resolving the mutation.
+ */
+export function useStartMultipartScan() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      files,
+      mode,
+      onProgress,
+    }: {
+      files: File[];
+      mode: MultipartArchiveMode;
+      onProgress?: (pct: number) => void;
+    }) => scanMultipartUpload(files, mode, onProgress),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['import-sessions'] });
     },
   });
 }

@@ -90,9 +90,15 @@ export function startIngestionWorker(): void {
   importScanWorker = new Worker(
     jobService.importScanQueueName,
     async (job: Job<ScanJobPayload>) => {
-      const { sessionId, tempFilePath, originalFilename, libraryId } = job.data;
+      const { sessionId, tempFilePath, originalFilename, libraryId, multipart } = job.data;
       logger.info({ jobId: job.id, sessionId }, 'Scan job started');
-      await ingestionService.processScanJob(sessionId, tempFilePath, originalFilename, libraryId);
+      await ingestionService.processScanJob(
+        sessionId,
+        tempFilePath,
+        originalFilename,
+        libraryId,
+        multipart,
+      );
       logger.info({ jobId: job.id, sessionId }, 'Scan job completed');
     },
     {

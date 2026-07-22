@@ -9,6 +9,7 @@ vi.mock('../api/models', async (importOriginal) => {
   return {
     ...actual,
     listImportSessions: vi.fn(),
+    scanMultipartUpload: vi.fn(),
     discardImportSession: vi.fn(),
     uploadImportSessionFiles: vi.fn(),
   };
@@ -21,6 +22,7 @@ vi.mock('../api/collections', () => ({
 import {
   discardImportSession,
   listImportSessions,
+  scanMultipartUpload,
   uploadImportSessionFiles,
 } from '../api/models';
 
@@ -61,6 +63,106 @@ const readySession: ImportSession = {
 describe('UploadPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('opens the dedicated multi-part archive tab without changing ordinary uploads', async () => {
+    vi.mocked(listImportSessions).mockResolvedValue([]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole('tab', { name: 'Archive upload' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: 'Multi-part archive' }));
+
+    expect(screen.getByRole('tab', { name: 'Multi-part archive' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('heading', { name: 'Create one model from several files' })).toBeVisible();
+    expect(screen.getByRole('tab', { name: 'Server folder import' })).toBeVisible();
+  });
+
+  it('supports roving keyboard focus and activation across upload tabs', () => {
+    vi.mocked(listImportSessions).mockResolvedValue([]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+
+    const archiveTab = screen.getByRole('tab', { name: 'Archive upload' });
+    const multipartTab = screen.getByRole('tab', { name: 'Multi-part archive' });
+    const folderTab = screen.getByRole('tab', { name: 'Server folder import' });
+
+    expect(archiveTab).toHaveAttribute('tabindex', '0');
+    expect(multipartTab).toHaveAttribute('tabindex', '-1');
+    archiveTab.focus();
+
+    fireEvent.keyDown(archiveTab, { key: 'ArrowRight' });
+    expect(multipartTab).toHaveFocus();
+    expect(multipartTab).toHaveAttribute('aria-selected', 'true');
+    expect(multipartTab).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(multipartTab, { key: 'End' });
+    expect(folderTab).toHaveFocus();
+    expect(folderTab).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(folderTab, { key: 'ArrowRight' });
+    expect(archiveTab).toHaveFocus();
+    expect(archiveTab).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(archiveTab, { key: 'ArrowLeft' });
+    expect(folderTab).toHaveFocus();
+    expect(folderTab).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(folderTab, { key: 'Home' });
+    expect(archiveTab).toHaveFocus();
+    expect(archiveTab).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('selects the new review session after a successful multipart upload', async () => {
+    const groupedSession: ImportSession = {
+      ...readySession,
+      id: '44444444-4444-4444-8444-444444444444',
+      originalFilename: 'group-first.zip',
+    };
+    vi.mocked(listImportSessions)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([groupedSession]);
+    vi.mocked(scanMultipartUpload).mockResolvedValue({ sessionId: groupedSession.id });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Multi-part archive' }));
+    const files = [
+      new File(['one'], 'one.zip'),
+      new File(['two'], 'two.zip'),
+    ];
+    fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
+      target: { files },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Upload as one model' }));
+
+    await waitFor(() => {
+      expect(scanMultipartUpload).toHaveBeenCalledWith(files, 'combine', expect.any(Function));
+      expect(screen.getByRole('tab', { name: 'Archive upload' }))
+        .toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('upload-review-grid')).toBeVisible();
+      expect(screen.getByText('group-first.zip')).toBeVisible();
+    });
   });
 
   it('deletes a failed upload and removes it from the queue', async () => {

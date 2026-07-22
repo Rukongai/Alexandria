@@ -313,7 +313,7 @@ export function BatchMetadataForm({
         }}
       >
         {commitMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
-        Import {detected.modelCount > 0 ? `${detected.modelCount} models` : 'archive'}
+        Import one model
       </Button>
     </div>
   );
