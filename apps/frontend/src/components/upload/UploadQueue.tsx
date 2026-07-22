@@ -10,6 +10,7 @@ import {
 import type { ImportSession } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
+import { commitPhaseLabel, commitProgressValueText } from './UploadProgress';
 
 interface UploadQueueProps {
   sessions: ImportSession[];
@@ -31,7 +32,7 @@ function StatusIcon({ status }: { status: ImportSession['status'] }) {
         className={cn(base, size)}
         style={{ background: 'var(--ax-danger)', color: 'white' }}
       >
-        <AlertCircle className="w-3 h-3" />
+        <AlertCircle className="w-3 h-3" aria-hidden="true" />
       </span>
     );
   }
@@ -41,7 +42,7 @@ function StatusIcon({ status }: { status: ImportSession['status'] }) {
         className={cn(base, size)}
         style={{ background: 'var(--ax-warning)', color: 'white' }}
       >
-        <Loader2 className="w-3 h-3 animate-spin" />
+        <Loader2 className="w-3 h-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
       </span>
     );
   }
@@ -51,7 +52,7 @@ function StatusIcon({ status }: { status: ImportSession['status'] }) {
         className={cn(base, size)}
         style={{ background: 'var(--ax-teal)', color: 'var(--ax-teal-fg)' }}
       >
-        <Archive className="w-3 h-3" />
+        <Archive className="w-3 h-3" aria-hidden="true" />
       </span>
     );
   }
@@ -61,7 +62,7 @@ function StatusIcon({ status }: { status: ImportSession['status'] }) {
         className={cn(base, size)}
         style={{ background: 'var(--ax-warning)', color: 'white' }}
       >
-        <Loader2 className="w-3 h-3 animate-spin" />
+        <Loader2 className="w-3 h-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
       </span>
     );
   }
@@ -71,7 +72,7 @@ function StatusIcon({ status }: { status: ImportSession['status'] }) {
       className={cn(base, size)}
       style={{ background: 'var(--ax-success)', color: 'white' }}
     >
-      <CheckCircle2 className="w-3 h-3" />
+      <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
     </span>
   );
 }
@@ -80,7 +81,7 @@ function statusLabel(status: ImportSession['status']): string {
   switch (status) {
     case 'scanning': return 'Scanning…';
     case 'ready_for_review': return 'Ready to review';
-    case 'committing': return 'Committing…';
+    case 'committing': return 'Saving to library storage…';
     case 'committed': return 'Committed';
     case 'error': return 'Error';
   }
@@ -141,7 +142,7 @@ export function UploadQueue({
           className="text-[11px] font-semibold uppercase tracking-wider"
           style={{ color: 'var(--ax-rail-fg-muted)', letterSpacing: '0.06em' }}
         >
-          Upload queue
+          Import queue
         </span>
         <span className="ax-mono text-[11px]" style={{ color: 'var(--ax-rail-fg-muted)' }}>
           {sessions.length}
@@ -155,7 +156,7 @@ export function UploadQueue({
             className="text-[12px] text-center py-8"
             style={{ color: 'var(--ax-rail-fg-muted)' }}
           >
-            No uploads yet. Drop an archive to start.
+            No imports yet. Drop an archive to start.
           </p>
         )}
         {sessions.map((session) => {
@@ -189,16 +190,21 @@ export function UploadQueue({
                     >
                       {session.originalFilename}
                     </div>
-                    <div
-                      className="ax-mono text-[11px]"
-                      style={{ color: 'var(--ax-rail-fg-muted)' }}
-                    >
-                      {session.detected
-                        ? `${formatFileSize(session.detected.totalSizeBytes)} · ${session.detected.fileCount} files`
-                        : statusLabel(session.status)}
-                    </div>
+                    {session.status !== 'committing' && (
+                      <div
+                        className="ax-mono text-[11px]"
+                        style={{ color: 'var(--ax-rail-fg-muted)' }}
+                      >
+                        {session.detected
+                          ? `${formatFileSize(session.detected.totalSizeBytes)} · ${session.detected.fileCount} files`
+                          : statusLabel(session.status)}
+                      </div>
+                    )}
                   </div>
                 </div>
+                {session.status === 'committing' && (
+                  <CommitQueueProgress session={session} />
+                )}
                 {session.status === 'error' && session.error && (
                   <div className="text-[10.5px] pl-[34px]" style={{ color: '#fca5a5' }}>
                     {session.error}
@@ -259,6 +265,89 @@ export function UploadQueue({
         <StatCell label="Done" value={String(sessions.filter((s) => s.status === 'committed').length)} />
       </div>
     </aside>
+  );
+}
+
+function CommitQueueProgress({ session }: { session: ImportSession }) {
+  const progress = session.commitProgress;
+
+  if (!progress) {
+    return (
+      <div className="space-y-1 pl-[34px]">
+        <div
+          className="text-[11px]"
+          style={{ color: 'var(--ax-rail-fg-muted)' }}
+          role="status"
+        >
+          Saving to library storage…
+        </div>
+        <div
+          className="h-1.5 overflow-hidden rounded-full"
+          style={{ background: 'var(--ax-rail-hover)' }}
+          role="progressbar"
+          aria-label={`Saving ${session.originalFilename} to library storage`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuetext="Saving to library storage"
+        >
+          <div
+            className="h-full w-1/3 rounded-full animate-[slide_1.5s_ease-in-out_infinite] motion-reduce:animate-none"
+            style={{ background: 'var(--ax-amber)' }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1 pl-[34px]">
+      <div className="flex items-center justify-between gap-2 text-[10.5px]">
+        <span className="truncate" style={{ color: 'var(--ax-rail-fg-muted)' }}>
+          {commitPhaseLabel(progress.phase)}
+        </span>
+        <span
+          className="ax-mono flex-shrink-0 tabular-nums"
+          style={{ color: 'var(--ax-rail-fg-muted)' }}
+        >
+          {progress.percent}%
+        </span>
+      </div>
+      <div
+        className="h-1.5 overflow-hidden rounded-full"
+        style={{ background: 'var(--ax-rail-hover)' }}
+        role="progressbar"
+        aria-label={`Saving ${session.originalFilename} to library storage`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progress.percent}
+        aria-valuetext={commitProgressValueText(progress)}
+      >
+        <div
+          className="h-full rounded-full transition-all duration-500 motion-reduce:transition-none"
+          style={{ width: `${progress.percent}%`, background: 'var(--ax-amber)' }}
+        />
+      </div>
+      <div
+        className="ax-mono flex items-center justify-between gap-2 text-[10px] tabular-nums"
+        style={{ color: 'var(--ax-rail-fg-muted)' }}
+      >
+        <span>
+          {formatFileSize(progress.completedBytes)} / {formatFileSize(progress.totalBytes)}
+        </span>
+        <span>
+          {progress.completedFiles} / {progress.totalFiles} files
+        </span>
+      </div>
+      {progress.currentFilename && (
+        <p
+          className="truncate font-mono text-[10px]"
+          style={{ color: 'var(--ax-rail-fg-muted)' }}
+          title={progress.currentFilename}
+        >
+          {progress.currentFilename}
+        </p>
+      )}
+    </div>
   );
 }
 

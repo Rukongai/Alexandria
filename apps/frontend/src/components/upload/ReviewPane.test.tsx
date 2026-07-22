@@ -9,6 +9,7 @@ vi.mock('../../api/models', async (importOriginal) => {
   return {
     ...actual,
     extractImportSessionArchive: vi.fn(),
+    getModelStatus: vi.fn(),
   };
 });
 
@@ -16,13 +17,14 @@ vi.mock('../../api/collections', () => ({
   getCollections: vi.fn().mockResolvedValue({ data: [], meta: null, errors: null }),
 }));
 
-import { extractImportSessionArchive } from '../../api/models';
+import { extractImportSessionArchive, getModelStatus } from '../../api/models';
 
 const session: ImportSession = {
   id: '11111111-1111-4111-8111-111111111111',
   originalFilename: 'model-pack.zip',
   status: 'ready_for_review',
   modelId: null,
+  commitProgress: null,
   error: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   detected: {
@@ -107,5 +109,49 @@ describe('ReviewPane nested archives', () => {
         'extras/parts.zip',
       );
     });
+  });
+
+  it('shows managed-storage progress while a reviewed import is committing', async () => {
+    vi.mocked(getModelStatus).mockResolvedValue({
+      modelId: '22222222-2222-4222-8222-222222222222',
+      status: 'processing',
+      progress: null,
+      error: null,
+      startedAt: '',
+      completedAt: null,
+    });
+    const committingSession: ImportSession = {
+      ...session,
+      status: 'committing',
+      modelId: '22222222-2222-4222-8222-222222222222',
+      commitProgress: {
+        phase: 'storing_files',
+        percent: 60,
+        completedFiles: 2,
+        totalFiles: 4,
+        completedBytes: 3072,
+        totalBytes: 4096,
+        currentFilename: 'parts/dragon-tail.stl',
+      },
+    };
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={client}>
+        <ReviewPane
+          session={committingSession}
+          onCommitted={() => {}}
+          onDiscard={() => {}}
+          onRetry={() => {}}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole('heading', { name: 'Saving model to library…' })).toBeVisible();
+    const progressbar = await screen.findByRole('progressbar', { name: 'Import progress' });
+    expect(progressbar).toHaveAttribute('aria-valuenow', '60');
+    expect(screen.getByText('parts/dragon-tail.stl')).toBeVisible();
   });
 });

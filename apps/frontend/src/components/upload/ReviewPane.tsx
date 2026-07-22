@@ -148,17 +148,22 @@ export function ReviewPane({
         </div>
         <div className="text-center max-w-sm">
           <h2 className="text-xl font-bold" style={{ color: 'var(--ax-fg)' }}>
-            {session.status === 'committing' ? 'Importing…' : 'Imported!'}
+            {session.status === 'committing'
+              ? 'Saving model to library…'
+              : 'Imported!'}
           </h2>
           <p className="mt-1.5 text-[13px]" style={{ color: 'var(--ax-fg-muted)' }}>
             {session.status === 'committing'
-              ? 'Your archive is being processed. This may take a moment.'
-              : 'Archive committed. Processing the model now.'}
+              ? 'Alexandria is finishing this import on the server.'
+              : 'The model has been saved to your library.'}
           </p>
         </div>
         {modelId && (
           <div className="w-full max-w-sm">
-            <UploadProgress modelId={modelId} />
+            <UploadProgress
+              modelId={modelId}
+              commitProgress={session.commitProgress}
+            />
           </div>
         )}
       </div>

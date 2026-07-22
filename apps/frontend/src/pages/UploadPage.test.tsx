@@ -32,6 +32,7 @@ const failedSession: ImportSession = {
   status: 'error',
   detected: null,
   modelId: null,
+  commitProgress: null,
   error: 'Archive is corrupt',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
@@ -186,7 +187,7 @@ describe('UploadPage', () => {
     await waitFor(() => {
       expect(discardImportSession).toHaveBeenCalledWith(failedSession.id);
       expect(screen.queryByText('failed-upload.zip')).toBeNull();
-      expect(screen.getByText('No uploads yet. Drop an archive to start.')).toBeTruthy();
+      expect(screen.getByText('No imports yet. Drop an archive to start.')).toBeTruthy();
     });
   });
 
