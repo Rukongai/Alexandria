@@ -227,6 +227,44 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // GET /import-sessions/:id/preview/* — serve an image from a staged upload.
+  app.get(
+    '/import-sessions/:id/preview/*',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const paramsResult = importSessionIdParamsSchema.safeParse(request.params);
+      if (!paramsResult.success) {
+        throw validationError(paramsResult.error.issues[0]?.message ?? 'Validation failed');
+      }
+
+      const relativePath = (request.params as Record<string, string>)['*'];
+      if (!relativePath) {
+        throw notFound('Preview path is required');
+      }
+
+      const session = await importSessionService.getOwnedRow(paramsResult.data.id, request.user!.id);
+      const manifest = session.manifest as import('../services/file-processing.service.js').FileManifest | null;
+      const imageEntry = manifest?.entries.find(
+        (entry) => entry.fileType === 'image' && entry.relativePath === relativePath,
+      );
+
+      if (!session.stagingPath || !imageEntry) {
+        throw notFound(`Preview image not found: ${relativePath}`);
+      }
+
+      const root = path.resolve(session.stagingPath);
+      const filePath = path.resolve(root, imageEntry.relativePath);
+      if (!filePath.startsWith(root + path.sep) && filePath !== root) {
+        throw notFound(`Preview image not found: ${relativePath}`);
+      }
+
+      return reply
+        .header('Content-Type', imageEntry.mimeType)
+        .header('Cache-Control', 'private, no-store')
+        .send(fs.createReadStream(filePath));
+    },
+  );
+
   // GET /import-sessions/:id — poll a single session (status + detected metadata)
   app.get(
     '/import-sessions/:id',

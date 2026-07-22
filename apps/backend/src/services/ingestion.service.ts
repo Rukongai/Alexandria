@@ -169,11 +169,13 @@ export class IngestionService {
       await collectionService.requireOwnedCollection(batchMetadata.collectionId, userId, libraryId);
     }
 
-    const name = stripArchiveExtension(session.originalFilename);
+    const reviewedName = batchMetadata?.modelName?.trim();
+    const name = reviewedName || stripArchiveExtension(session.originalFilename);
     const slug = generateSlug(name);
     const { id: modelId } = await modelService.createModel({
       name,
       slug,
+      description: batchMetadata?.description ?? null,
       userId,
       libraryId,
       sourceType: 'archive_upload',
@@ -415,6 +417,14 @@ export class IngestionService {
       artist,
       tagsGuessed,
       folderStructure,
+      previewImages: entries
+        .filter((entry) => entry.fileType === 'image')
+        .map((entry) => ({
+          filename: entry.filename,
+          relativePath: entry.relativePath,
+          mimeType: entry.mimeType,
+          sizeBytes: entry.sizeBytes,
+        })),
     };
   }
 

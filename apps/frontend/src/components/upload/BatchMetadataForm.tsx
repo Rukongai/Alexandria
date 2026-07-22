@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, X, FolderOpen, User, Tag } from 'lucide-react';
 import type { DetectedImportMetadata, BatchUploadMetadata } from '@alexandria/shared';
@@ -8,14 +8,18 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Checkbox } from '../ui/checkbox';
+import { Textarea } from '../ui/textarea';
 
 interface BatchMetadataFormProps {
   sessionId: string;
+  originalFilename: string;
   detected: DetectedImportMetadata;
   onCommitted: (modelId: string) => void;
 }
 
 interface FormState {
+  modelName: string;
+  description: string;
   collectionId: string;
   newCollectionName: string;
   artist: string;
@@ -27,8 +31,14 @@ interface FormState {
   skipDuplicatesByHash: boolean;
 }
 
-export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMetadataFormProps) {
-  const [form, setForm] = useState<FormState>({
+function archiveName(filename: string): string {
+  return filename.replace(/\.(tar\.gz|zip|rar|7z)$/i, '').trim() || filename;
+}
+
+function createInitialForm(detected: DetectedImportMetadata, originalFilename: string): FormState {
+  return {
+    modelName: archiveName(originalFilename),
+    description: '',
     collectionId: '',
     newCollectionName: '',
     artist: detected.artist ?? '',
@@ -38,7 +48,20 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
     autoThumbnails: true,
     markNsfw: false,
     skipDuplicatesByHash: true,
-  });
+  };
+}
+
+export function BatchMetadataForm({
+  sessionId,
+  originalFilename,
+  detected,
+  onCommitted,
+}: BatchMetadataFormProps) {
+  const [form, setForm] = useState<FormState>(() => createInitialForm(detected, originalFilename));
+
+  useEffect(() => {
+    setForm(createInitialForm(detected, originalFilename));
+  }, [sessionId]);
 
   const { data: collections } = useQuery({
     queryKey: ['collections', { depth: 1 }],
@@ -66,7 +89,11 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
     // collectionId and newCollectionName are mutually exclusive: if an existing
     // collection is selected, don't also send newCollectionName.
     const hasExistingCollection = !!form.collectionId && form.collectionId !== '__new__';
+    const modelName = form.modelName.trim();
+    const description = form.description.trim();
     const batchMetadata: BatchUploadMetadata = {
+      modelName,
+      description: description || null,
       ...(hasExistingCollection ? { collectionId: form.collectionId } : {}),
       ...(!hasExistingCollection && form.newCollectionName.trim()
         ? { newCollectionName: form.newCollectionName.trim() }
@@ -92,6 +119,26 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Model details */}
+      <FormSection label="Model details">
+        <div className="flex flex-col gap-2">
+          <Input
+            value={form.modelName}
+            onChange={(e) => setForm((f) => ({ ...f, modelName: e.target.value }))}
+            placeholder="Model name"
+            maxLength={255}
+            className="text-[13px]"
+          />
+          <Textarea
+            value={form.description}
+            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+            placeholder="Description (optional)"
+            maxLength={2000}
+            className="min-h-[88px] text-[13px]"
+          />
+        </div>
+      </FormSection>
+
       {/* Destination collection */}
       <FormSection label="Destination collection">
         <select
@@ -154,6 +201,7 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
             value={form.artist}
             onChange={(e) => setForm((f) => ({ ...f, artist: e.target.value }))}
             placeholder="Artist name (optional)"
+            maxLength={255}
             className="text-[13px]"
           />
         </div>
@@ -256,7 +304,7 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
 
       <Button
         onClick={handleSubmit}
-        disabled={commitMutation.isPending}
+        disabled={commitMutation.isPending || form.modelName.trim().length === 0}
         className="w-full font-semibold"
         style={{
           background: 'var(--ax-amber)',

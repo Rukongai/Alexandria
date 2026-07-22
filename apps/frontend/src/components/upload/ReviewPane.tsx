@@ -1,5 +1,14 @@
-import { Loader2, AlertCircle, Folder, FileCode2, File, Package } from 'lucide-react';
-import type { ImportSession, DetectedFolderNode } from '@alexandria/shared';
+import { useState } from 'react';
+import {
+  Loader2,
+  AlertCircle,
+  Folder,
+  FileCode2,
+  File,
+  Package,
+  Image as ImageIcon,
+} from 'lucide-react';
+import type { ImportSession, DetectedFolderNode, DetectedPreviewImage } from '@alexandria/shared';
 import { BatchMetadataForm } from './BatchMetadataForm';
 import { UploadProgress } from './UploadProgress';
 import { Button } from '../ui/button';
@@ -170,14 +179,109 @@ export function ReviewPane({
             <FolderTree nodes={detected.folderStructure} depth={0} maxDepth={4} />
           )}
         </div>
+
+        {(detected.previewImages?.length ?? 0) > 0 && (
+          <UploadImagePreviews
+            key={session.id}
+            sessionId={session.id}
+            images={detected.previewImages ?? []}
+          />
+        )}
       </div>
 
       {/* Right: batch metadata form */}
       <BatchMetadataForm
         sessionId={session.id}
+        originalFilename={session.originalFilename}
         detected={detected}
         onCommitted={onCommitted}
       />
+    </div>
+  );
+}
+
+function previewImageUrl(sessionId: string, relativePath: string): string {
+  return `/api/models/import-sessions/${sessionId}/preview/${relativePath
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')}`;
+}
+
+function UploadImagePreviews({
+  sessionId,
+  images,
+}: {
+  sessionId: string;
+  images: DetectedPreviewImage[];
+}) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const selected = images[Math.min(selectedIndex, images.length - 1)];
+
+  if (!selected) return null;
+
+  return (
+    <div className="mt-5">
+      <div className="flex items-center justify-between mb-2.5">
+        <h3 className="text-[13px] font-semibold" style={{ color: 'var(--ax-fg)' }}>
+          Image previews
+        </h3>
+        <span className="ax-mono text-[12px]" style={{ color: 'var(--ax-fg-muted)' }}>
+          {images.length} image{images.length !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      <div
+        className="overflow-hidden rounded-xl"
+        style={{
+          background: 'var(--ax-bg-elev)',
+          border: '1px solid var(--ax-border)',
+        }}
+      >
+        <div className="relative aspect-[16/9] bg-black/5">
+          <img
+            src={previewImageUrl(sessionId, selected.relativePath)}
+            alt={selected.filename}
+            className="h-full w-full object-contain"
+          />
+          <div
+            className="absolute bottom-0 left-0 right-0 flex items-center gap-2 px-3 py-2 text-[12px]"
+            style={{
+              background: 'color-mix(in srgb, var(--ax-bg-elev) 88%, transparent)',
+              color: 'var(--ax-fg)',
+            }}
+          >
+            <ImageIcon className="h-3.5 w-3.5 flex-shrink-0" />
+            <span className="truncate">{selected.relativePath}</span>
+          </div>
+        </div>
+
+        {images.length > 1 && (
+          <div className="flex gap-2 overflow-x-auto ax-scroll p-2">
+            {images.map((image, index) => (
+              <button
+                key={image.relativePath}
+                type="button"
+                onClick={() => setSelectedIndex(index)}
+                aria-label={`Preview ${image.filename}`}
+                aria-pressed={index === selectedIndex}
+                className="h-14 w-20 flex-shrink-0 overflow-hidden rounded-md"
+                style={{
+                  border: index === selectedIndex
+                    ? '2px solid var(--ax-amber)'
+                    : '1px solid var(--ax-border)',
+                  background: 'var(--ax-bg)',
+                }}
+              >
+                <img
+                  src={previewImageUrl(sessionId, image.relativePath)}
+                  alt=""
+                  className="h-full w-full object-cover"
+                />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

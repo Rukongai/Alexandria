@@ -27,6 +27,7 @@ import { storageService } from './storage.service.js';
 export interface CreateModelData {
   name: string;
   slug: string;
+  description?: string | null;
   userId: string;
   // Library scope. Optional at the call site — defaults to the owner's default
   // library — but the DB column is NOT NULL (resolved before insert).
@@ -145,6 +146,7 @@ export class ModelService {
       .values({
         name: data.name,
         slug: data.slug,
+        description: data.description ?? null,
         userId: data.userId,
         libraryId,
         sourceType: data.sourceType,

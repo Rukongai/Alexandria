@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { CollectionDetail } from '@alexandria/shared';
+import type { CollectionDetail, DetectedImportMetadata } from '@alexandria/shared';
 import { BatchMetadataForm } from './BatchMetadataForm';
 
 vi.mock('../../api/collections', () => ({
@@ -38,6 +38,7 @@ describe('BatchMetadataForm', () => {
       <QueryClientProvider client={client}>
         <BatchMetadataForm
           sessionId="session-1"
+          originalFilename="starter.zip"
           detected={{
             modelCount: 1,
             fileCount: 1,
@@ -57,5 +58,61 @@ describe('BatchMetadataForm', () => {
     expect(getCollections).toHaveBeenCalledWith({ depth: 1 });
     expect(client.getQueryData(['collections'])).toEqual([collection]);
     expect(client.getQueryData(['collections', { depth: 1 }])).toEqual([collection]);
+  });
+
+  it('resets detected model metadata when the selected session changes', () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    vi.mocked(getCollections).mockResolvedValue({
+      data: [],
+      meta: null,
+      errors: null,
+    });
+
+    const firstDetected: DetectedImportMetadata = {
+      modelCount: 1,
+      fileCount: 1,
+      totalSizeBytes: 100,
+      artist: 'First Artist',
+      tagsGuessed: ['dragon'],
+      folderStructure: [],
+    };
+    const secondDetected: DetectedImportMetadata = {
+      modelCount: 1,
+      fileCount: 1,
+      totalSizeBytes: 100,
+      artist: 'Second Artist',
+      tagsGuessed: ['terrain'],
+      folderStructure: [],
+    };
+
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="first-model.zip"
+          detected={firstDetected}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('First Artist');
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('first-model');
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-2"
+          originalFilename="second-model.zip"
+          detected={secondDetected}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('Second Artist');
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('second-model');
   });
 });

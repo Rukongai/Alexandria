@@ -58,6 +58,16 @@ export interface DetectedFolderNode {
 }
 
 /**
+ * Image file found during staged import scan and available for preview.
+ */
+export interface DetectedPreviewImage {
+  filename: string;
+  relativePath: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+/**
  * Best-effort metadata detected during the scan phase. All fields are
  * heuristic and fully editable by the user before commit.
  */
@@ -69,6 +79,7 @@ export interface DetectedImportMetadata {
   artist: string | null;
   tagsGuessed: string[];
   folderStructure: DetectedFolderNode[];
+  previewImages?: DetectedPreviewImage[];
 }
 
 /**
@@ -106,6 +117,10 @@ export interface UploadOptions {
  * Batch metadata applied to the committed model.
  */
 export interface BatchUploadMetadata {
+  /** Override the created model's display name. Defaults to the archive filename. */
+  modelName?: string;
+  /** Optional model description. */
+  description?: string | null;
   /** Assign to an existing collection. */
   collectionId?: string;
   /** Or create-and-assign a new collection by name. */

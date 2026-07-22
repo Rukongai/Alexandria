@@ -34,6 +34,8 @@ export const uploadOptionsSchema = z.object({
 });
 
 export const batchUploadMetadataSchema = z.object({
+  modelName: z.string().min(1).max(255).optional(),
+  description: z.string().max(2000).nullable().optional(),
   collectionId: z.string().uuid().optional(),
   newCollectionName: z.string().min(1).max(255).optional(),
   artist: z.string().max(255).optional(),

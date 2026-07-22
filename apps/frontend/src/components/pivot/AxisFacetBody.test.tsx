@@ -246,6 +246,7 @@ describe('AxisFacetBody — collections axis', () => {
     const { rerender } = render(
       <BatchMetadataForm
         sessionId="session-1"
+        originalFilename="model.zip"
         detected={{
           modelCount: 1,
           fileCount: 1,
@@ -265,6 +266,7 @@ describe('AxisFacetBody — collections axis', () => {
       <>
         <BatchMetadataForm
           sessionId="session-1"
+          originalFilename="model.zip"
           detected={{
             modelCount: 1,
             fileCount: 1,
