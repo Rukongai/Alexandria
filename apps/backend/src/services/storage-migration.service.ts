@@ -72,13 +72,7 @@ async function listFiles(
   const files: Array<{ absolutePath: string; key: string }> = [];
 
   async function walk(directory: string): Promise<void> {
-    let entries;
-    try {
-      entries = await fsPromises.readdir(directory, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && directory === root) return;
-      throw error;
-    }
+    const entries = await fsPromises.readdir(directory, { withFileTypes: true });
 
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {

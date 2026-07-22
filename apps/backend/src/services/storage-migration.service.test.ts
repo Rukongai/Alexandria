@@ -59,6 +59,17 @@ describe('migrateLocalStorage', () => {
       Buffer.from('new-value'),
     );
   });
+
+  it('fails when the configured local source directory does not exist', async () => {
+    const target = await createLocalStorage();
+    const missingSource = new LocalStorageService(
+      path.join(os.tmpdir(), `alexandria-missing-storage-${Date.now()}`),
+    );
+
+    await expect(migrateLocalStorage(missingSource, target)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
 });
 
 async function createLocalStorage(): Promise<LocalStorageService> {
