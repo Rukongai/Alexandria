@@ -25,6 +25,9 @@ import type { IStorageService } from './storage.service.js';
 
 const logger = createLogger('FileProcessingService');
 
+const STORAGE_PROGRESS_MIN_BYTES = 1024 * 1024;
+const STORAGE_PROGRESS_MAX_INTERVAL_MS = 250;
+
 export interface FileManifestEntry {
   filename: string;
   relativePath: string;
@@ -706,19 +709,12 @@ export class FileProcessingService {
     onProgress?: (progress: ManifestStorageProgress) => void | Promise<void>,
   ): Promise<void> {
     let completedBytes = 0;
-    let progressReports = Promise.resolve();
-
-    const report = (progress: ManifestStorageProgress): void => {
-      if (!onProgress) return;
-      progressReports = progressReports
-        .then(() => onProgress(progress))
-        .catch((error) => {
-          logger.warn(
-            { modelId, error: String(error) },
-            'Failed to report managed-storage progress',
-          );
-        });
-    };
+    const progressReporter = createCoalescedProgressReporter(onProgress, (error) => {
+      logger.warn(
+        { modelId, error: String(error) },
+        'Failed to report managed-storage progress',
+      );
+    });
 
     for (let index = 0; index < manifest.entries.length; index++) {
       const entry = manifest.entries[index];
@@ -726,8 +722,10 @@ export class FileProcessingService {
       const sourcePath = path.join(extractDir, entry.relativePath);
       const readStream = fs.createReadStream(sourcePath);
       let currentFileBytes = 0;
+      let lastReportedFileBytes = 0;
+      let lastReportedAt = Date.now();
 
-      report({
+      await progressReporter.flush({
         completedFiles: index,
         totalFiles: manifest.entries.length,
         completedBytes,
@@ -742,7 +740,17 @@ export class FileProcessingService {
         );
         if (boundedBytes <= currentFileBytes) return;
         currentFileBytes = boundedBytes;
-        report({
+
+        const now = Date.now();
+        const shouldReport =
+          boundedBytes === entry.sizeBytes ||
+          boundedBytes - lastReportedFileBytes >= STORAGE_PROGRESS_MIN_BYTES ||
+          now - lastReportedAt >= STORAGE_PROGRESS_MAX_INTERVAL_MS;
+        if (!shouldReport) return;
+
+        lastReportedFileBytes = boundedBytes;
+        lastReportedAt = now;
+        progressReporter.enqueue({
           completedFiles: index,
           totalFiles: manifest.entries.length,
           completedBytes: completedBytes + currentFileBytes,
@@ -752,14 +760,13 @@ export class FileProcessingService {
       });
 
       completedBytes += entry.sizeBytes;
-      report({
+      await progressReporter.flush({
         completedFiles: index + 1,
         totalFiles: manifest.entries.length,
         completedBytes,
         totalBytes: manifest.totalSizeBytes,
         currentFilename: entry.filename,
       });
-      await progressReports;
     }
   }
 
@@ -800,6 +807,54 @@ export class FileProcessingService {
 
     return entries;
   }
+}
+
+function createCoalescedProgressReporter(
+  onProgress: ((progress: ManifestStorageProgress) => void | Promise<void>) | undefined,
+  onError: (error: unknown) => void,
+): {
+  enqueue(progress: ManifestStorageProgress): void;
+  flush(progress: ManifestStorageProgress): Promise<void>;
+} {
+  let pending: ManifestStorageProgress | null = null;
+  let drainPromise: Promise<void> | null = null;
+
+  const startDrain = (): void => {
+    if (!onProgress || drainPromise) return;
+
+    drainPromise = (async () => {
+      try {
+        while (pending) {
+          const progress = pending;
+          pending = null;
+          try {
+            await onProgress(progress);
+          } catch (error) {
+            onError(error);
+          }
+        }
+      } finally {
+        drainPromise = null;
+        if (pending) startDrain();
+      }
+    })();
+  };
+
+  const enqueue = (progress: ManifestStorageProgress): void => {
+    if (!onProgress) return;
+    pending = progress;
+    startDrain();
+  };
+
+  return {
+    enqueue,
+    async flush(progress: ManifestStorageProgress): Promise<void> {
+      enqueue(progress);
+      while (drainPromise) {
+        await drainPromise;
+      }
+    },
+  };
 }
 
 export const fileProcessingService = new FileProcessingService();
