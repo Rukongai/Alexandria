@@ -6,17 +6,20 @@ import type {
   FileType,
   UpdateModelRequest,
   MergeModelsResponse,
+  UpdateModelFileRequest,
+  UpdateModelFolderRequest,
 } from '@alexandria/shared';
 import { db } from '../db/index.js';
 import {
   models,
   modelFiles,
+  modelFolders,
   thumbnails,
   collectionModels,
   modelMetadata,
   modelTags,
 } from '../db/schema/index.js';
-import { notFound, validationError } from '../utils/errors.js';
+import { conflict, notFound, validationError } from '../utils/errors.js';
 import type { Model } from '../db/schema/model.js';
 import { libraryService } from './library.service.js';
 import { storageService } from './storage.service.js';
@@ -58,6 +61,58 @@ export interface UpdateModelStatusData {
 }
 
 export class ModelService {
+  private normalizeFolderPath(input: string, field = 'path', allowRoot = false): string {
+    const raw = input.replace(/\\/g, '/').trim().replace(/^\/+|\/+$/g, '');
+    if (!raw) {
+      if (allowRoot) return '';
+      throw validationError('Folder path is required', field);
+    }
+
+    return this.normalizePathSegments(raw.split('/'), field);
+  }
+
+  private normalizeFileName(input: string, field = 'filename'): string {
+    const name = input.trim();
+    if (!name) {
+      throw validationError('Name is required', field);
+    }
+    if (name.includes('/') || name.includes('\\')) {
+      throw validationError('Name cannot contain path separators', field);
+    }
+    return this.normalizePathSegments([name], field);
+  }
+
+  private normalizePathSegments(segments: string[], field: string): string {
+    const normalized = segments.map((segment) => segment.trim());
+    if (normalized.some((segment) => !segment || segment === '.' || segment === '..')) {
+      throw validationError('Path cannot contain empty, . or .. segments', field);
+    }
+    if (normalized.some((segment) => /[\0-\x1f]/.test(segment))) {
+      throw validationError('Path contains unsupported control characters', field);
+    }
+    if (normalized.some((segment) => segment.length > 255)) {
+      throw validationError('Path segments must be 255 characters or fewer', field);
+    }
+    const joined = normalized.join('/');
+    if (joined.length > 1000) {
+      throw validationError('Path must be 1000 characters or fewer', field);
+    }
+    return joined;
+  }
+
+  private joinRelativePath(parentPath: string, name: string): string {
+    return parentPath ? `${parentPath}/${name}` : name;
+  }
+
+  private parentPath(relativePath: string): string {
+    const dir = path.posix.dirname(relativePath);
+    return dir === '.' ? '' : dir;
+  }
+
+  private descendantFilter(column: unknown, folderPath: string) {
+    return sql`${column} = ${folderPath} or ${column} like ${`${folderPath}/%`}`;
+  }
+
   private uniqueRelativePath(requestedPath: string, usedPaths: Set<string>): string {
     const normalized = requestedPath.replace(/\\/g, '/');
     if (!usedPaths.has(normalized)) {
@@ -286,6 +341,355 @@ export class ModelService {
       .from(modelFiles)
       .where(eq(modelFiles.modelId, modelId))
       .orderBy(asc(modelFiles.relativePath));
+  }
+
+  async getModelFolders(modelId: string): Promise<Array<typeof modelFolders.$inferSelect>> {
+    return db
+      .select()
+      .from(modelFolders)
+      .where(eq(modelFolders.modelId, modelId))
+      .orderBy(asc(modelFolders.path));
+  }
+
+  private async ensureFolderAncestors(modelId: string, folderPath: string): Promise<void> {
+    if (!folderPath) return;
+    const paths = folderPath
+      .split('/')
+      .map((_, index, segments) => segments.slice(0, index + 1).join('/'));
+
+    const fileConflicts = await db
+      .select({ id: modelFiles.id })
+      .from(modelFiles)
+      .where(and(eq(modelFiles.modelId, modelId), inArray(modelFiles.relativePath, paths)));
+    if (fileConflicts.length > 0) {
+      throw conflict('A file already exists at that folder path');
+    }
+
+    await db.insert(modelFolders)
+      .values(paths.map((pathValue) => ({ modelId, path: pathValue })))
+      .onConflictDoNothing();
+  }
+
+  private async assertFileDestinationAvailable(
+    modelId: string,
+    relativePath: string,
+    currentFileId: string,
+  ): Promise<void> {
+    const [fileConflict] = await db
+      .select({ id: modelFiles.id })
+      .from(modelFiles)
+      .where(and(eq(modelFiles.modelId, modelId), eq(modelFiles.relativePath, relativePath)))
+      .limit(1);
+    if (fileConflict && fileConflict.id !== currentFileId) {
+      throw conflict('A file already exists at that path');
+    }
+
+    const [folderConflict] = await db
+      .select({ id: modelFolders.id })
+      .from(modelFolders)
+      .where(and(eq(modelFolders.modelId, modelId), eq(modelFolders.path, relativePath)))
+      .limit(1);
+    if (folderConflict) {
+      throw conflict('A folder already exists at that path');
+    }
+  }
+
+  private async assertFolderDestinationAvailable(
+    modelId: string,
+    currentPath: string,
+    nextPath: string,
+  ): Promise<void> {
+    const [fileAtFolderPath] = await db
+      .select({ id: modelFiles.id })
+      .from(modelFiles)
+      .where(and(eq(modelFiles.modelId, modelId), eq(modelFiles.relativePath, nextPath)))
+      .limit(1);
+    if (fileAtFolderPath) {
+      throw conflict('A file already exists at that folder path');
+    }
+
+    const [folderAtPath] = await db
+      .select({ id: modelFolders.id, path: modelFolders.path })
+      .from(modelFolders)
+      .where(and(eq(modelFolders.modelId, modelId), eq(modelFolders.path, nextPath)))
+      .limit(1);
+    if (folderAtPath && folderAtPath.path !== currentPath) {
+      throw conflict('A folder already exists at that path');
+    }
+    if (!folderAtPath && await this.folderHasFiles(modelId, nextPath)) {
+      throw conflict('A folder already exists at that path');
+    }
+
+    const [sourceFiles, sourceFolders] = await Promise.all([
+      db
+        .select({ id: modelFiles.id, relativePath: modelFiles.relativePath })
+        .from(modelFiles)
+        .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${currentPath}/%`}`)),
+      db
+        .select({ id: modelFolders.id, path: modelFolders.path })
+        .from(modelFolders)
+        .where(and(eq(modelFolders.modelId, modelId), this.descendantFilter(modelFolders.path, currentPath))),
+    ]);
+
+    const sourceFileIds = new Set(sourceFiles.map((file) => file.id));
+    const sourceFolderIds = new Set(sourceFolders.map((folder) => folder.id));
+    const destinationFilePaths = sourceFiles.map(
+      (file) => `${nextPath}${file.relativePath.slice(currentPath.length)}`,
+    );
+    const destinationFolderPaths = sourceFolders.map(
+      (folder) => `${nextPath}${folder.path.slice(currentPath.length)}`,
+    );
+
+    if (destinationFilePaths.length > 0) {
+      const conflicts = await db
+        .select({ id: modelFiles.id })
+        .from(modelFiles)
+        .where(and(eq(modelFiles.modelId, modelId), inArray(modelFiles.relativePath, destinationFilePaths)));
+      if (conflicts.some((row) => !sourceFileIds.has(row.id))) {
+        throw conflict('A file already exists in the destination folder');
+      }
+    }
+
+    if (destinationFolderPaths.length > 0) {
+      const conflicts = await db
+        .select({ id: modelFolders.id })
+        .from(modelFolders)
+        .where(and(eq(modelFolders.modelId, modelId), inArray(modelFolders.path, destinationFolderPaths)));
+      if (conflicts.some((row) => !sourceFolderIds.has(row.id))) {
+        throw conflict('A folder already exists in the destination folder');
+      }
+    }
+  }
+
+  async createModelFolder(modelId: string, requestedPath: string): Promise<void> {
+    const folderPath = this.normalizeFolderPath(requestedPath);
+    const foldersToCreate = folderPath
+      .split('/')
+      .map((_, index, segments) => segments.slice(0, index + 1).join('/'));
+
+    const fileConflicts = await db
+      .select({ relativePath: modelFiles.relativePath })
+      .from(modelFiles)
+      .where(
+        and(
+          eq(modelFiles.modelId, modelId),
+          inArray(modelFiles.relativePath, foldersToCreate),
+        ),
+      );
+    if (fileConflicts.length > 0) {
+      throw conflict('A file already exists at that folder path');
+    }
+
+    const [existing] = await db
+      .select({ id: modelFolders.id })
+      .from(modelFolders)
+      .where(and(eq(modelFolders.modelId, modelId), eq(modelFolders.path, folderPath)))
+      .limit(1);
+    if (existing || await this.folderHasFiles(modelId, folderPath)) {
+      throw conflict('Folder already exists');
+    }
+
+    await db.insert(modelFolders)
+      .values(foldersToCreate.map((pathValue) => ({ modelId, path: pathValue })))
+      .onConflictDoNothing();
+
+    await db
+      .update(models)
+      .set({ updatedAt: new Date() })
+      .where(eq(models.id, modelId));
+  }
+
+  async updateModelFileLocation(
+    modelId: string,
+    fileId: string,
+    data: UpdateModelFileRequest,
+  ): Promise<void> {
+    const [file] = await db
+      .select()
+      .from(modelFiles)
+      .where(and(eq(modelFiles.modelId, modelId), eq(modelFiles.id, fileId)))
+      .limit(1);
+    if (!file) {
+      throw notFound(`File not found: ${fileId}`);
+    }
+
+    const filename = data.filename !== undefined
+      ? this.normalizeFileName(data.filename)
+      : file.filename;
+    const parentPath = data.parentPath !== undefined
+      ? this.normalizeFolderPath(data.parentPath, 'parentPath', true)
+      : this.parentPath(file.relativePath);
+    const relativePath = this.joinRelativePath(parentPath, filename);
+    const storagePath = `models/${modelId}/${relativePath}`;
+
+    if (relativePath === file.relativePath && filename === file.filename) {
+      return;
+    }
+
+    await this.assertFileDestinationAvailable(modelId, relativePath, fileId);
+    if (parentPath) {
+      await this.ensureFolderAncestors(modelId, parentPath);
+    }
+
+    await storageService.store(storagePath, storageService.retrieveStream(file.storagePath));
+    try {
+      await db
+        .update(modelFiles)
+        .set({ filename, relativePath, storagePath })
+        .where(eq(modelFiles.id, file.id));
+      await db
+        .update(models)
+        .set({ updatedAt: new Date() })
+        .where(eq(models.id, modelId));
+    } catch (err) {
+      await storageService.delete(storagePath).catch(() => {});
+      throw err;
+    }
+
+    await storageService.delete(file.storagePath).catch(() => {});
+  }
+
+  async updateModelFolderLocation(
+    modelId: string,
+    data: UpdateModelFolderRequest,
+  ): Promise<void> {
+    const currentPath = this.normalizeFolderPath(data.path);
+    const [folder] = await db
+      .select()
+      .from(modelFolders)
+      .where(and(eq(modelFolders.modelId, modelId), eq(modelFolders.path, currentPath)))
+      .limit(1);
+    if (!folder && !(await this.folderHasFiles(modelId, currentPath))) {
+      throw notFound(`Folder not found: ${currentPath}`);
+    }
+
+    const name = data.name !== undefined
+      ? this.normalizeFileName(data.name, 'name')
+      : path.posix.basename(currentPath);
+    const parentPath = data.parentPath !== undefined
+      ? this.normalizeFolderPath(data.parentPath, 'parentPath', true)
+      : this.parentPath(currentPath);
+    const nextPath = this.joinRelativePath(parentPath, name);
+
+    if (nextPath === currentPath) {
+      return;
+    }
+    if (nextPath.startsWith(`${currentPath}/`)) {
+      throw validationError('Cannot move a folder inside itself', 'parentPath');
+    }
+
+    await this.assertFolderDestinationAvailable(modelId, currentPath, nextPath);
+    if (parentPath) {
+      await this.ensureFolderAncestors(modelId, parentPath);
+    }
+
+    const [filesInFolder, foldersInFolder] = await Promise.all([
+      db
+        .select()
+        .from(modelFiles)
+        .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${currentPath}/%`}`))
+        .orderBy(asc(modelFiles.relativePath)),
+      db
+        .select()
+        .from(modelFolders)
+        .where(and(eq(modelFolders.modelId, modelId), this.descendantFilter(modelFolders.path, currentPath)))
+        .orderBy(asc(modelFolders.path)),
+    ]);
+
+    const fileMoves = filesInFolder.map((file) => {
+      const relativePath = `${nextPath}${file.relativePath.slice(currentPath.length)}`;
+      return {
+        file,
+        relativePath,
+        storagePath: `models/${modelId}/${relativePath}`,
+      };
+    });
+
+    for (const move of fileMoves) {
+      await storageService.store(move.storagePath, storageService.retrieveStream(move.file.storagePath));
+    }
+
+    try {
+      await db.transaction(async (tx) => {
+        for (const folderRow of foldersInFolder) {
+          const pathValue = `${nextPath}${folderRow.path.slice(currentPath.length)}`;
+          await tx
+            .update(modelFolders)
+            .set({ path: pathValue })
+            .where(eq(modelFolders.id, folderRow.id));
+        }
+
+        for (const move of fileMoves) {
+          await tx
+            .update(modelFiles)
+            .set({ relativePath: move.relativePath, storagePath: move.storagePath })
+            .where(eq(modelFiles.id, move.file.id));
+        }
+
+        await tx
+          .update(models)
+          .set({ updatedAt: new Date() })
+          .where(eq(models.id, modelId));
+      });
+    } catch (err) {
+      await Promise.all(fileMoves.map((move) => storageService.delete(move.storagePath).catch(() => {})));
+      throw err;
+    }
+
+    await Promise.all(fileMoves.map((move) => storageService.delete(move.file.storagePath).catch(() => {})));
+  }
+
+  async deleteModelFile(modelId: string, fileId: string): Promise<void> {
+    const [file] = await db
+      .select()
+      .from(modelFiles)
+      .where(and(eq(modelFiles.modelId, modelId), eq(modelFiles.id, fileId)))
+      .limit(1);
+    if (!file) {
+      throw notFound(`File not found: ${fileId}`);
+    }
+
+    await db.delete(modelFiles).where(eq(modelFiles.id, file.id));
+    await this.recalculateModelStats(modelId);
+    await storageService.delete(file.storagePath).catch(() => {});
+  }
+
+  async deleteModelFolder(modelId: string, requestedPath: string): Promise<void> {
+    const folderPath = this.normalizeFolderPath(requestedPath);
+    const [folder] = await db
+      .select({ id: modelFolders.id })
+      .from(modelFolders)
+      .where(and(eq(modelFolders.modelId, modelId), eq(modelFolders.path, folderPath)))
+      .limit(1);
+    if (!folder && !(await this.folderHasFiles(modelId, folderPath))) {
+      throw notFound(`Folder not found: ${folderPath}`);
+    }
+
+    const files = await db
+      .select()
+      .from(modelFiles)
+      .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${folderPath}/%`}`));
+
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(modelFiles)
+        .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${folderPath}/%`}`));
+      await tx
+        .delete(modelFolders)
+        .where(and(eq(modelFolders.modelId, modelId), this.descendantFilter(modelFolders.path, folderPath)));
+    });
+
+    await this.recalculateModelStats(modelId);
+    await Promise.all(files.map((file) => storageService.delete(file.storagePath).catch(() => {})));
+  }
+
+  private async folderHasFiles(modelId: string, folderPath: string): Promise<boolean> {
+    const [file] = await db
+      .select({ id: modelFiles.id })
+      .from(modelFiles)
+      .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${folderPath}/%`}`))
+      .limit(1);
+    return Boolean(file);
   }
 
   async mergeModels(

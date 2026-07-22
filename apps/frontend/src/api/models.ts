@@ -6,6 +6,8 @@ import type {
   JobStatus,
   ModelSearchParams,
   UpdateModelRequest,
+  UpdateModelFileRequest,
+  UpdateModelFolderRequest,
   ImportConfig,
   ImportSession,
   BatchUploadMetadata,
@@ -60,6 +62,38 @@ export async function uploadModelFiles(
     formData.append('files', file);
   }
   const response = await postForm<ModelDetail>(`/models/${id}/files/upload`, formData, onProgress);
+  return response.data;
+}
+
+export async function createModelFolder(id: string, path: string): Promise<FileTreeNode[]> {
+  const response = await post<FileTreeNode[]>(`/models/${id}/folders`, { path });
+  return response.data;
+}
+
+export async function updateModelFile(
+  id: string,
+  fileId: string,
+  data: UpdateModelFileRequest
+): Promise<ModelDetail> {
+  const response = await patch<ModelDetail>(`/models/${id}/files/${fileId}`, data);
+  return response.data;
+}
+
+export async function deleteModelFile(id: string, fileId: string): Promise<ModelDetail> {
+  const response = await del<ModelDetail>(`/models/${id}/files/${fileId}`);
+  return response.data;
+}
+
+export async function updateModelFolder(
+  id: string,
+  data: UpdateModelFolderRequest
+): Promise<FileTreeNode[]> {
+  const response = await patch<FileTreeNode[]>(`/models/${id}/folders`, data);
+  return response.data;
+}
+
+export async function deleteModelFolder(id: string, path: string): Promise<ModelDetail> {
+  const response = await post<ModelDetail>(`/models/${id}/folders/delete`, { path });
   return response.data;
 }
 

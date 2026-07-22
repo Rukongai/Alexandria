@@ -3,6 +3,7 @@ export * from './user.js';
 export * from './library.js';
 export * from './model.js';
 export * from './model-file.js';
+export * from './model-folder.js';
 export * from './thumbnail.js';
 export * from './metadata.js';
 export * from './tag.js';

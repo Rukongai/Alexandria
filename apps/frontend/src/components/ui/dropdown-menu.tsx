@@ -34,7 +34,12 @@ function DropdownMenuTrigger({
 
   if (asChild && React.isValidElement(children)) {
     return React.cloneElement(children as React.ReactElement<React.HTMLAttributes<HTMLElement>>, {
-      onClick: handleClick,
+      onClick: (event: React.MouseEvent<HTMLElement>) => {
+        (children.props as React.HTMLAttributes<HTMLElement>).onClick?.(event);
+        if (!event.defaultPrevented) {
+          handleClick();
+        }
+      },
     });
   }
 
@@ -84,7 +89,7 @@ function DropdownMenuContent({
     <div
       ref={ref}
       className={cn(
-        'absolute z-50 min-w-[8rem] overflow-hidden rounded-lg border bg-popover p-1 text-popover-foreground shadow-md',
+        'absolute z-[100] min-w-[8rem] overflow-hidden rounded-lg border bg-popover p-1 text-popover-foreground shadow-md',
         sideClass,
         alignClass,
         className

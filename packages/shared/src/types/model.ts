@@ -98,6 +98,25 @@ export interface FileTreeNode {
   children?: FileTreeNode[];
 }
 
+export interface CreateModelFolderRequest {
+  path: string;
+}
+
+export interface UpdateModelFileRequest {
+  filename?: string;
+  parentPath?: string;
+}
+
+export interface UpdateModelFolderRequest {
+  path: string;
+  name?: string;
+  parentPath?: string;
+}
+
+export interface DeleteModelFolderRequest {
+  path: string;
+}
+
 export interface UpdateModelRequest {
   name?: string;
   description?: string | null;

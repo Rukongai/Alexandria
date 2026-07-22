@@ -3,7 +3,18 @@ import { useParams, Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, AlertTriangle, Download, GitMerge, Loader2, Upload, X } from 'lucide-react';
 import type { ModelCard, ModelDetail } from '@alexandria/shared';
-import { getModel, getModelFiles, getModels, mergeModels, uploadModelFiles } from '../api/models';
+import {
+  createModelFolder,
+  deleteModelFile,
+  deleteModelFolder,
+  getModel,
+  getModelFiles,
+  getModels,
+  mergeModels,
+  updateModelFile,
+  updateModelFolder,
+  uploadModelFiles,
+} from '../api/models';
 import { ModelHero } from '../components/models/ModelHero';
 import { ModelDetailPanel } from '../components/models/ModelDetailPanel';
 import { ModelBreadcrumb } from '../components/models/ModelBreadcrumb';
@@ -29,6 +40,8 @@ import { cn } from '../lib/utils';
 export function ModelDetailPage() {
   const { id } = useParams<{ id: string }>();
   const libPath = useLibraryPath();
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const {
     data: model,
@@ -60,6 +73,70 @@ export function ModelDetailPage() {
   const [uploadDialogOpen, setUploadDialogOpen] = React.useState(false);
   const [mergeDialogOpen, setMergeDialogOpen] = React.useState(false);
   const [selectedImageFileId, setSelectedImageFileId] = React.useState<string | null>(null);
+
+  const fileMutation = useMutation({
+    mutationFn: async (
+      action:
+        | { type: 'create-folder'; path: string }
+        | { type: 'rename-file'; fileId: string; filename: string }
+        | { type: 'move-file'; fileId: string; parentPath: string }
+        | { type: 'delete-file'; fileId: string; name: string }
+        | { type: 'move-files'; fileIds: string[]; parentPath: string }
+        | { type: 'delete-files'; fileIds: string[] }
+        | { type: 'rename-folder'; path: string; name: string }
+        | { type: 'move-folder'; path: string; parentPath: string }
+        | { type: 'delete-folder'; path: string; name: string },
+    ) => {
+      if (!id) throw new Error('Model id is required');
+      switch (action.type) {
+        case 'create-folder':
+          await createModelFolder(id, action.path);
+          return 'Folder created';
+        case 'rename-file':
+          await updateModelFile(id, action.fileId, { filename: action.filename });
+          return 'File renamed';
+        case 'move-file':
+          await updateModelFile(id, action.fileId, { parentPath: action.parentPath });
+          return 'File moved';
+        case 'delete-file':
+          await deleteModelFile(id, action.fileId);
+          return 'File deleted';
+        case 'move-files':
+          await Promise.all(
+            action.fileIds.map((fileId) => updateModelFile(id, fileId, { parentPath: action.parentPath })),
+          );
+          return `${action.fileIds.length} file${action.fileIds.length === 1 ? '' : 's'} moved`;
+        case 'delete-files':
+          await Promise.all(action.fileIds.map((fileId) => deleteModelFile(id, fileId)));
+          return `${action.fileIds.length} file${action.fileIds.length === 1 ? '' : 's'} deleted`;
+        case 'rename-folder':
+          await updateModelFolder(id, { path: action.path, name: action.name });
+          return 'Folder renamed';
+        case 'move-folder':
+          await updateModelFolder(id, { path: action.path, parentPath: action.parentPath });
+          return 'Folder moved';
+        case 'delete-folder':
+          await deleteModelFolder(id, action.path);
+          return 'Folder deleted';
+      }
+    },
+    onSuccess: async (title) => {
+      if (!id) return;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['model', id] }),
+        queryClient.invalidateQueries({ queryKey: ['model-files', id] }),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+      ]);
+      toast({ title });
+    },
+    onError: (error) => {
+      toast({
+        title: 'File update failed',
+        description: error instanceof Error ? error.message : undefined,
+        variant: 'destructive',
+      });
+    },
+  });
 
   function openViewer(stl: StlFileRef) {
     setActiveStl(stl);
@@ -180,6 +257,16 @@ export function ModelDetailPage() {
               onOpenStl={openViewer}
               selectedImageFileId={selectedImageFileId}
               onSelectImageFile={setSelectedImageFileId}
+              fileActionsDisabled={fileMutation.isPending}
+              onCreateFolder={(path) => fileMutation.mutate({ type: 'create-folder', path })}
+              onRenameFile={(fileId, filename) => fileMutation.mutate({ type: 'rename-file', fileId, filename })}
+              onMoveFile={(fileId, parentPath) => fileMutation.mutate({ type: 'move-file', fileId, parentPath })}
+              onDeleteFile={(fileId, name) => fileMutation.mutate({ type: 'delete-file', fileId, name })}
+              onMoveFiles={(fileIds, parentPath) => fileMutation.mutate({ type: 'move-files', fileIds, parentPath })}
+              onDeleteFiles={(fileIds) => fileMutation.mutate({ type: 'delete-files', fileIds })}
+              onRenameFolder={(path, name) => fileMutation.mutate({ type: 'rename-folder', path, name })}
+              onMoveFolder={(path, parentPath) => fileMutation.mutate({ type: 'move-folder', path, parentPath })}
+              onDeleteFolder={(path, name) => fileMutation.mutate({ type: 'delete-folder', path, name })}
             />
           </div>
         </div>

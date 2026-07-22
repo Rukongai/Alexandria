@@ -6,12 +6,33 @@ import {
   Image,
   FileText,
   File,
+  Download,
+  FolderInput,
+  FolderPlus,
+  MoreHorizontal,
+  Pencil,
+  SquareCheck,
+  Trash2,
 } from 'lucide-react';
 import type { FileTreeNode, FileType } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
 import { Model3DIcon } from '../icons';
 import { makeStlRef, type StlFileRef } from '../../lib/model-files';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
 
 interface FileNodeProps {
   node: FileTreeNode;
@@ -23,6 +44,18 @@ interface FileNodeProps {
   selectedImageFileId?: string | null;
   onSelectImageFile?: (fileId: string) => void;
   defaultExpanded?: boolean;
+  disabled?: boolean;
+  selectedFileIds: Set<string>;
+  onToggleFileSelection: (fileId: string) => void;
+  onCreateFolder?: (parentPath: string) => void;
+  onRenameFile?: (fileId: string, filename: string) => void;
+  onMoveFile?: (fileId: string, parentPath: string) => void;
+  onDeleteFile?: (fileId: string, name: string) => void;
+  onRenameFolder?: (path: string, name: string) => void;
+  onMoveFolder?: (path: string, parentPath: string) => void;
+  onDeleteFolder?: (path: string, name: string) => void;
+  selectionMode: boolean;
+  onRequestMove: (request: MoveRequest) => void;
 }
 
 function FileIcon({ fileType }: { fileType?: FileType }) {
@@ -47,6 +80,203 @@ function containsFileId(nodes: FileTreeNode[] | undefined, fileId: string): bool
   return false;
 }
 
+function joinPath(segments: string[]): string {
+  return segments.filter(Boolean).join('/');
+}
+
+function promptName(label: string, current = ''): string | null {
+  const value = window.prompt(label, current);
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function modelFileDownloadUrl(modelId: string, segments: string[]): string {
+  return `/api/files/models/${modelId}/${segments.map(encodeURIComponent).join('/')}?download=1`;
+}
+
+interface FileSelectionTarget {
+  id: string;
+  name: string;
+  segments: string[];
+}
+
+interface FolderDestination {
+  path: string;
+  name: string;
+  depth: number;
+}
+
+type MoveRequest =
+  | { type: 'files'; fileIds: string[]; title: string }
+  | { type: 'folder'; folderPath: string; folderName: string };
+
+function collectFileTargets(
+  nodes: FileTreeNode[],
+  prefix: string[] = [],
+): FileSelectionTarget[] {
+  const files: FileSelectionTarget[] = [];
+
+  for (const node of nodes) {
+    const segments = [...prefix, node.name];
+    if (node.type === 'file' && node.id) {
+      files.push({ id: node.id, name: node.name, segments });
+    } else if (node.type === 'directory') {
+      files.push(...collectFileTargets(node.children ?? [], segments));
+    }
+  }
+
+  return files;
+}
+
+function collectFolderDestinations(
+  nodes: FileTreeNode[],
+  prefix: string[] = [],
+  depth = 0,
+): FolderDestination[] {
+  const folders: FolderDestination[] = [];
+
+  for (const node of nodes) {
+    if (node.type !== 'directory') continue;
+    const segments = [...prefix, node.name];
+    folders.push({ path: joinPath(segments), name: node.name, depth });
+    folders.push(...collectFolderDestinations(node.children ?? [], segments, depth + 1));
+  }
+
+  return folders;
+}
+
+function downloadFiles(modelId: string, files: FileSelectionTarget[]): void {
+  for (const file of files) {
+    const link = document.createElement('a');
+    link.href = modelFileDownloadUrl(modelId, file.segments);
+    link.download = file.name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+}
+
+function MoveDestinationDialog({
+  open,
+  onOpenChange,
+  request,
+  destinations,
+  onCreateDestination,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  request: MoveRequest | null;
+  destinations: FolderDestination[];
+  onCreateDestination: (parentPath: string, name: string) => FolderDestination | null;
+  onConfirm: (destinationPath: string) => void;
+}) {
+  const [selectedPath, setSelectedPath] = React.useState('');
+  const [newFolderParentPath, setNewFolderParentPath] = React.useState('');
+  const [newFolderName, setNewFolderName] = React.useState('');
+  const title = request?.type === 'folder' ? `Move ${request.folderName}` : 'Move Files';
+
+  React.useEffect(() => {
+    if (!open) {
+      setSelectedPath('');
+      setNewFolderParentPath('');
+      setNewFolderName('');
+      return;
+    }
+    setSelectedPath(destinations[0]?.path ?? '');
+    setNewFolderParentPath(destinations[0]?.path ?? '');
+  }, [open, request]);
+
+  function createDestination() {
+    const created = onCreateDestination(newFolderParentPath, newFolderName);
+    if (!created) return;
+    setSelectedPath(created.path);
+    setNewFolderParentPath(created.path);
+    setNewFolderName('');
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+
+        <div className="max-h-64 overflow-y-auto rounded-md border border-border">
+          {destinations.map((destination) => (
+            <button
+              key={destination.path || 'root'}
+              type="button"
+              onClick={() => setSelectedPath(destination.path)}
+              className={cn(
+                'flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-accent',
+                selectedPath === destination.path && 'bg-primary/10 text-primary hover:bg-primary/15',
+              )}
+              style={{ paddingLeft: `${12 + destination.depth * 16}px` }}
+            >
+              <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{destination.name}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="rounded-md border border-border p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-sm font-medium text-foreground">New Folder</span>
+            <select
+              value={newFolderParentPath}
+              onChange={(event) => setNewFolderParentPath(event.currentTarget.value)}
+              className="h-8 max-w-[180px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
+            >
+              {destinations.map((destination) => (
+                <option key={destination.path || 'root'} value={destination.path}>
+                  {destination.path || 'Model root'}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              value={newFolderName}
+              onChange={(event) => setNewFolderName(event.currentTarget.value)}
+              className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm"
+              aria-label="New folder name"
+            />
+            <button
+              type="button"
+              onClick={createDestination}
+              disabled={newFolderName.trim().length === 0}
+              className="inline-flex h-8 items-center gap-1 rounded-md border border-input px-2 text-xs font-medium hover:bg-accent disabled:opacity-50"
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+              New
+            </button>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <button
+            type="button"
+            onClick={() => onOpenChange(false)}
+            className="inline-flex h-8 items-center rounded-md border border-input px-3 text-sm hover:bg-accent"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(selectedPath)}
+            disabled={destinations.length === 0}
+            className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            Move
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function FileNode({
   node,
   depth,
@@ -56,12 +286,25 @@ function FileNode({
   selectedImageFileId,
   onSelectImageFile,
   defaultExpanded = false,
+  disabled = false,
+  selectedFileIds,
+  onToggleFileSelection,
+  onCreateFolder,
+  onRenameFile,
+  onMoveFile,
+  onDeleteFile,
+  onRenameFolder,
+  onMoveFolder,
+  onDeleteFolder,
+  selectionMode,
+  onRequestMove,
 }: FileNodeProps) {
   const containsSelectedImage = selectedImageFileId
     ? containsFileId(node.children, selectedImageFileId)
     : false;
   const [expanded, setExpanded] = React.useState(defaultExpanded);
   const paddingLeft = depth * 16;
+  const nodePath = joinPath([...pathPrefix, node.name]);
 
   React.useEffect(() => {
     if (containsSelectedImage) {
@@ -72,23 +315,81 @@ function FileNode({
   if (node.type === 'directory') {
     return (
       <div>
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="flex w-full items-center gap-1.5 py-1 px-2 rounded hover:bg-muted/60 text-sm text-left group"
+        <div
+          className="flex items-center rounded text-sm group hover:bg-muted/60"
           style={{ paddingLeft: `${paddingLeft + 8}px` }}
         >
-          {expanded ? (
-            <FolderOpen className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          ) : (
-            <Folder className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          )}
-          <span className="font-medium text-foreground truncate">{node.name}</span>
-          {node.children && (
-            <span className="text-xs text-muted-foreground ml-auto">
-              {node.children.length}
-            </span>
-          )}
-        </button>
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 py-1 pr-2 text-left"
+            disabled={disabled}
+          >
+            {expanded ? (
+              <FolderOpen className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+            ) : (
+              <Folder className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+            )}
+            <span className="font-medium text-foreground truncate">{node.name}</span>
+            {node.children && (
+              <span className="text-xs text-muted-foreground ml-auto">
+                {node.children.length}
+              </span>
+            )}
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="mr-1 rounded-md p-1 text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground focus:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+                disabled={disabled}
+                aria-label={`Actions for folder ${node.name}`}
+                title="Folder actions"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuItem
+                onClick={() => {
+                  const name = promptName('Folder name');
+                  if (name) onCreateFolder?.(joinPath([nodePath, name]));
+                }}
+              >
+                <FolderPlus className="mr-2 h-3.5 w-3.5" />
+                New Folder
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  const name = promptName('Rename folder', node.name);
+                  if (name) onRenameFolder?.(nodePath, name);
+                }}
+              >
+                <Pencil className="mr-2 h-3.5 w-3.5" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  onRequestMove({ type: 'folder', folderPath: nodePath, folderName: node.name });
+                }}
+              >
+                <FolderInput className="mr-2 h-3.5 w-3.5" />
+                Move
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="text-destructive hover:text-destructive"
+                onClick={() => {
+                  if (window.confirm(`Delete folder "${node.name}" and all files inside it?`)) {
+                    onDeleteFolder?.(nodePath, node.name);
+                  }
+                }}
+              >
+                <Trash2 className="mr-2 h-3.5 w-3.5" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
         {expanded && node.children && (
           <div>
             {node.children.map((child, i) => (
@@ -101,6 +402,18 @@ function FileNode({
                 onOpenStl={onOpenStl}
                 selectedImageFileId={selectedImageFileId}
                 onSelectImageFile={onSelectImageFile}
+                disabled={disabled}
+                selectedFileIds={selectedFileIds}
+                onToggleFileSelection={onToggleFileSelection}
+                onCreateFolder={onCreateFolder}
+                onRenameFile={onRenameFile}
+                onMoveFile={onMoveFile}
+                onDeleteFile={onDeleteFile}
+                onRenameFolder={onRenameFolder}
+                onMoveFolder={onMoveFolder}
+                onDeleteFolder={onDeleteFolder}
+                selectionMode={selectionMode}
+                onRequestMove={onRequestMove}
               />
             ))}
           </div>
@@ -113,9 +426,16 @@ function FileNode({
   const canView3D = isStl && Boolean(onOpenStl);
   const isImage = node.fileType === 'image' && Boolean(node.id);
   const isSelectedImage = isImage && node.id === selectedImageFileId;
-  const canSelectImage = isImage && Boolean(onSelectImageFile);
+  const canSelectImage = !selectionMode && isImage && Boolean(onSelectImageFile);
+  const parentPath = joinPath(pathPrefix);
+  const fileSegments = [...pathPrefix, node.name];
+  const isSelectedFile = Boolean(node.id && selectedFileIds.has(node.id));
 
   function selectImage() {
+    if (selectionMode && node.id) {
+      onToggleFileSelection(node.id);
+      return;
+    }
     if (canSelectImage && node.id) {
       onSelectImageFile!(node.id);
     }
@@ -123,11 +443,11 @@ function FileNode({
 
   return (
     <div
-      role={canSelectImage ? 'button' : undefined}
-      tabIndex={canSelectImage ? 0 : undefined}
+      role={canSelectImage || selectionMode ? 'button' : undefined}
+      tabIndex={canSelectImage || selectionMode ? 0 : undefined}
       onClick={selectImage}
       onKeyDown={(event) => {
-        if (!canSelectImage) return;
+        if (!canSelectImage && !selectionMode) return;
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           selectImage();
@@ -135,13 +455,34 @@ function FileNode({
       }}
       className={cn(
         'flex items-center gap-1.5 py-1 px-2 rounded text-sm group focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-        canSelectImage ? 'cursor-pointer hover:bg-muted/60' : 'hover:bg-muted/40',
+        canSelectImage || selectionMode ? 'cursor-pointer hover:bg-muted/60' : 'hover:bg-muted/40',
         isSelectedImage && 'bg-primary/10 text-primary hover:bg-primary/15',
+        isSelectedFile && !isSelectedImage && 'bg-primary/5',
       )}
       style={{ paddingLeft: `${paddingLeft + 8}px` }}
-      aria-label={canSelectImage ? `Select image ${node.name}` : undefined}
+      aria-label={
+        selectionMode
+          ? `${isSelectedFile ? 'Deselect' : 'Select'} file ${node.name}`
+          : canSelectImage
+            ? `Select image ${node.name}`
+            : undefined
+      }
       aria-current={isSelectedImage ? 'true' : undefined}
     >
+      {selectionMode && node.id && (
+        <input
+          type="checkbox"
+          checked={isSelectedFile}
+          disabled={disabled}
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => {
+            event.stopPropagation();
+            onToggleFileSelection(node.id!);
+          }}
+          className="h-3.5 w-3.5 flex-shrink-0 rounded border border-input bg-background accent-primary"
+          aria-label={`Select file ${node.name}`}
+        />
+      )}
       <FileIcon fileType={node.fileType} />
       <span
         className={cn(
@@ -170,6 +511,64 @@ function FileNode({
           {formatFileSize(node.sizeBytes)}
         </span>
       )}
+      {node.id && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={(event) => event.stopPropagation()}
+              className="rounded-md p-1 text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground focus:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+              disabled={disabled}
+              aria-label={`Actions for file ${node.name}`}
+              title="File actions"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-36">
+            <DropdownMenuItem
+              onClick={() => {
+                downloadFiles(modelId, [{ id: node.id!, name: node.name, segments: fileSegments }]);
+              }}
+            >
+              <Download className="mr-2 h-3.5 w-3.5" />
+              Download
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => {
+                const name = promptName('Rename file', node.name);
+                if (name && node.id) onRenameFile?.(node.id, name);
+              }}
+            >
+              <Pencil className="mr-2 h-3.5 w-3.5" />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                if (node.id) {
+                  onRequestMove({ type: 'files', fileIds: [node.id], title: `Move ${node.name}` });
+                }
+              }}
+            >
+              <FolderInput className="mr-2 h-3.5 w-3.5" />
+              Move
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-destructive hover:text-destructive"
+              onClick={() => {
+                if (node.id && window.confirm(`Delete file "${node.name}"?`)) {
+                  onDeleteFile?.(node.id, node.name);
+                }
+              }}
+            >
+              <Trash2 className="mr-2 h-3.5 w-3.5" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </div>
   );
 }
@@ -193,6 +592,16 @@ interface FileTreeProps {
   onOpenStl?: (stl: StlFileRef) => void;
   selectedImageFileId?: string | null;
   onSelectImageFile?: (fileId: string) => void;
+  disabled?: boolean;
+  onCreateFolder?: (path: string) => void;
+  onRenameFile?: (fileId: string, filename: string) => void;
+  onMoveFile?: (fileId: string, parentPath: string) => void;
+  onDeleteFile?: (fileId: string, name: string) => void;
+  onMoveFiles?: (fileIds: string[], parentPath: string) => void;
+  onDeleteFiles?: (fileIds: string[]) => void;
+  onRenameFolder?: (path: string, name: string) => void;
+  onMoveFolder?: (path: string, parentPath: string) => void;
+  onDeleteFolder?: (path: string, name: string) => void;
 }
 
 export function FileTree({
@@ -201,15 +610,256 @@ export function FileTree({
   onOpenStl,
   selectedImageFileId,
   onSelectImageFile,
+  disabled = false,
+  onCreateFolder,
+  onRenameFile,
+  onMoveFile,
+  onDeleteFile,
+  onMoveFiles,
+  onDeleteFiles,
+  onRenameFolder,
+  onMoveFolder,
+  onDeleteFolder,
 }: FileTreeProps) {
   const totalFiles = countFiles(tree);
+  const allFiles = React.useMemo(() => collectFileTargets(tree), [tree]);
+  const baseDestinations = React.useMemo(
+    () => [
+      { path: '', name: 'Model root', depth: 0 },
+      ...collectFolderDestinations(tree).map((folder) => ({ ...folder, depth: folder.depth + 1 })),
+    ],
+    [tree],
+  );
+  const [selectedFileIds, setSelectedFileIds] = React.useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = React.useState(false);
+  const [moveRequest, setMoveRequest] = React.useState<MoveRequest | null>(null);
+  const [extraDestinations, setExtraDestinations] = React.useState<FolderDestination[]>([]);
+  const selectedFiles = React.useMemo(
+    () => allFiles.filter((file) => selectedFileIds.has(file.id)),
+    [allFiles, selectedFileIds],
+  );
+  const allSelected = allFiles.length > 0 && selectedFiles.length === allFiles.length;
+  const destinations = React.useMemo(() => {
+    const byPath = new Map<string, FolderDestination>();
+    for (const destination of [...baseDestinations, ...extraDestinations]) {
+      byPath.set(destination.path, destination);
+    }
+    return [...byPath.values()].sort((a, b) => {
+      if (a.path === '') return -1;
+      if (b.path === '') return 1;
+      return a.path.localeCompare(b.path, undefined, { sensitivity: 'base' });
+    });
+  }, [baseDestinations, extraDestinations]);
+  const folderPathSet = React.useMemo(
+    () => new Set(destinations.filter((destination) => destination.path).map((destination) => destination.path)),
+    [destinations],
+  );
+  const fileByPath = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const file of allFiles) {
+      map.set(joinPath(file.segments), file.id);
+    }
+    return map;
+  }, [allFiles]);
+  const moveDestinations = React.useMemo(() => {
+    if (!moveRequest) return [];
+
+    if (moveRequest.type === 'folder') {
+      return destinations.filter((destination) => {
+        if (destination.path === moveRequest.folderPath) return false;
+        if (destination.path.startsWith(`${moveRequest.folderPath}/`)) return false;
+        const candidatePath = joinPath([destination.path, moveRequest.folderName]);
+        if (fileByPath.has(candidatePath)) return false;
+        return !folderPathSet.has(candidatePath) || candidatePath === moveRequest.folderPath;
+      });
+    }
+
+    const movingFileIds = new Set(moveRequest.fileIds);
+    const movingFiles = allFiles.filter((file) => movingFileIds.has(file.id));
+    return destinations.filter((destination) => {
+      const candidatePaths = new Set<string>();
+      for (const file of movingFiles) {
+        const candidatePath = joinPath([destination.path, file.name]);
+        if (candidatePaths.has(candidatePath)) return false;
+        candidatePaths.add(candidatePath);
+        if (folderPathSet.has(candidatePath)) return false;
+        const existingFileId = fileByPath.get(candidatePath);
+        if (existingFileId && !movingFileIds.has(existingFileId)) return false;
+      }
+      return true;
+    });
+  }, [allFiles, destinations, fileByPath, folderPathSet, moveRequest]);
+
+  React.useEffect(() => {
+    const currentFileIds = new Set(allFiles.map((file) => file.id));
+    setSelectedFileIds((current) => {
+      const next = new Set([...current].filter((fileId) => currentFileIds.has(fileId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [allFiles]);
+
+  React.useEffect(() => {
+    const currentPaths = new Set(baseDestinations.map((destination) => destination.path));
+    setExtraDestinations((current) => {
+      const next = current.filter((destination) => !currentPaths.has(destination.path));
+      return next.length === current.length ? current : next;
+    });
+  }, [baseDestinations]);
+
+  function toggleFileSelection(fileId: string): void {
+    setSelectedFileIds((current) => {
+      const next = new Set(current);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  }
+
+  function setAllSelected(checked: boolean): void {
+    setSelectedFileIds(checked ? new Set(allFiles.map((file) => file.id)) : new Set());
+  }
+
+  function toggleSelectionMode(): void {
+    setSelectionMode((current) => {
+      if (current) {
+        setSelectedFileIds(new Set());
+      }
+      return !current;
+    });
+  }
+
+  function createMoveDestination(parentPath: string, name: string): FolderDestination | null {
+    const folderName = name.trim();
+    if (!folderName || folderName.includes('/') || folderName.includes('\\')) {
+      window.alert('Folder name cannot be empty or contain path separators.');
+      return null;
+    }
+
+    const parent = destinations.find((destination) => destination.path === parentPath);
+    const path = joinPath([parentPath, folderName]);
+    if (folderPathSet.has(path) || fileByPath.has(path)) {
+      window.alert('That folder already exists.');
+      return null;
+    }
+
+    const created = {
+      path,
+      name: folderName,
+      depth: (parent?.depth ?? 0) + 1,
+    };
+    setExtraDestinations((current) => [...current, created]);
+    return created;
+  }
+
+  function confirmMove(destinationPath: string): void {
+    if (!moveRequest) return;
+    if (moveRequest.type === 'folder') {
+      onMoveFolder?.(moveRequest.folderPath, destinationPath);
+    } else if (moveRequest.fileIds.length === 1) {
+      onMoveFile?.(moveRequest.fileIds[0], destinationPath);
+    } else {
+      onMoveFiles?.(moveRequest.fileIds, destinationPath);
+      setSelectedFileIds(new Set());
+    }
+    setMoveRequest(null);
+  }
 
   return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/30">
+    <div className="rounded-xl border border-border bg-card overflow-visible">
+      <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border bg-muted/30">
         <span className="text-sm font-semibold text-foreground">Files</span>
-        <span className="text-xs text-muted-foreground">{totalFiles} files</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={toggleSelectionMode}
+            disabled={disabled || allFiles.length === 0}
+            className={cn(
+              'rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50',
+              selectionMode && 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary',
+            )}
+            aria-pressed={selectionMode}
+            aria-label={selectionMode ? 'Disable file multi-select' : 'Enable file multi-select'}
+            title={selectionMode ? 'Disable multi-select' : 'Enable multi-select'}
+          >
+            <SquareCheck className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const name = promptName('Folder name');
+              if (name) onCreateFolder?.(name);
+            }}
+            disabled={disabled}
+            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+            aria-label="Create folder"
+            title="Create folder"
+          >
+            <FolderPlus className="h-4 w-4" />
+          </button>
+          <span className="text-xs text-muted-foreground">{totalFiles} files</span>
+        </div>
       </div>
+      {selectionMode && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-primary/5 px-3 py-2">
+          <label className="mr-auto flex items-center gap-2 text-xs font-medium text-primary">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              disabled={disabled || allFiles.length === 0}
+              onChange={(event) => setAllSelected(event.currentTarget.checked)}
+              className="h-3.5 w-3.5 rounded border border-input bg-background accent-primary"
+              aria-label="Select all files"
+            />
+            {selectedFiles.length} selected
+          </label>
+          <button
+            type="button"
+            onClick={() => downloadFiles(modelId, selectedFiles)}
+            disabled={disabled || selectedFiles.length === 0}
+            className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-foreground hover:bg-accent disabled:opacity-50"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Download
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMoveRequest({
+                type: 'files',
+                fileIds: selectedFiles.map((file) => file.id),
+                title: `Move ${selectedFiles.length} Files`,
+              });
+            }}
+            disabled={disabled || selectedFiles.length === 0}
+            className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-foreground hover:bg-accent disabled:opacity-50"
+          >
+            <FolderInput className="h-3.5 w-3.5" />
+            Move
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm(`Delete ${selectedFiles.length} selected file${selectedFiles.length === 1 ? '' : 's'}?`)) {
+                onDeleteFiles?.(selectedFiles.map((file) => file.id));
+                setSelectedFileIds(new Set());
+              }
+            }}
+            disabled={disabled || selectedFiles.length === 0}
+            className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedFileIds(new Set())}
+            disabled={disabled}
+            className="inline-flex h-7 items-center rounded-md px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+          >
+            Clear
+          </button>
+        </div>
+      )}
       <div className={cn('py-1', tree.length === 0 && 'p-4')}>
         {tree.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center">No files found</p>
@@ -225,10 +875,32 @@ export function FileTree({
               selectedImageFileId={selectedImageFileId}
               onSelectImageFile={onSelectImageFile}
               defaultExpanded={true}
+              disabled={disabled}
+              selectedFileIds={selectedFileIds}
+              onToggleFileSelection={toggleFileSelection}
+              onCreateFolder={onCreateFolder}
+              onRenameFile={onRenameFile}
+              onMoveFile={onMoveFile}
+              onDeleteFile={onDeleteFile}
+              onRenameFolder={onRenameFolder}
+              onMoveFolder={onMoveFolder}
+              onDeleteFolder={onDeleteFolder}
+              selectionMode={selectionMode}
+              onRequestMove={setMoveRequest}
             />
           ))
         )}
       </div>
+      <MoveDestinationDialog
+        open={Boolean(moveRequest)}
+        onOpenChange={(open) => {
+          if (!open) setMoveRequest(null);
+        }}
+        request={moveRequest}
+        destinations={moveDestinations}
+        onCreateDestination={createMoveDestination}
+        onConfirm={confirmMove}
+      />
     </div>
   );
 }

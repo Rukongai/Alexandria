@@ -11,11 +11,19 @@ import type {
   UpdateModelRequest,
   BatchUploadMetadata,
   MergeModelsRequest,
+  CreateModelFolderRequest,
+  UpdateModelFileRequest,
+  UpdateModelFolderRequest,
+  DeleteModelFolderRequest,
 } from '@alexandria/shared';
 import {
+  createModelFolderSchema,
+  deleteModelFolderSchema,
   importConfigSchema,
   modelSearchParamsSchema,
   mergeModelsSchema,
+  updateModelFileSchema,
+  updateModelFolderSchema,
   updateModelSchema,
   uploadInitSchema,
   chunkIndexParamsSchema,
@@ -391,10 +399,95 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       await modelService.requireModelInLibrary(id, request.libraryId!); // verify exists + scope
-      const files = await modelService.getModelFiles(id);
-      const tree = presenterService.buildFileTree(files);
+      const [files, folders] = await Promise.all([
+        modelService.getModelFiles(id),
+        modelService.getModelFolders(id),
+      ]);
+      const tree = presenterService.buildFileTree(files, folders);
 
       return reply.status(200).send({ data: tree, meta: null, errors: null });
+    },
+  );
+
+  // POST /:id/folders — create a persisted folder within a model
+  app.post(
+    '/:id/folders',
+    { preHandler: [requireAuth, requireLibrary, validate(createModelFolderSchema)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as CreateModelFolderRequest;
+      await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
+      await modelService.createModelFolder(id, body.path);
+      const [files, folders] = await Promise.all([
+        modelService.getModelFiles(id),
+        modelService.getModelFolders(id),
+      ]);
+      const tree = presenterService.buildFileTree(files, folders);
+
+      return reply.status(201).send({ data: tree, meta: null, errors: null });
+    },
+  );
+
+  // PATCH /:id/files/:fileId — rename and/or move a file within a model
+  app.patch(
+    '/:id/files/:fileId',
+    { preHandler: [requireAuth, requireLibrary, validate(updateModelFileSchema)] },
+    async (request, reply) => {
+      const { id, fileId } = request.params as { id: string; fileId: string };
+      const body = request.body as UpdateModelFileRequest;
+      await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
+      await modelService.updateModelFileLocation(id, fileId, body);
+      const detail = await presenterService.buildModelDetail(id);
+
+      return reply.status(200).send({ data: detail, meta: null, errors: null });
+    },
+  );
+
+  // DELETE /:id/files/:fileId — delete a file from a model
+  app.delete(
+    '/:id/files/:fileId',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const { id, fileId } = request.params as { id: string; fileId: string };
+      await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
+      await modelService.deleteModelFile(id, fileId);
+      const detail = await presenterService.buildModelDetail(id);
+
+      return reply.status(200).send({ data: detail, meta: null, errors: null });
+    },
+  );
+
+  // PATCH /:id/folders — rename and/or move a folder within a model
+  app.patch(
+    '/:id/folders',
+    { preHandler: [requireAuth, requireLibrary, validate(updateModelFolderSchema)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as UpdateModelFolderRequest;
+      await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
+      await modelService.updateModelFolderLocation(id, body);
+      const [files, folders] = await Promise.all([
+        modelService.getModelFiles(id),
+        modelService.getModelFolders(id),
+      ]);
+      const tree = presenterService.buildFileTree(files, folders);
+
+      return reply.status(200).send({ data: tree, meta: null, errors: null });
+    },
+  );
+
+  // POST /:id/folders/delete — delete a folder and its descendant files/folders
+  app.post(
+    '/:id/folders/delete',
+    { preHandler: [requireAuth, requireLibrary, validate(deleteModelFolderSchema)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as DeleteModelFolderRequest;
+      await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
+      await modelService.deleteModelFolder(id, body.path);
+      const detail = await presenterService.buildModelDetail(id);
+
+      return reply.status(200).send({ data: detail, meta: null, errors: null });
     },
   );
 

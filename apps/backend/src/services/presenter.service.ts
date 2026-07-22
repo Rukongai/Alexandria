@@ -43,7 +43,7 @@ export interface IPresenterService {
     modelIds: string[],
   ): Promise<ModelCard[]>;
   buildModelDetail(modelId: string): Promise<ModelDetail>;
-  buildFileTree(files: ModelFileRow[]): FileTreeNode[];
+  buildFileTree(files: ModelFileRow[], folders?: ModelFolderRow[]): FileTreeNode[];
   buildCollectionDetail(collectionId: string): Promise<CollectionDetail>;
   buildMetadataFieldList(): Promise<MetadataFieldDetail[]>;
   buildCollectionList(userId: string, libraryId: string, params: { depth?: number }): Promise<CollectionDetail[]>;
@@ -71,6 +71,11 @@ export interface ModelFileRow {
   relativePath: string;
   fileType: string;
   sizeBytes: number;
+}
+
+export interface ModelFolderRow {
+  id: string;
+  path: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,25 +297,17 @@ export class PresenterService implements IPresenterService {
   // buildFileTree — flat relativePaths → nested FileTreeNode[]
   // -----------------------------------------------------------------------
 
-  buildFileTree(files: ModelFileRow[]): FileTreeNode[] {
+  buildFileTree(files: ModelFileRow[], folders: ModelFolderRow[] = []): FileTreeNode[] {
     const root: FileTreeNode[] = [];
+
+    for (const folder of folders) {
+      const segments = folder.path.split('/').filter(Boolean);
+      this._ensureDirectoryNode(root, segments, folder.id);
+    }
 
     for (const file of files) {
       const segments = file.relativePath.split('/').filter(Boolean);
-      let current = root;
-
-      // Walk/create directory nodes for all but the last segment
-      for (let i = 0; i < segments.length - 1; i++) {
-        const dirName = segments[i];
-        let dirNode = current.find(
-          (n) => n.type === 'directory' && n.name === dirName,
-        );
-        if (!dirNode) {
-          dirNode = { name: dirName, type: 'directory', children: [] };
-          current.push(dirNode);
-        }
-        current = dirNode.children!;
-      }
+      const current = this._ensureDirectoryNode(root, segments.slice(0, -1));
 
       // Add the file node as a leaf
       const fileName = segments[segments.length - 1];
@@ -551,6 +548,31 @@ export class PresenterService implements IPresenterService {
         this._sortTree(node.children);
       }
     }
+  }
+
+  private _ensureDirectoryNode(
+    root: FileTreeNode[],
+    segments: string[],
+    id?: string,
+  ): FileTreeNode[] {
+    let current = root;
+
+    for (let i = 0; i < segments.length; i++) {
+      const dirName = segments[i];
+      let dirNode = current.find(
+        (n) => n.type === 'directory' && n.name === dirName,
+      );
+      if (!dirNode) {
+        dirNode = { name: dirName, type: 'directory', children: [] };
+        current.push(dirNode);
+      }
+      if (i === segments.length - 1 && id) {
+        dirNode.id = id;
+      }
+      current = dirNode.children!;
+    }
+
+    return current;
   }
 }
 

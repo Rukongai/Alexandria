@@ -29,6 +29,10 @@ function getMimeType(filename: string): string {
   return MIME_TYPES[ext] ?? 'application/octet-stream';
 }
 
+function contentDispositionFilename(filename: string): string {
+  return filename.replace(/["\r\n]/g, '_');
+}
+
 export async function fileRoutes(app: FastifyInstance): Promise<void> {
   // GET /thumbnails/:id.webp — serve a thumbnail by ID
   app.get(
@@ -64,6 +68,7 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { modelId } = request.params as { modelId: string };
       const relativePath = (request.params as Record<string, string>)['*'];
+      const { download } = request.query as { download?: string };
 
       if (!relativePath) {
         throw notFound('File path is required');
@@ -91,10 +96,18 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
       const stream = storageService.retrieveStream(file.storagePath);
       const contentType = file.mimeType || getMimeType(file.filename);
 
-      return reply
+      const response = reply
         .header('Content-Type', contentType)
-        .header('Cache-Control', `public, max-age=${CACHE_MAX_AGE}`)
-        .send(stream);
+        .header('Cache-Control', `public, max-age=${CACHE_MAX_AGE}`);
+
+      if (download === '1' || download === 'true') {
+        response.header(
+          'Content-Disposition',
+          `attachment; filename="${contentDispositionFilename(file.filename)}"`,
+        );
+      }
+
+      return response.send(stream);
     },
   );
 }

@@ -20,6 +20,16 @@ interface ModelDetailPanelProps {
   onOpenStl: (stl: StlFileRef) => void;
   selectedImageFileId: string | null;
   onSelectImageFile: (fileId: string) => void;
+  fileActionsDisabled?: boolean;
+  onCreateFolder?: (path: string) => void;
+  onRenameFile?: (fileId: string, filename: string) => void;
+  onMoveFile?: (fileId: string, parentPath: string) => void;
+  onDeleteFile?: (fileId: string, name: string) => void;
+  onMoveFiles?: (fileIds: string[], parentPath: string) => void;
+  onDeleteFiles?: (fileIds: string[]) => void;
+  onRenameFolder?: (path: string, name: string) => void;
+  onMoveFolder?: (path: string, parentPath: string) => void;
+  onDeleteFolder?: (path: string, name: string) => void;
 }
 
 /**
@@ -32,6 +42,16 @@ export function ModelDetailPanel({
   onOpenStl,
   selectedImageFileId,
   onSelectImageFile,
+  fileActionsDisabled,
+  onCreateFolder,
+  onRenameFile,
+  onMoveFile,
+  onDeleteFile,
+  onMoveFiles,
+  onDeleteFiles,
+  onRenameFolder,
+  onMoveFolder,
+  onDeleteFolder,
 }: ModelDetailPanelProps) {
   const [tab, setTab] = React.useState<PanelTabValue>('info');
 
@@ -66,6 +86,16 @@ export function ModelDetailPanel({
           onOpenStl={onOpenStl}
           selectedImageFileId={selectedImageFileId}
           onSelectImageFile={onSelectImageFile}
+          disabled={fileActionsDisabled}
+          onCreateFolder={onCreateFolder}
+          onRenameFile={onRenameFile}
+          onMoveFile={onMoveFile}
+          onDeleteFile={onDeleteFile}
+          onMoveFiles={onMoveFiles}
+          onDeleteFiles={onDeleteFiles}
+          onRenameFolder={onRenameFolder}
+          onMoveFolder={onMoveFolder}
+          onDeleteFolder={onDeleteFolder}
         />
       )}
     </div>
