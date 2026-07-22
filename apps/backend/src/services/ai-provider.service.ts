@@ -20,7 +20,8 @@ import { readBoundedResponseText } from '../utils/http-response.js';
 import { createTimeoutAbortSignal } from '../utils/abort-signal.js';
 
 const logger = createLogger('AiProviderService');
-const REQUEST_TIMEOUT_MS = 10_000;
+const PROVIDER_DISCOVERY_TIMEOUT_MS = 10_000;
+const MAX_CHAT_COMPLETION_TIMEOUT_MS = 45_000;
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
 const CIPHER_VERSION = 'v1';
@@ -322,29 +323,27 @@ export class AiProviderService {
   async createChatCompletion(
     connection: AiProviderConnection,
     payload: unknown,
-    timeoutMs = REQUEST_TIMEOUT_MS,
+    timeoutMs = MAX_CHAT_COMPLETION_TIMEOUT_MS,
     requestSignal?: AbortSignal,
   ): Promise<unknown> {
+    const boundedTimeoutMs = Math.max(1, Math.min(timeoutMs, MAX_CHAT_COMPLETION_TIMEOUT_MS));
     return this.providerRequest(connection, '/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
-    }, timeoutMs, requestSignal);
+    }, boundedTimeoutMs, requestSignal);
   }
 
   private async providerRequest(
     connection: AiProviderConnection,
     path: string,
     init: RequestInit,
-    timeoutMs = REQUEST_TIMEOUT_MS,
+    timeoutMs = PROVIDER_DISCOVERY_TIMEOUT_MS,
     requestSignal?: AbortSignal,
   ): Promise<unknown> {
     const headers = new Headers(init.headers);
     if (connection.apiKey) headers.set('authorization', `Bearer ${connection.apiKey}`);
-    const requestAbort = createTimeoutAbortSignal(
-      Math.max(1, Math.min(timeoutMs, REQUEST_TIMEOUT_MS)),
-      requestSignal,
-    );
+    const requestAbort = createTimeoutAbortSignal(Math.max(1, timeoutMs), requestSignal);
     try {
       const initialUrl = new URL(`${connection.baseUrl}${path}`);
       let targetUrl = initialUrl;

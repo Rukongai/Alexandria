@@ -292,6 +292,148 @@ describe('AI provider outbound request hardening', () => {
       .rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
   });
 
+  it('should honor a caller timeout longer than the provider default for chat completions', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveFetch!: (response: Response) => void;
+      const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }));
+      const close = vi.fn().mockResolvedValue(undefined);
+      const service = new AiProviderService(
+        'secret',
+        fetchMock,
+        false,
+        publicLookup,
+        vi.fn().mockReturnValue({ close }),
+      );
+
+      const completion = service.createChatCompletion(
+        connection,
+        { messages: [] },
+        45_000,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const outboundSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+
+      await vi.advanceTimersByTimeAsync(10_001);
+
+      const abortedAfterDiscoveryDeadline = outboundSignal.aborted;
+      resolveFetch(new Response(JSON.stringify({
+        choices: [{ message: { content: 'ok' } }],
+      })));
+      await expect(completion).resolves.toMatchObject({
+        choices: [{ message: { content: 'ok' } }],
+      });
+      expect(close).toHaveBeenCalledOnce();
+      expect(abortedAfterDiscoveryDeadline).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      label: 'shorter caller deadline',
+      requestedTimeoutMs: 5_000,
+      effectiveTimeoutMs: 5_000,
+    },
+    {
+      label: 'forty-five-second maximum',
+      requestedTimeoutMs: 60_000,
+      effectiveTimeoutMs: 45_000,
+    },
+  ])('should abort chat completions at the $label', async ({
+    requestedTimeoutMs,
+    effectiveTimeoutMs,
+  }) => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn().mockImplementation(
+        (_url: URL, init: RequestInit) => new Promise<Response>(
+          (_resolve, reject) => init.signal?.addEventListener(
+            'abort',
+            () => reject(init.signal?.reason),
+            { once: true },
+          ),
+        ),
+      );
+      const close = vi.fn().mockResolvedValue(undefined);
+      const service = new AiProviderService(
+        'secret',
+        fetchMock,
+        false,
+        publicLookup,
+        vi.fn().mockReturnValue({ close }),
+      );
+
+      const completion = service.createChatCompletion(
+        connection,
+        { messages: [] },
+        requestedTimeoutMs,
+      );
+      const rejection = expect(completion).rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const outboundSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+
+      await vi.advanceTimersByTimeAsync(effectiveTimeoutMs - 1);
+      expect(outboundSignal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(outboundSignal.aborted).toBe(true);
+      await rejection;
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should keep model discovery bounded by the ten-second provider default', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(db.select).mockReturnValue(selectRows([{
+        ...providerRow,
+        apiKeyEncrypted: null,
+        apiKeyHint: null,
+      }]) as never);
+      const fetchMock = vi.fn().mockImplementation(
+        (_url: URL, init: RequestInit) => new Promise<Response>(
+          (_resolve, reject) => init.signal?.addEventListener(
+            'abort',
+            () => reject(init.signal?.reason),
+            { once: true },
+          ),
+        ),
+      );
+      const close = vi.fn().mockResolvedValue(undefined);
+      const service = new AiProviderService(
+        'secret',
+        fetchMock,
+        false,
+        publicLookup,
+        vi.fn().mockReturnValue({ close }),
+      );
+
+      const models = service.listModels(providerRow.userId, providerRow.id);
+      const rejection = expect(models).rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const outboundSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(outboundSignal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(outboundSignal.aborted).toBe(true);
+      await rejection;
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('combines client cancellation with its deadline and removes the parent listener', async () => {
     const controller = new AbortController();
     const addListener = vi.spyOn(controller.signal, 'addEventListener');
