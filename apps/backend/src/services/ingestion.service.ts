@@ -10,6 +10,7 @@ import type {
   DetectedFolderNode,
   ExtractArchiveResponse,
   ImportSession,
+  MultipartArchiveMode,
 } from '@alexandria/shared';
 import {
   jobService,
@@ -136,17 +137,79 @@ export class IngestionService {
     return { sessionId };
   }
 
+  /** Accept an explicit archive group and enqueue one scan/import session. */
+  async handleMultipartScan(
+    files: Array<{ tempFilePath: string; originalFilename: string }>,
+    mode: MultipartArchiveMode,
+    userId: string,
+    libraryId: string,
+  ): Promise<{ sessionId: string }> {
+    let enqueued = false;
+    try {
+      const originalFilename = fileProcessingService.validateMultipartArchives(files, mode);
+      const { id: sessionId } = await importSessionService.create({
+        userId,
+        libraryId,
+        originalFilename,
+      });
+
+      try {
+        await jobService.enqueueScanJob({
+          sessionId,
+          tempFilePath: files[0].tempFilePath,
+          originalFilename,
+          userId,
+          libraryId,
+          multipart: { files, mode },
+        });
+        enqueued = true;
+      } catch (error) {
+        logger.error({ sessionId, error: String(error) }, 'Failed to enqueue multipart scan job');
+        await importSessionService.update(sessionId, {
+          status: 'error',
+          error: 'Failed to start scan',
+        });
+        throw error;
+      }
+
+      logger.info(
+        { service: 'IngestionService', sessionId, libraryId, mode, archiveCount: files.length },
+        'Multipart upload accepted, scan job enqueued',
+      );
+      return { sessionId };
+    } finally {
+      if (!enqueued) {
+        await Promise.all(
+          files.map((file) => fsPromises.rm(file.tempFilePath, { force: true }).catch(() => {})),
+        );
+      }
+    }
+  }
+
   /** Worker entry: extract the archive, detect metadata, mark ready for review. */
   async processScanJob(
     sessionId: string,
     tempFilePath: string,
     originalFilename: string,
     libraryId: string,
+    multipart?: {
+      files: Array<{ tempFilePath: string; originalFilename: string }>;
+      mode: MultipartArchiveMode;
+    },
   ): Promise<void> {
     const extractDir = `${tempFilePath}_extracted`;
     try {
-      const manifest = await fileProcessingService.processArchive(tempFilePath, extractDir);
+      const manifest = multipart
+        ? await fileProcessingService.processMultipartArchives(
+          multipart.files,
+          extractDir,
+          multipart.mode,
+        )
+        : await fileProcessingService.processArchive(tempFilePath, extractDir);
       const detected = await this.detectImportMetadata(manifest, originalFilename, libraryId);
+      if (multipart) {
+        detected.modelCount = 1;
+      }
       await importSessionService.update(sessionId, {
         status: 'ready_for_review',
         manifest,
@@ -162,8 +225,13 @@ export class IngestionService {
       });
       await fsPromises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
     } finally {
-      // The uploaded archive is no longer needed once extracted (or on failure).
-      await fsPromises.rm(tempFilePath, { force: true }).catch(() => {});
+      // Uploaded archives are no longer needed once extracted (or on failure).
+      const inputPaths = multipart
+        ? new Set(multipart.files.map((file) => file.tempFilePath))
+        : new Set([tempFilePath]);
+      await Promise.all(
+        [...inputPaths].map((inputPath) => fsPromises.rm(inputPath, { force: true }).catch(() => {})),
+      );
     }
   }
 

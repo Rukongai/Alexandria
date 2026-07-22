@@ -55,7 +55,7 @@ For single-request uploads (`POST /models/upload`), archive files are capped at 
 
 Both upload paths now use the staged ingestion workflow. They return a `sessionId` (not a `modelId`) — the model is created only after the session is committed. See the Import Sessions section below for the full scan → review → commit protocol.
 
-To create one model from several archives, use the multipart protocol. Initiate each member through `POST /models/upload/multipart/init`, upload its chunks through the existing chunk endpoint, then submit all upload IDs together to `POST /models/upload/multipart/complete`. Multipart `combine` mode accepts independent supported archives; `split` mode accepts one complete `.z01` … `.zip` or `.zip.001` … split-ZIP set. A multipart group creates one import session and therefore one model.
+To create one model from several archives, use the multipart protocol exposed in the frontend's dedicated **Multi-part archive** tab. Initiate each of 2–100 members through `POST /models/upload/multipart/init`, upload its chunks through the existing chunk endpoint, then submit all upload IDs together to `POST /models/upload/multipart/complete`. The 5 GB limit applies to each member; there is no separate aggregate-size field in the multipart request. Multipart `combine` mode accepts independent supported archives; `split` mode accepts one complete `.z01` … `.zip` or `.zip.001` … split-ZIP set. A multipart group creates one import session and therefore one model. Ordinary multi-select under Archive upload continues to create a separate session for each archive.
 
 ---
 
@@ -376,7 +376,11 @@ Initiate one chunked member of an explicit multipart archive group. The request 
 
 **Auth required:** Yes
 
-After initiation, upload the returned ID's chunks through `PUT /models/upload/:uploadId/chunk/:index`. Do not call the single-upload complete endpoint; once every member is uploaded, pass all member IDs to `POST /models/upload/multipart/complete`.
+**Request body:** The same `filename`, `totalSize`, and `totalChunks` fields as `POST /models/upload/init`. `totalSize` is capped at 5 GB for each member. The multipart endpoint additionally permits split member filenames in the ranges `.z01`–`.z99` and `.zip.001`–`.zip.999`.
+
+**Response (201):** The same `{ uploadId, expiresAt }` data as `POST /models/upload/init`. Each member is an independent two-hour, in-memory upload session until its ID is submitted with the rest of the group.
+
+After initiation, upload the returned ID's zero-based chunks through `PUT /models/upload/:uploadId/chunk/:index`. Do not call the single-upload complete endpoint; once every member is uploaded, pass all member IDs to `POST /models/upload/multipart/complete`.
 
 ---
 
@@ -403,6 +407,30 @@ Upload a single chunk of a file. The request body must be the raw binary chunk d
 ```
 
 `received` is the number of bytes written for this chunk.
+
+The backend streams the request into a uniquely named pending file and bounds the accepted bytes against the upload's declared `totalSize`, excluding any prior copy of the same chunk index. The pending file replaces the prior chunk only after the entire request succeeds. If the request would make the accepted chunk set exceed `totalSize`, it returns `VALIDATION_ERROR`, deletes the pending file, and preserves the previously accepted chunk for that index. Chunk writes are serialized with abort and completion for the same upload session, so they cannot mutate a session after assembly or abort has claimed it.
+
+---
+
+### DELETE /models/upload/:uploadId
+
+Abort an initialized chunked upload session. This deletes its temporary chunk directory and removes the in-memory session. Abort is serialized with chunk receipt and completion: exactly one lifecycle operation claims the session, and a request that reaches an already consumed or aborted session receives `NOT_FOUND`. The frontend calls this endpoint on a best-effort basis for every multipart upload ID it initialized when any later upload or completion step fails.
+
+**Auth required:** Yes
+
+**Library scope:** None. Ownership is checked against the authenticated user; an unknown or another user's upload ID returns `NOT_FOUND`.
+
+**Path parameter:** `uploadId` — UUID from either upload init endpoint
+
+**Response (200):**
+
+```json
+{
+  "data": null,
+  "meta": null,
+  "errors": null
+}
+```
 
 ---
 
@@ -452,9 +480,22 @@ Assemble two to 100 previously uploaded multipart members and begin one staged s
 | Field | Type | Constraints |
 |-------|------|-------------|
 | `uploadIds` | UUID string[] | 2–100 unique upload IDs, all owned by the authenticated user |
-| `mode` | `combine` \| `split` | `combine` extracts independent archives into archive-named folders; `split` validates and extracts one complete split-ZIP set |
+| `mode` | `combine` \| `split` | `combine` extracts independent archives into collision-safe archive-named folders; `split` validates and extracts one complete split-ZIP set |
 
-`split` accepts either a classic set with numbered `.z01` … parts and one terminal `.zip`, or a numbered set beginning at `.zip.001`. Missing, duplicate, mixed, or unrelated parts return `VALIDATION_ERROR`. All members must be present before extraction begins.
+In `combine` mode, each member must be a complete `.zip`, `.rar`, `.7z`, `.tar.gz`, or `.tgz` archive with a plain filename rather than a path. Each archive is extracted below a folder named from its filename without the archive extension. Empty or dot-only derived folder names are rejected. Case-insensitive folder-name collisions receive `-2`, `-3`, and later suffixes, and every resolved folder must be a strict descendant of the extraction root, so archive roots cannot overwrite one another or escape staging.
+
+In `split` mode, all files must share one base name (compared case-insensitively) and use exactly one supported naming scheme. Accepted parts are normalized to consistent lowercase filenames when colocated so extraction also works on case-sensitive filesystems:
+
+- Classic: contiguous `.z01` through at most `.z99` parts, starting at `.z01`, plus exactly one terminal `.zip` file.
+- Numbered: contiguous `.zip.001` through at most `.zip.999` parts, starting at `.zip.001`; the `.zip.001` member is the extraction entry point.
+
+Missing or duplicate part numbers, duplicate member names, mixed naming schemes, unrelated base names, and unrecognized filenames return `VALIDATION_ERROR`. All parts must be present before extraction begins.
+
+The import session uses a stable logical filename independent of the order of `uploadIds`: the terminal `.zip` filename for a classic set, or the base `.zip` filename with `.001` removed for a numbered set. Metadata detection uses that logical name, and multipart scans always report `detected.modelCount: 1` because the group commits as one model.
+
+Before any 7-Zip-based extraction, including split ZIP extraction, Alexandria requests a technical listing and rejects absolute paths, drive-qualified or UNC paths, `..` path segments, symbolic links, hard links, and reparse entries. Link detection checks dedicated technical fields as well as Unix link modes reported through either `Mode` or `Attributes`; reparse markers in `Attributes` are also rejected. Extraction then checks the paths reported by 7-Zip and fails if any path resolves outside the destination.
+
+Multipart completion acquires the member-session locks in stable ID order, verifies the entire group, and atomically transitions every member from `uploading` to `assembling` before reading files. No member is marked `consumed` until every file has assembled and passed its declared byte-size check. If any member fails, assembled temporary files are removed and every still-present member returns to `uploading`, so the group can be corrected and retried without reinitializing successful members. After successful assembly, every member is consumed together. Multipart validation or queueing failures remove assembled temporary files. The scan worker removes uploaded source files on success or failure, removes failed extraction output, and always removes the temporary directory used to colocate split parts.
 
 **Response (202):**
 

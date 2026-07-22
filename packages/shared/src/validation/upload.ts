@@ -1,16 +1,39 @@
 import { z } from 'zod';
 import { SUPPORTED_ARCHIVE_EXTENSIONS } from '../constants/index.js';
 
+const isSupportedArchiveFilename = (filename: string): boolean => {
+  const lower = filename.toLowerCase();
+  return SUPPORTED_ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+};
+
+const isSplitZipPartFilename = (filename: string): boolean =>
+  /\.z(?:0[1-9]|[1-9]\d)$/i.test(filename)
+  || /\.zip\.(?:00[1-9]|0[1-9]\d|[1-9]\d{2})$/i.test(filename);
+
 export const uploadInitSchema = z.object({
   filename: z.string().min(1).max(512).refine(
-    (f) => {
-      const lower = f.toLowerCase();
-      return SUPPORTED_ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext));
-    },
+    isSupportedArchiveFilename,
     { message: 'File must be a supported archive format (.zip, .rar, .7z, .tar.gz)' },
   ),
   totalSize: z.number().int().positive().max(5 * 1024 * 1024 * 1024), // 5GB
   totalChunks: z.number().int().positive().max(1000),
+});
+
+export const multipartUploadInitSchema = uploadInitSchema.extend({
+  filename: z.string().min(1).max(512).refine(
+    (filename) => isSupportedArchiveFilename(filename) || isSplitZipPartFilename(filename),
+    {
+      message: 'File must be a supported archive or split ZIP part (.z01-.z99, .zip.001-.zip.999)',
+    },
+  ),
+});
+
+export const completeMultipartUploadSchema = z.object({
+  uploadIds: z.array(z.string().uuid()).min(2).max(100).refine(
+    (uploadIds) => new Set(uploadIds).size === uploadIds.length,
+    { message: 'Upload IDs must be unique' },
+  ),
+  mode: z.enum(['combine', 'split']),
 });
 
 export const chunkIndexParamsSchema = z.object({
@@ -56,6 +79,7 @@ export const extractImportSessionArchiveSchema = z.object({
 });
 
 export type UploadInitRequest = z.infer<typeof uploadInitSchema>;
+export type MultipartUploadInitRequest = z.infer<typeof multipartUploadInitSchema>;
 export type ChunkIndexParams = z.infer<typeof chunkIndexParamsSchema>;
 export type UploadCompleteParams = z.infer<typeof uploadCompleteParamsSchema>;
 export type ExtractImportSessionArchiveRequest = z.infer<typeof extractImportSessionArchiveSchema>;

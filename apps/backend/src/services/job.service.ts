@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq';
-import type { ImportStrategy, BatchUploadMetadata } from '@alexandria/shared';
+import type { ImportStrategy, BatchUploadMetadata, MultipartArchiveMode } from '@alexandria/shared';
 import { config } from '../config/index.js';
 import { parseRedisUrl } from '../utils/redis.js';
 
@@ -28,6 +28,11 @@ export interface ScanJobPayload {
   originalFilename: string;
   userId: string;
   libraryId: string;
+  /** Present for explicitly grouped archives. Absent on legacy/single-file jobs. */
+  multipart?: {
+    files: Array<{ tempFilePath: string; originalFilename: string }>;
+    mode: MultipartArchiveMode;
+  };
 }
 
 /** Commit phase of a staged upload: persist files + apply batch metadata. */

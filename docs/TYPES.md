@@ -544,10 +544,38 @@ type ImportPhase = 'scanning' | 'importing' | 'processing' | 'complete' | 'error
 
 ### Staged Upload Types
 
-These types support the scan → review → commit ingestion workflow introduced in P3. All are defined in `packages/shared/src/types/upload.ts`.
+These types support the scan → review → commit ingestion workflow introduced in P3. Response and domain types are defined in `packages/shared/src/types/upload.ts`; request types are inferred from `packages/shared/src/validation/upload.ts`.
 
 ```typescript
-// API response from POST /models/upload and POST /models/upload/:uploadId/complete
+// POST /models/upload/init
+interface UploadInitRequest {
+  filename: string;             // complete supported archive; 1–512 characters
+  totalSize: number;            // positive integer; maximum 5 GB
+  totalChunks: number;          // positive integer; maximum 1000
+}
+
+// POST /models/upload/multipart/init uses the same numeric limits but also
+// permits split ZIP member names in .z01–.z99 and .zip.001–.zip.999 ranges.
+type MultipartUploadInitRequest = UploadInitRequest;
+
+// POST /models/upload/init and POST /models/upload/multipart/init
+interface UploadInitResponse {
+  uploadId: string;
+  expiresAt: string;            // ISO 8601 timestamp; two hours after init
+}
+
+// PUT /models/upload/:uploadId/chunk/:index
+interface ChunkUploadResponse {
+  received: number;             // bytes written for this chunk
+}
+
+// Shared completion response for either chunked complete endpoint.
+interface UploadCompleteResponse {
+  sessionId: string;
+}
+
+// Staged scan response used by POST /models/upload,
+// POST /models/upload/:uploadId/complete, and POST /models/upload/multipart/complete.
 interface ScanUploadResponse {
   sessionId: string;
 }
@@ -558,7 +586,7 @@ type MultipartArchiveMode = 'combine' | 'split';
 // POST /models/upload/multipart/complete
 interface CompleteMultipartUploadRequest {
   uploadIds: string[];           // 2–100 unique chunked upload session IDs
-  mode: MultipartArchiveMode;
+  mode: MultipartArchiveMode;    // combine independent archives or extract one split set
 }
 
 // A node in the folder-structure preview detected during scan
@@ -571,7 +599,7 @@ interface DetectedFolderNode {
 
 // Heuristic metadata detected from archive contents and filename during the scan phase
 interface DetectedImportMetadata {
-  modelCount: number;           // count of detected sub-models (display only; one model is created on commit)
+  modelCount: number;           // multipart scans force 1; display only; one model is created on commit
   fileCount: number;
   totalSizeBytes: number;
   artist: string | null;        // extracted from folder structure or filename

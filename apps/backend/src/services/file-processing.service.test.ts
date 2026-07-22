@@ -1,11 +1,25 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { EventEmitter } from 'node:events';
 import archiver from 'archiver';
-import { FileProcessingService } from './file-processing.service.js';
+import * as tar from 'tar';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { path7za } from '7zip-bin';
+import Seven from 'node-7z';
+import {
+  FileProcessingService,
+  validateSplitZipSet,
+  validate7zArchiveEntry,
+  type FileManifest,
+  type MultipartArchiveFile,
+} from './file-processing.service.js';
+
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -300,5 +314,338 @@ describe('FileProcessingService – processArchive (zip) manifest', () => {
       expect(entry.hash).toMatch(/^[a-f0-9]{64}$/);
       expect(entry.sizeBytes).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('validateSplitZipSet', () => {
+  const files = (...filenames: string[]): MultipartArchiveFile[] => filenames.map(
+    (originalFilename, index) => ({ tempFilePath: `/tmp/part-${index}`, originalFilename }),
+  );
+
+  it('accepts a complete classic set and selects the terminal zip', () => {
+    expect(validateSplitZipSet(files('dragon.z02', 'dragon.zip', 'dragon.z01'))).toEqual({
+      kind: 'classic',
+      entryFilename: 'dragon.zip',
+      logicalFilename: 'dragon.zip',
+    });
+  });
+
+  it('accepts a contiguous numbered set beginning at 001', () => {
+    expect(validateSplitZipSet(files('dragon.zip.002', 'dragon.zip.001'))).toEqual({
+      kind: 'numbered',
+      entryFilename: 'dragon.zip.001',
+      logicalFilename: 'dragon.zip',
+    });
+  });
+
+  it.each([
+    [
+      'classic extensions and base names',
+      ['Dragon.Z01', 'DRAGON.z02', 'dragon.ZIP'],
+      { kind: 'classic', entryFilename: 'dragon.zip', logicalFilename: 'dragon.ZIP' },
+    ],
+    [
+      'numbered extensions and base names',
+      ['Dragon.ZIP.002', 'dragon.zip.001'],
+      { kind: 'numbered', entryFilename: 'dragon.zip.001', logicalFilename: 'dragon.zip' },
+    ],
+  ])('accepts %s case-insensitively', (_label, filenames, expected) => {
+    expect(validateSplitZipSet(files(...filenames))).toEqual(expected);
+  });
+
+  it.each([
+    ['a gap', ['dragon.z01', 'dragon.z03', 'dragon.zip']],
+    ['a numbered gap', ['dragon.zip.001', 'dragon.zip.003']],
+    ['mixed naming schemes', ['dragon.z01', 'dragon.zip', 'dragon.zip.001']],
+    ['unrelated bases', ['dragon.z01', 'other.zip']],
+    ['duplicate members', ['dragon.zip.001', 'DRAGON.ZIP.001']],
+    ['duplicate classic part numbers', ['dragon.z01', 'DRAGON.Z01', 'dragon.zip']],
+    ['a missing terminal zip', ['dragon.z01', 'dragon.z02']],
+    ['an unrelated member', ['dragon.z01', 'dragon.zip', 'notes.txt']],
+    ['classic part zero', ['dragon.z00', 'dragon.zip']],
+    ['classic part above 99', ['dragon.z100', 'dragon.zip']],
+    ['numbered part zero', ['dragon.zip.000', 'dragon.zip.001']],
+    ['numbered part above 999', ['dragon.zip.001', 'dragon.zip.1000']],
+  ])('rejects %s', (_label, filenames) => {
+    expect(() => validateSplitZipSet(files(...filenames))).toThrow();
+  });
+});
+
+describe('FileProcessingService – multipart archives', () => {
+  it('selects the canonical name from selection order for combine and part order for split', () => {
+    expect(service.validateMultipartArchives([
+      { tempFilePath: '/tmp/second.zip', originalFilename: 'second-selected.zip' },
+      { tempFilePath: '/tmp/first.zip', originalFilename: 'first-selected.zip' },
+    ], 'combine')).toBe('second-selected.zip');
+
+    expect(service.validateMultipartArchives([
+      { tempFilePath: '/tmp/part-2', originalFilename: 'PACK.ZIP.002' },
+      { tempFilePath: '/tmp/part-1', originalFilename: 'Pack.Zip.001' },
+    ], 'split')).toBe('Pack.Zip');
+
+    expect(service.validateMultipartArchives([
+      { tempFilePath: '/tmp/part-2', originalFilename: 'PACK.Z02' },
+      { tempFilePath: '/tmp/terminal', originalFilename: 'Pack.Zip' },
+      { tempFilePath: '/tmp/part-1', originalFilename: 'pack.z01' },
+    ], 'split')).toBe('Pack.Zip');
+  });
+
+  it.each([
+    '...zip',
+    '..zip',
+    '.zip',
+    'folder/model.zip',
+    '/absolute/model.zip',
+    'C:\\absolute\\model.zip',
+  ])('rejects unsafe combine folder source %s', async (originalFilename) => {
+    const processArchive = vi.spyOn(service, 'processArchive');
+    await expect(service.processMultipartArchives(
+      [
+        { tempFilePath: '/tmp/a.zip', originalFilename },
+        { tempFilePath: '/tmp/b.zip', originalFilename: 'safe.zip' },
+      ],
+      path.join(tmpDir, 'unsafe-combine'),
+      'combine',
+    )).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(processArchive).not.toHaveBeenCalled();
+    processArchive.mockRestore();
+  });
+  it('rejects split-only members in combine mode before extracting an archive', async () => {
+    const processArchive = vi.spyOn(service, 'processArchive');
+
+    await expect(service.processMultipartArchives(
+      [
+        { tempFilePath: '/tmp/model.z01', originalFilename: 'model.z01' },
+        { tempFilePath: '/tmp/model.z02', originalFilename: 'model.z02' },
+      ],
+      path.join(tmpDir, 'invalid-combine-output'),
+      'combine',
+    )).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    expect(processArchive).not.toHaveBeenCalled();
+  });
+
+  it('extracts colliding archive names into distinct archive-named folders', async () => {
+    const firstDir = path.join(tmpDir, 'combine-first');
+    const secondDir = path.join(tmpDir, 'combine-second');
+    await fsPromises.mkdir(firstDir, { recursive: true });
+    await fsPromises.mkdir(secondDir, { recursive: true });
+    const firstZip = path.join(firstDir, 'model.zip');
+    const secondZip = path.join(secondDir, 'model.zip');
+    await createTestZip(firstZip, [{ name: 'first.stl', content: 'first' }]);
+    await createTestZip(secondZip, [{ name: 'second.stl', content: 'second' }]);
+
+    const manifest = await service.processMultipartArchives(
+      [
+        { tempFilePath: firstZip, originalFilename: 'Model.zip' },
+        { tempFilePath: secondZip, originalFilename: 'model.ZIP' },
+      ],
+      path.join(tmpDir, 'combine-output'),
+      'combine',
+    );
+
+    expect(manifest.entries.map((entry) => entry.relativePath).sort()).toEqual([
+      path.join('Model', 'first.stl'),
+      path.join('model-2', 'second.stl'),
+    ].sort());
+    expect(manifest.totalSizeBytes).toBe(11);
+  });
+
+  it('dispatches a classic split set to bundled 7-Zip using the terminal zip', async () => {
+    const partOne = path.join(tmpDir, 'split-source-z01');
+    const terminal = path.join(tmpDir, 'split-source-zip');
+    await fsPromises.writeFile(partOne, 'part one');
+    await fsPromises.writeFile(terminal, 'terminal');
+    const expectedManifest = { entries: [], totalSizeBytes: 0 };
+    const process7z = vi
+      .spyOn(service as unknown as {
+        process7z: (archivePath: string, extractDir: string) => Promise<typeof expectedManifest>;
+      }, 'process7z')
+      .mockResolvedValue(expectedManifest);
+    const extractDir = path.join(tmpDir, 'split-output');
+
+    await expect(service.processMultipartArchives(
+      [
+        { tempFilePath: partOne, originalFilename: 'bundle.z01' },
+        { tempFilePath: terminal, originalFilename: 'bundle.zip' },
+      ],
+      extractDir,
+      'split',
+    )).resolves.toEqual(expectedManifest);
+
+    expect(process7z).toHaveBeenCalledWith(
+      expect.stringMatching(/bundle\.zip$/),
+      extractDir,
+    );
+    process7z.mockRestore();
+  });
+
+  it('removes the temporary split-parts directory when extraction fails', async () => {
+    const partOne = path.join(tmpDir, 'failed-split-source-z01');
+    const terminal = path.join(tmpDir, 'failed-split-source-zip');
+    await fsPromises.writeFile(partOne, 'part one');
+    await fsPromises.writeFile(terminal, 'terminal');
+    let entryPath: string | undefined;
+    const process7z = vi
+      .spyOn(service as unknown as {
+        process7z: (archivePath: string, extractDir: string) => Promise<FileManifest>;
+      }, 'process7z')
+      .mockImplementation(async (archivePath) => {
+        entryPath = archivePath;
+        throw new Error('split extraction failed');
+      });
+
+    await expect(service.processMultipartArchives(
+      [
+        { tempFilePath: partOne, originalFilename: 'bundle.z01' },
+        { tempFilePath: terminal, originalFilename: 'bundle.zip' },
+      ],
+      path.join(tmpDir, 'failed-split-output'),
+      'split',
+    )).rejects.toThrow('split extraction failed');
+
+    expect(entryPath).toBeDefined();
+    await expect(fsPromises.access(path.dirname(entryPath!))).rejects.toThrow();
+    process7z.mockRestore();
+  });
+
+  it('extracts a real classic .z01 + terminal .zip fixture', async () => {
+    const fixtureDir = path.join(tmpDir, 'real-classic');
+    const sourceDir = path.join(fixtureDir, 'source');
+    await fsPromises.mkdir(sourceDir, { recursive: true });
+    await fsPromises.writeFile(path.join(sourceDir, 'payload.stl'), crypto.randomBytes(180_000));
+    const archivePath = path.join(fixtureDir, 'bundle.zip');
+    await execFileAsync('zip', ['-q', '-s', '64k', archivePath, 'payload.stl'], {
+      cwd: sourceDir,
+    });
+    const names = (await fsPromises.readdir(fixtureDir)).filter((name) => /^bundle\.(?:z\d{2}|zip)$/i.test(name));
+    expect(names.some((name) => /\.z01$/i.test(name))).toBe(true);
+
+    const manifest = await service.processMultipartArchives(
+      names.reverse().map((name) => ({
+        tempFilePath: path.join(fixtureDir, name),
+        originalFilename: name.replace('bundle', 'BuNdLe'),
+      })),
+      path.join(fixtureDir, 'extracted'),
+      'split',
+    );
+
+    expect(manifest.entries).toEqual([
+      expect.objectContaining({ filename: 'payload.stl', sizeBytes: 180_000 }),
+    ]);
+  });
+
+  it('extracts a real numbered .zip.001 fixture generated by bundled 7za', async () => {
+    const fixtureDir = path.join(tmpDir, 'real-numbered');
+    const sourceDir = path.join(fixtureDir, 'source');
+    await fsPromises.mkdir(sourceDir, { recursive: true });
+    await fsPromises.writeFile(path.join(sourceDir, 'payload.stl'), crypto.randomBytes(180_000));
+    const archivePath = path.join(fixtureDir, 'bundle.zip');
+    await execFileAsync(path7za, ['a', '-tzip', '-v64k', archivePath, 'payload.stl'], {
+      cwd: sourceDir,
+    });
+    const names = (await fsPromises.readdir(fixtureDir)).filter((name) => /^bundle\.zip\.\d{3}$/i.test(name));
+    expect(names.some((name) => /\.001$/i.test(name))).toBe(true);
+
+    const manifest = await service.processMultipartArchives(
+      names.reverse().map((name, index) => ({
+        tempFilePath: path.join(fixtureDir, name),
+        originalFilename: index % 2 === 0 ? name.toUpperCase() : name,
+      })),
+      path.join(fixtureDir, 'extracted'),
+      'split',
+    );
+
+    expect(manifest.entries).toEqual([
+      expect.objectContaining({ filename: 'payload.stl', sizeBytes: 180_000 }),
+    ]);
+  });
+});
+
+describe('7-Zip extraction preflight', () => {
+  it.each([
+    '../escape.stl',
+    'safe/../../escape.stl',
+    '/absolute/escape.stl',
+    'C:\\escape.stl',
+    '\\\\server\\share\\escape.stl',
+  ])('rejects unsafe member path %s', (file) => {
+    expect(() => validate7zArchiveEntry({ file })).toThrow();
+  });
+
+  it.each([
+    new Map([['Symbolic Link', 'target']]),
+    new Map([['Hard Link', 'target']]),
+    new Map([['Mode', '0lrwxrwxrwx']]),
+    new Map([['Attributes', 'A_ lrwxr-xr-x']]),
+    new Map([['Reparse Point', 'junction-target']]),
+  ])('rejects link/reparse listing metadata', (techInfo) => {
+    expect(() => validate7zArchiveEntry({ file: 'safe.stl', techInfo })).toThrow();
+  });
+
+  it('allows a normal relative file', () => {
+    expect(() => validate7zArchiveEntry({
+      file: 'folder/model.stl',
+      techInfo: new Map([['Mode', '0rw-r--r--']]),
+    })).not.toThrow();
+  });
+
+  it.each([
+    ['path traversal', { file: '../escape.stl' }],
+    ['symbolic-link metadata', {
+      file: 'safe-link.stl',
+      techInfo: new Map([['Symbolic Link', 'target.stl']]),
+    }],
+    ['hard-link metadata', {
+      file: 'safe-link.stl',
+      techInfo: new Map([['Hard Link', 'target.stl']]),
+    }],
+  ])('rejects %s during listing before invoking extraction', async (_label, unsafeEntry) => {
+    const listing = new EventEmitter();
+    const list = vi.spyOn(Seven, 'list').mockImplementation(() => {
+      queueMicrotask(() => {
+        listing.emit('data', unsafeEntry);
+        listing.emit('end');
+      });
+      return listing as never;
+    });
+    const extract = vi.spyOn(Seven, 'extractFull');
+
+    try {
+      await expect(service.processArchive(
+        path.join(tmpDir, 'unsafe-listing.7z'),
+        path.join(tmpDir, 'unsafe-listing-output'),
+      )).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      expect(list).toHaveBeenCalledOnce();
+      expect(extract).not.toHaveBeenCalled();
+    } finally {
+      list.mockRestore();
+      extract.mockRestore();
+    }
+  });
+
+  it('rejects a real symlink-preserving ZIP before invoking extraction', async () => {
+    const fixtureDir = path.join(tmpDir, 'malicious-symlink-zip');
+    const sourceDir = path.join(fixtureDir, 'source');
+    await fsPromises.mkdir(sourceDir, { recursive: true });
+    await fsPromises.writeFile(path.join(sourceDir, 'target.stl'), 'safe target');
+    await fsPromises.symlink('target.stl', path.join(sourceDir, 'link.stl'));
+    const archivePath = path.join(fixtureDir, 'symlink.zip');
+    await execFileAsync('zip', ['-q', '-y', archivePath, 'target.stl', 'link.stl'], {
+      cwd: sourceDir,
+    });
+    const extract7z = vi.spyOn(service as unknown as {
+      extract7z: (archive: string, destination: string) => Promise<void>;
+    }, 'extract7z');
+
+    await expect((service as unknown as {
+      process7z: (archive: string, destination: string) => Promise<FileManifest>;
+    }).process7z(
+      archivePath,
+      path.join(fixtureDir, 'extracted'),
+    )).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    expect(extract7z).not.toHaveBeenCalled();
+    extract7z.mockRestore();
   });
 });

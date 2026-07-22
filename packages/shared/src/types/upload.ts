@@ -6,20 +6,15 @@ import type { FileType } from './model.js';
 
 export interface UploadInitResponse {
   uploadId: string;
-  chunkSize: number;
-  totalChunks: number;
+  expiresAt: string;
 }
 
 export interface ChunkUploadResponse {
-  uploadId: string;
-  index: number;
   received: number;
-  totalChunks: number;
 }
 
 export interface UploadCompleteResponse {
-  modelId: string;
-  jobId: string;
+  sessionId: string;
 }
 
 export interface UploadProgress {
@@ -107,6 +102,15 @@ export interface ImportSession {
  */
 export interface ScanUploadResponse {
   sessionId: string;
+}
+
+/** How an explicitly grouped set of uploaded archives should be extracted. */
+export type MultipartArchiveMode = 'combine' | 'split';
+
+/** Request body for POST /models/upload/multipart/complete. */
+export interface CompleteMultipartUploadRequest {
+  uploadIds: string[];
+  mode: MultipartArchiveMode;
 }
 
 /**

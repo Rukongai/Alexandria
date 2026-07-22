@@ -16,6 +16,7 @@ import type {
   UpdateModelFolderRequest,
   DeleteModelFolderRequest,
   ExtractImportSessionArchiveRequest,
+  CompleteMultipartUploadRequest,
 } from '@alexandria/shared';
 import {
   createModelFolderSchema,
@@ -27,6 +28,8 @@ import {
   updateModelFolderSchema,
   updateModelSchema,
   uploadInitSchema,
+  multipartUploadInitSchema,
+  completeMultipartUploadSchema,
   chunkIndexParamsSchema,
   uploadCompleteParamsSchema,
   commitImportSessionSchema,
@@ -120,6 +123,31 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /upload/multipart/init — initiate one member of an explicit archive group
+  app.post(
+    '/upload/multipart/init',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const parseResult = multipartUploadInitSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        const firstIssue = parseResult.error.issues[0];
+        throw validationError(
+          firstIssue?.message ?? 'Validation failed',
+          firstIssue?.path.join('.') ?? undefined,
+        );
+      }
+
+      const { filename, totalSize, totalChunks } = parseResult.data;
+      const result = uploadService.initUpload(
+        filename,
+        totalSize,
+        totalChunks,
+        request.user!.id,
+      );
+      return reply.status(201).send({ data: result, meta: null, errors: null });
+    },
+  );
+
   // PUT /upload/:uploadId/chunk/:index — receive a single chunk
   app.put(
     '/upload/:uploadId/chunk/:index',
@@ -147,9 +175,43 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  app.delete(
+    '/upload/:uploadId',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const parseResult = uploadCompleteParamsSchema.safeParse(request.params);
+      if (!parseResult.success) {
+        const firstIssue = parseResult.error.issues[0];
+        throw validationError(
+          firstIssue?.message ?? 'Validation failed',
+          firstIssue?.path.join('.') ?? undefined,
+        );
+      }
+      await uploadService.abortUpload(parseResult.data.uploadId, request.user!.id);
+      return reply.status(200).send({ data: null, meta: null, errors: null });
+    },
+  );
+
   // POST /upload/:uploadId/complete — assemble chunks and start ingestion
   // requireLibrary is mandatory: libraryId comes ONLY from request.libraryId,
   // never from query or body parameters.
+  app.post(
+    '/upload/multipart/complete',
+    { preHandler: [requireAuth, requireLibrary, validate(completeMultipartUploadSchema)] },
+    async (request, reply) => {
+      const { uploadIds, mode } = request.body as CompleteMultipartUploadRequest;
+      const userId = request.user!.id;
+      const files = await uploadService.assembleFiles(uploadIds, userId);
+      const { sessionId } = await ingestionService.handleMultipartScan(
+        files,
+        mode,
+        userId,
+        request.libraryId!,
+      );
+      return reply.status(202).send({ data: { sessionId }, meta: null, errors: null });
+    },
+  );
+
   app.post(
     '/upload/:uploadId/complete',
     { preHandler: [requireAuth, requireLibrary] },

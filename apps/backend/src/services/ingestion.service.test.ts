@@ -24,6 +24,7 @@ vi.mock('./model.service.js', () => ({
 vi.mock('./job.service.js', () => ({
   jobService: {
     enqueueIngestionJob: vi.fn(),
+    enqueueScanJob: vi.fn(),
   },
   JobService: vi.fn(),
 }));
@@ -31,6 +32,8 @@ vi.mock('./job.service.js', () => ({
 vi.mock('./file-processing.service.js', () => ({
   fileProcessingService: {
     processArchive: vi.fn(),
+    processMultipartArchives: vi.fn(),
+    validateMultipartArchives: vi.fn(),
     scanDirectory: vi.fn(),
     copyManifestToStorage: vi.fn().mockResolvedValue(undefined),
   },
@@ -39,6 +42,7 @@ vi.mock('./file-processing.service.js', () => ({
 
 vi.mock('./import-session.service.js', () => ({
   importSessionService: {
+    create: vi.fn(),
     getOwnedRow: vi.fn(),
     update: vi.fn(),
     toDto: vi.fn(),
@@ -275,6 +279,173 @@ describe('IngestionService – processIngestionJob', () => {
     expect(job.updateProgress).toHaveBeenCalledWith(50);
     expect(job.updateProgress).toHaveBeenCalledWith(75);
     expect(job.updateProgress).toHaveBeenCalledWith(100);
+  });
+});
+
+describe('IngestionService – multipart scan orchestration', () => {
+  let service: IngestionService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fileProcessingService.validateMultipartArchives).mockReset();
+    vi.mocked(fileProcessingService.validateMultipartArchives).mockReturnValue('model-a.zip');
+    service = new IngestionService();
+  });
+
+  it('creates one import session and carries the archive group into one scan job', async () => {
+    const files = [
+      { tempFilePath: '/tmp/model-a.zip', originalFilename: 'model-a.zip' },
+      { tempFilePath: '/tmp/model-b.zip', originalFilename: 'model-b.zip' },
+    ];
+    vi.mocked(importSessionService.create).mockResolvedValue({ id: 'session-1' });
+    vi.mocked(jobService.enqueueScanJob).mockResolvedValue('job-1');
+
+    await expect(service.handleMultipartScan(
+      files,
+      'combine',
+      'user-1',
+      'library-1',
+    )).resolves.toEqual({ sessionId: 'session-1' });
+
+    expect(fileProcessingService.validateMultipartArchives).toHaveBeenCalledWith(files, 'combine');
+    expect(importSessionService.create).toHaveBeenCalledOnce();
+    expect(jobService.enqueueScanJob).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      tempFilePath: '/tmp/model-a.zip',
+      originalFilename: 'model-a.zip',
+      userId: 'user-1',
+      libraryId: 'library-1',
+      multipart: { files, mode: 'combine' },
+    });
+    expect(fsPromises.rm).not.toHaveBeenCalled();
+  });
+
+  it('uses the canonical split filename for the session and scan job', async () => {
+    const files = [
+      { tempFilePath: '/tmp/dragon-part-2', originalFilename: 'DRAGON.ZIP.002' },
+      { tempFilePath: '/tmp/dragon-part-1', originalFilename: 'Dragon.Zip.001' },
+    ];
+    vi.mocked(fileProcessingService.validateMultipartArchives).mockReturnValue('Dragon.Zip');
+    vi.mocked(importSessionService.create).mockResolvedValue({ id: 'session-1' });
+    vi.mocked(jobService.enqueueScanJob).mockResolvedValue('job-1');
+
+    await service.handleMultipartScan(files, 'split', 'user-1', 'library-1');
+
+    expect(importSessionService.create).toHaveBeenCalledWith({
+      userId: 'user-1',
+      libraryId: 'library-1',
+      originalFilename: 'Dragon.Zip',
+    });
+    expect(jobService.enqueueScanJob).toHaveBeenCalledWith(
+      expect.objectContaining({ originalFilename: 'Dragon.Zip' }),
+    );
+  });
+
+  it('reports one detected model for a multipart session while retaining folder preview', async () => {
+    const files = [
+      { tempFilePath: '/tmp/a.zip', originalFilename: 'a.zip' },
+      { tempFilePath: '/tmp/b.zip', originalFilename: 'b.zip' },
+    ];
+    vi.mocked(fileProcessingService.processMultipartArchives).mockResolvedValue({
+      entries: [
+        { filename: 'a.stl', relativePath: 'a/a.stl', fileType: 'stl', mimeType: 'model/stl', sizeBytes: 1, hash: 'a' },
+        { filename: 'b.stl', relativePath: 'b/b.stl', fileType: 'stl', mimeType: 'model/stl', sizeBytes: 1, hash: 'b' },
+      ],
+      totalSizeBytes: 2,
+    });
+
+    await service.processScanJob(
+      'session-1',
+      files[0].tempFilePath,
+      'a.zip',
+      'library-1',
+      { files, mode: 'combine' },
+    );
+
+    expect(importSessionService.update).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        detected: expect.objectContaining({
+          modelCount: 1,
+          folderStructure: expect.arrayContaining([
+            expect.objectContaining({ name: 'a', type: 'folder' }),
+            expect.objectContaining({ name: 'b', type: 'folder' }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it('cleans every assembled member when multipart validation fails', async () => {
+    const files = [
+      { tempFilePath: '/tmp/model.z01', originalFilename: 'model.z01' },
+      { tempFilePath: '/tmp/other.zip', originalFilename: 'other.zip' },
+    ];
+    vi.mocked(fileProcessingService.validateMultipartArchives).mockImplementation(() => {
+      throw new Error('unrelated split parts');
+    });
+
+    await expect(service.handleMultipartScan(
+      files,
+      'split',
+      'user-1',
+      'library-1',
+    )).rejects.toThrow('unrelated split parts');
+
+    expect(importSessionService.create).not.toHaveBeenCalled();
+    expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/model.z01', { force: true });
+    expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/other.zip', { force: true });
+  });
+
+  it('cleans every assembled member when enqueueing the multipart scan fails', async () => {
+    const files = [
+      { tempFilePath: '/tmp/model-a.zip', originalFilename: 'model-a.zip' },
+      { tempFilePath: '/tmp/model-b.zip', originalFilename: 'model-b.zip' },
+    ];
+    vi.mocked(importSessionService.create).mockResolvedValue({ id: 'session-1' });
+    vi.mocked(jobService.enqueueScanJob).mockRejectedValue(new Error('queue unavailable'));
+
+    await expect(service.handleMultipartScan(
+      files,
+      'combine',
+      'user-1',
+      'library-1',
+    )).rejects.toThrow('queue unavailable');
+
+    expect(importSessionService.update).toHaveBeenCalledWith('session-1', {
+      status: 'error',
+      error: 'Failed to start scan',
+    });
+    expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/model-a.zip', { force: true });
+    expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/model-b.zip', { force: true });
+  });
+
+  it('cleans all multipart inputs and partial extraction output when extraction fails', async () => {
+    const files = [
+      { tempFilePath: '/tmp/model.z01', originalFilename: 'model.z01' },
+      { tempFilePath: '/tmp/model.zip', originalFilename: 'model.zip' },
+    ];
+    vi.mocked(fileProcessingService.processMultipartArchives)
+      .mockRejectedValue(new Error('corrupt split set'));
+
+    await expect(service.processScanJob(
+      'session-1',
+      files[0].tempFilePath,
+      files[0].originalFilename,
+      'library-1',
+      { files, mode: 'split' },
+    )).resolves.toBeUndefined();
+
+    expect(importSessionService.update).toHaveBeenCalledWith('session-1', {
+      status: 'error',
+      error: 'corrupt split set',
+    });
+    expect(fsPromises.rm).toHaveBeenCalledWith(
+      '/tmp/model.z01_extracted',
+      { recursive: true, force: true },
+    );
+    expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/model.z01', { force: true });
+    expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/model.zip', { force: true });
   });
 });
 

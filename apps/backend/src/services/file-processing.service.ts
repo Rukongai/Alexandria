@@ -8,13 +8,13 @@ import * as tar from 'tar';
 import { createExtractorFromFile } from 'node-unrar-js';
 import Seven from 'node-7z';
 import { path7za } from '7zip-bin';
-import type { FileType } from '@alexandria/shared';
+import type { FileType, MultipartArchiveMode } from '@alexandria/shared';
 import {
   SUPPORTED_IMAGE_FORMATS,
   SUPPORTED_DOCUMENT_FORMATS,
   STL_EXTENSIONS,
 } from '@alexandria/shared';
-import { detectArchiveExtension } from '../utils/archive.js';
+import { detectArchiveExtension, stripArchiveExtension } from '../utils/archive.js';
 import { validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 import type { IStorageService } from './storage.service.js';
@@ -33,6 +33,23 @@ export interface FileManifestEntry {
 export interface FileManifest {
   entries: FileManifestEntry[];
   totalSizeBytes: number;
+}
+
+export interface MultipartArchiveFile {
+  tempFilePath: string;
+  originalFilename: string;
+}
+
+export interface ValidatedSplitZipSet {
+  kind: 'classic' | 'numbered';
+  entryFilename: string;
+  logicalFilename: string;
+}
+
+interface SevenZipListEntry {
+  file?: string;
+  attributes?: string;
+  techInfo?: Map<string, string>;
 }
 
 const MIME_MAP: Record<string, string> = {
@@ -89,6 +106,143 @@ async function computeHashAndSize(
   return { hash: hash.digest('hex'), sizeBytes };
 }
 
+/** Validate and identify the entry member for one complete split-ZIP set. */
+export function validateSplitZipSet(files: MultipartArchiveFile[]): ValidatedSplitZipSet {
+  const filenames = files.map(({ originalFilename }) => {
+    const basename = path.posix.basename(originalFilename.replaceAll('\\', '/'));
+    if (basename !== originalFilename) {
+      throw validationError('Split ZIP members must use plain filenames');
+    }
+    return basename;
+  });
+
+  const uniqueNames = new Set(filenames.map((filename) => filename.toLowerCase()));
+  if (uniqueNames.size !== filenames.length) {
+    throw validationError('Split ZIP set contains duplicate members');
+  }
+
+  const classicParts: Array<{ filename: string; base: string; index: number }> = [];
+  const classicTerminals: Array<{ filename: string; base: string }> = [];
+  const numberedParts: Array<{ filename: string; base: string; index: number }> = [];
+
+  for (const filename of filenames) {
+    const classicMatch = /^(.*)\.z(\d{2})$/i.exec(filename);
+    if (classicMatch) {
+      classicParts.push({
+        filename,
+        base: classicMatch[1],
+        index: Number(classicMatch[2]),
+      });
+      continue;
+    }
+
+    const numberedMatch = /^(.*\.zip)\.(\d{3})$/i.exec(filename);
+    if (numberedMatch) {
+      numberedParts.push({
+        filename,
+        base: numberedMatch[1],
+        index: Number(numberedMatch[2]),
+      });
+      continue;
+    }
+
+    const terminalMatch = /^(.*)\.zip$/i.exec(filename);
+    if (terminalMatch) {
+      classicTerminals.push({ filename, base: terminalMatch[1] });
+      continue;
+    }
+
+    throw validationError(`Unrecognized split ZIP member: ${filename}`);
+  }
+
+  if (numberedParts.length > 0) {
+    if (classicParts.length > 0 || classicTerminals.length > 0) {
+      throw validationError('Split ZIP set mixes classic and numbered naming schemes');
+    }
+    const base = numberedParts[0].base.toLowerCase();
+    if (numberedParts.some((part) => part.base.toLowerCase() !== base)) {
+      throw validationError('Split ZIP members must share the same base filename');
+    }
+    const ordered = [...numberedParts].sort((a, b) => a.index - b.index);
+    for (let position = 0; position < ordered.length; position += 1) {
+      const expected = position + 1;
+      if (ordered[position].index !== expected) {
+        throw validationError(`Split ZIP set is missing part ${String(expected).padStart(3, '0')}`);
+      }
+    }
+    return {
+      kind: 'numbered',
+      entryFilename: ordered[0].filename.toLowerCase(),
+      logicalFilename: ordered[0].filename.slice(0, -4),
+    };
+  }
+
+  if (classicParts.length === 0 || classicTerminals.length !== 1) {
+    throw validationError('Classic split ZIP set requires .z01 parts and one terminal .zip file');
+  }
+  const terminal = classicTerminals[0];
+  const terminalBase = terminal.base.toLowerCase();
+  if (classicParts.some((part) => part.base.toLowerCase() !== terminalBase)) {
+    throw validationError('Split ZIP members must share the same base filename');
+  }
+  const ordered = [...classicParts].sort((a, b) => a.index - b.index);
+  for (let position = 0; position < ordered.length; position += 1) {
+    const expected = position + 1;
+    if (ordered[position].index !== expected) {
+      throw validationError(`Split ZIP set is missing part ${String(expected).padStart(2, '0')}`);
+    }
+  }
+  return {
+    kind: 'classic',
+    entryFilename: terminal.filename.toLowerCase(),
+    logicalFilename: terminal.filename,
+  };
+}
+
+function plainArchiveFilename(filename: string): string {
+  const normalized = filename.replaceAll('\\', '/');
+  const basename = path.posix.basename(normalized);
+  if (basename !== filename || path.posix.isAbsolute(normalized) || /^[a-z]:\//i.test(normalized)) {
+    throw validationError('Archive members must use plain filenames');
+  }
+  return basename;
+}
+
+export function validate7zArchiveEntry(entry: SevenZipListEntry): void {
+  const filename = entry.file;
+  if (!filename) return;
+  const normalized = filename.replaceAll('\\', '/');
+  const segments = normalized.split('/');
+  if (
+    normalized.startsWith('/')
+    || normalized.startsWith('//')
+    || /^[a-z]:\//i.test(normalized)
+    || segments.includes('..')
+  ) {
+    throw validationError(`Archive contains unsafe path: ${filename}`);
+  }
+
+  const info = entry.techInfo;
+  const symbolicLink = info?.get('Symbolic Link')?.trim();
+  const hardLink = info?.get('Hard Link')?.trim();
+  const reparse = [...(info?.entries() ?? [])].find(
+    ([key, value]) => /reparse/i.test(key) && value.trim() && value.trim() !== '-',
+  );
+  const mode = info?.get('Mode') ?? '';
+  const attributes = info?.get('Attributes') ?? entry.attributes ?? '';
+  const unixLinkMode = /(^|\s|\d)l[rwx-]/i;
+  if (
+    symbolicLink
+    || hardLink
+    || reparse
+    || unixLinkMode.test(mode)
+    || unixLinkMode.test(attributes)
+    || /reparse/i.test(attributes)
+  ) {
+    throw validationError(`Archive contains unsupported link or reparse entry: ${filename}`);
+  }
+}
+
 export interface DiscoveredModel {
   /** Directory name that matched {model} in the pattern */
   name: string;
@@ -101,6 +255,83 @@ export interface DiscoveredModel {
 }
 
 export class FileProcessingService {
+  validateMultipartArchives(
+    files: MultipartArchiveFile[],
+    mode: MultipartArchiveMode,
+  ): string {
+    if (mode === 'split') {
+      return validateSplitZipSet(files).logicalFilename;
+    }
+
+    for (const file of files) {
+      plainArchiveFilename(file.originalFilename);
+      if (!detectArchiveExtension(file.originalFilename)) {
+        throw validationError(`Unsupported archive format: ${file.originalFilename}`);
+      }
+    }
+    return files[0].originalFilename;
+  }
+
+  async processMultipartArchives(
+    files: MultipartArchiveFile[],
+    extractDir: string,
+    mode: MultipartArchiveMode,
+  ): Promise<FileManifest> {
+    this.validateMultipartArchives(files, mode);
+
+    if (mode === 'split') {
+      return this.processSplitZip(files, extractDir);
+    }
+
+    const extractRoot = path.resolve(extractDir);
+    await fsPromises.mkdir(extractRoot, { recursive: true });
+    const occupiedFolderNames = new Set<string>();
+
+    for (const file of files) {
+      const basename = plainArchiveFilename(file.originalFilename);
+      const stem = stripArchiveExtension(basename);
+      if (!stem.trim() || /^\.+$/.test(stem)) {
+        throw validationError(`Archive filename cannot produce a safe folder: ${basename}`);
+      }
+      let folderName = stem;
+      for (let suffix = 2; occupiedFolderNames.has(folderName.toLowerCase()); suffix += 1) {
+        folderName = `${stem}-${suffix}`;
+      }
+      occupiedFolderNames.add(folderName.toLowerCase());
+      const destination = path.resolve(extractRoot, folderName);
+      if (!destination.startsWith(`${extractRoot}${path.sep}`)) {
+        throw validationError(`Archive folder is outside the extraction root: ${basename}`);
+      }
+      await this.processArchive(file.tempFilePath, destination);
+    }
+
+    const entries = await this.scanDirectory(extractDir, extractDir);
+    return {
+      entries,
+      totalSizeBytes: entries.reduce((sum, entry) => sum + entry.sizeBytes, 0),
+    };
+  }
+
+  private async processSplitZip(
+    files: MultipartArchiveFile[],
+    extractDir: string,
+  ): Promise<FileManifest> {
+    const { entryFilename } = validateSplitZipSet(files);
+    const partsDir = await fsPromises.mkdtemp(path.join(path.dirname(extractDir), 'split-zip-'));
+
+    try {
+      await Promise.all(files.map(async (file) => {
+        // Normalize case so a set accepted case-insensitively can still be
+        // resolved by 7-Zip on a case-sensitive filesystem.
+        const basename = path.posix.basename(file.originalFilename).toLowerCase();
+        await fsPromises.copyFile(file.tempFilePath, path.join(partsDir, basename));
+      }));
+      return await this.process7z(path.join(partsDir, entryFilename), extractDir);
+    } finally {
+      await fsPromises.rm(partsDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
   /**
    * Walk a source directory matching against a parsed import pattern.
    * Returns a list of discovered models with their metadata/collection context.
@@ -320,6 +551,7 @@ export class FileProcessingService {
   }
 
   private async process7z(archivePath: string, extractDir: string): Promise<FileManifest> {
+    await this.preflight7z(archivePath);
     await fsPromises.mkdir(extractDir, { recursive: true });
     await this.extract7z(archivePath, extractDir);
     const entries = await this.scanDirectory(extractDir, extractDir);
@@ -327,10 +559,31 @@ export class FileProcessingService {
     return { entries, totalSizeBytes };
   }
 
+  private preflight7z(archivePath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const stream = Seven.list(archivePath, { $bin: path7za, techInfo: true });
+      let rejected = false;
+      stream.on('data', (entry: SevenZipListEntry) => {
+        if (rejected) return;
+        try {
+          validate7zArchiveEntry(entry);
+        } catch (error) {
+          rejected = true;
+          reject(error);
+        }
+      });
+      stream.on('end', () => {
+        if (!rejected) resolve();
+      });
+      stream.on('error', (error) => {
+        if (!rejected) reject(error);
+      });
+    });
+  }
+
   private extract7z(archivePath: string, extractDir: string): Promise<void> {
     const extractRoot = path.resolve(extractDir);
-    // Track files reported by 7z that land outside the extract root (path traversal guard)
-    const outsideFiles: string[] = [];
+    let unsafeReportedPath: string | null = null;
 
     return new Promise((resolve, reject) => {
       const stream = Seven.extractFull(archivePath, extractDir, {
@@ -342,23 +595,21 @@ export class FileProcessingService {
         if (entry.file) {
           const absPath = path.resolve(extractDir, entry.file);
           if (!absPath.startsWith(extractRoot + path.sep) && absPath !== extractRoot) {
-            outsideFiles.push(absPath);
+            unsafeReportedPath = entry.file;
           }
         }
       });
 
       stream.on('end', () => {
-        if (outsideFiles.length > 0) {
-          // node-7z has no pre-extraction filter, so traversal files are written then removed.
-          // Log a warning so operators can detect malicious archives.
+        if (unsafeReportedPath) {
           logger.warn(
-            { archivePath, outsideFiles },
-            '7z archive contained path-traversal entries — cleaning up',
+            { archivePath, unsafeReportedPath },
+            '7z extraction reported a path outside the extraction root after preflight',
           );
+          reject(validationError('Archive extraction escaped the destination'));
+          return;
         }
-        // Best-effort cleanup of any path-traversal files extracted outside the root
-        const cleanups = outsideFiles.map((p) => fsPromises.rm(p, { force: true }).catch(() => {}));
-        Promise.all(cleanups).then(() => resolve()).catch(resolve);
+        resolve();
       });
 
       stream.on('error', reject);
