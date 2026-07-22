@@ -118,7 +118,7 @@ export function BatchMetadataForm({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-w-0 flex-col gap-4">
       {/* Model details */}
       <FormSection label="Model details">
         <div className="flex flex-col gap-2">

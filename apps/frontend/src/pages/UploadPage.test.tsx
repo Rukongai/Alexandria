@@ -10,10 +10,19 @@ vi.mock('../api/models', async (importOriginal) => {
     ...actual,
     listImportSessions: vi.fn(),
     discardImportSession: vi.fn(),
+    uploadImportSessionFiles: vi.fn(),
   };
 });
 
-import { discardImportSession, listImportSessions } from '../api/models';
+vi.mock('../api/collections', () => ({
+  getCollections: vi.fn().mockResolvedValue({ data: [], meta: null, errors: null }),
+}));
+
+import {
+  discardImportSession,
+  listImportSessions,
+  uploadImportSessionFiles,
+} from '../api/models';
 
 const failedSession: ImportSession = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -23,6 +32,30 @@ const failedSession: ImportSession = {
   modelId: null,
   error: 'Archive is corrupt',
   createdAt: '2026-01-01T00:00:00.000Z',
+};
+
+const scanningSession: ImportSession = {
+  ...failedSession,
+  id: '22222222-2222-4222-8222-222222222222',
+  originalFilename: 'scanning-upload.zip',
+  status: 'scanning',
+  error: null,
+};
+
+const readySession: ImportSession = {
+  ...failedSession,
+  id: '33333333-3333-4333-8333-333333333333',
+  originalFilename: 'ready-upload.zip',
+  status: 'ready_for_review',
+  error: null,
+  detected: {
+    modelCount: 1,
+    fileCount: 1,
+    totalSizeBytes: 100,
+    artist: null,
+    tagsGuessed: [],
+    folderStructure: [{ name: 'model.stl', type: 'file', fileType: 'stl' }],
+  },
 };
 
 describe('UploadPage', () => {
@@ -74,6 +107,68 @@ describe('UploadPage', () => {
     await waitFor(() => {
       expect(discardImportSession).toHaveBeenCalledWith(failedSession.id);
       expect(screen.getByText('failed-upload.zip')).toBeTruthy();
+    });
+  });
+
+  it('discards a non-failed upload directly from the queue', async () => {
+    vi.mocked(listImportSessions)
+      .mockResolvedValueOnce([scanningSession])
+      .mockResolvedValue([]);
+    vi.mocked(discardImportSession).mockResolvedValue(undefined);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText('scanning-upload.zip')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Discard scanning-upload.zip' }));
+
+    await waitFor(() => {
+      expect(discardImportSession).toHaveBeenCalledWith(scanningSession.id);
+      expect(screen.queryByText('scanning-upload.zip')).toBeNull();
+    });
+  });
+
+  it('adds loose files to a ready model from its queue action', async () => {
+    const updatedSession: ImportSession = {
+      ...readySession,
+      detected: {
+        ...readySession.detected!,
+        fileCount: 2,
+        totalSizeBytes: 150,
+      },
+    };
+    vi.mocked(listImportSessions).mockResolvedValue([readySession]);
+    vi.mocked(uploadImportSessionFiles).mockResolvedValue(updatedSession);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText('ready-upload.zip')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Add files to ready-upload.zip' }));
+    const looseFile = new File(['preview'], 'preview.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Choose loose files for queued model'), {
+      target: { files: [looseFile] },
+    });
+
+    await waitFor(() => {
+      expect(uploadImportSessionFiles).toHaveBeenCalledWith(
+        readySession.id,
+        [looseFile],
+        expect.any(Function),
+      );
+      expect(screen.getByText('150 B · 2 files')).toBeTruthy();
     });
   });
 });

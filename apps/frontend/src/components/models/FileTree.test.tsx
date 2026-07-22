@@ -40,6 +40,29 @@ describe('FileTree', () => {
     expect(screen.getAllByRole('button', { name: /in 3d/i })).toHaveLength(1);
   });
 
+  it('offers extraction for a nested archive file', () => {
+    const onExtractArchive = vi.fn();
+    render(
+      <FileTree
+        tree={[
+          {
+            name: 'parts',
+            type: 'directory',
+            children: [
+              { name: 'alternate-parts.tar.gz', type: 'file', fileType: 'other', id: 'a1' },
+            ],
+          },
+        ]}
+        modelId="m1"
+        onExtractArchive={onExtractArchive}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Extract alternate-parts.tar.gz' }));
+
+    expect(onExtractArchive).toHaveBeenCalledWith('a1', 'alternate-parts.tar.gz');
+  });
+
   it('fires onOpenText with the reconstructed relative path for a text file', () => {
     const onOpenText = vi.fn();
     render(<FileTree tree={TREE} modelId="m1" onOpenText={onOpenText} />);

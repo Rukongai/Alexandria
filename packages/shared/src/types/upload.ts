@@ -67,6 +67,12 @@ export interface DetectedPreviewImage {
   sizeBytes: number;
 }
 
+export interface DetectedArchiveFile {
+  filename: string;
+  relativePath: string;
+  sizeBytes: number;
+}
+
 /**
  * Best-effort metadata detected during the scan phase. All fields are
  * heuristic and fully editable by the user before commit.
@@ -80,6 +86,7 @@ export interface DetectedImportMetadata {
   tagsGuessed: string[];
   folderStructure: DetectedFolderNode[];
   previewImages?: DetectedPreviewImage[];
+  archives?: DetectedArchiveFile[];
 }
 
 /**

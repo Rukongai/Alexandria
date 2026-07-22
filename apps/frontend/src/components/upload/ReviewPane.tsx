@@ -6,13 +6,23 @@ import {
   FileCode2,
   File,
   Package,
+  PackageOpen,
+  FilePlus2,
   Image as ImageIcon,
 } from 'lucide-react';
-import type { ImportSession, DetectedFolderNode, DetectedPreviewImage } from '@alexandria/shared';
+import type {
+  ImportSession,
+  DetectedArchiveFile,
+  DetectedFolderNode,
+  DetectedPreviewImage,
+} from '@alexandria/shared';
 import { BatchMetadataForm } from './BatchMetadataForm';
 import { UploadProgress } from './UploadProgress';
 import { Button } from '../ui/button';
 import { formatFileSize } from '../../lib/format';
+import { isArchiveFileName } from '../../lib/model-files';
+import { useExtractSessionArchive } from '../../hooks/use-import-sessions';
+import { useToast } from '../../hooks/use-toast';
 
 interface ReviewPaneProps {
   session: ImportSession;
@@ -20,6 +30,9 @@ interface ReviewPaneProps {
   onDiscard: () => void;
   onRetry: () => void;
   isDiscarding?: boolean;
+  onAddFiles?: () => void;
+  isAddingFiles?: boolean;
+  addFilesProgress?: number;
 }
 
 export function ReviewPane({
@@ -28,7 +41,26 @@ export function ReviewPane({
   onDiscard,
   onRetry,
   isDiscarding = false,
+  onAddFiles,
+  isAddingFiles = false,
+  addFilesProgress = 0,
 }: ReviewPaneProps) {
+  const extractArchive = useExtractSessionArchive();
+  const { toast } = useToast();
+
+  async function handleExtractArchive(relativePath: string) {
+    try {
+      await extractArchive.mutateAsync({ id: session.id, relativePath });
+      toast({ title: 'Archive extracted' });
+    } catch (error) {
+      toast({
+        title: 'Archive extraction failed',
+        description: error instanceof Error ? error.message : undefined,
+        variant: 'destructive',
+      });
+    }
+  }
+
   if (session.status === 'scanning') {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-5">
@@ -145,18 +177,40 @@ export function ReviewPane({
 
   return (
     <div
-      className="grid gap-6"
-      style={{ gridTemplateColumns: '1.4fr 1fr' }}
+      className="grid min-w-0 gap-6"
+      data-testid="upload-review-grid"
+      style={{
+        gridTemplateColumns: 'minmax(0, 1.4fr) minmax(320px, 1fr)',
+      }}
     >
       {/* Left: folder structure + counts */}
-      <div>
-        <div className="flex items-baseline justify-between mb-2.5">
+      <div className="min-w-0">
+        <div className="mb-2.5 flex min-w-0 items-center justify-between gap-3">
           <h2 className="text-[16px] font-bold" style={{ color: 'var(--ax-fg)' }}>
             {detected.modelCount} model{detected.modelCount !== 1 ? 's' : ''} detected
           </h2>
-          <span className="ax-mono text-[12px]" style={{ color: 'var(--ax-fg-muted)' }}>
-            {detected.fileCount} files · {formatFileSize(detected.totalSizeBytes)}
-          </span>
+          <div className="flex flex-shrink-0 items-center gap-2">
+            <span className="ax-mono text-[12px]" style={{ color: 'var(--ax-fg-muted)' }}>
+              {detected.fileCount} files · {formatFileSize(detected.totalSizeBytes)}
+            </span>
+            {onAddFiles && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onAddFiles}
+                disabled={isAddingFiles}
+                className="h-7 gap-1.5 px-2 text-[11px]"
+              >
+                {isAddingFiles ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FilePlus2 className="h-3.5 w-3.5" />
+                )}
+                {isAddingFiles ? `Uploading ${addFilesProgress}%` : 'Add files'}
+              </Button>
+            )}
+          </div>
         </div>
 
         <h3
@@ -176,9 +230,17 @@ export function ReviewPane({
           {detected.folderStructure.length === 0 ? (
             <span style={{ color: 'var(--ax-fg-muted)' }}>No folder structure detected</span>
           ) : (
-            <FolderTree nodes={detected.folderStructure} depth={0} maxDepth={4} />
+            <FolderTree nodes={detected.folderStructure} depth={0} pathPrefix={[]} />
           )}
         </div>
+
+        {(detected.archives?.length ?? 0) > 0 && (
+          <NestedArchiveList
+            archives={detected.archives ?? []}
+            onExtract={(relativePath) => void handleExtractArchive(relativePath)}
+            extractingPath={extractArchive.isPending ? extractArchive.variables?.relativePath : undefined}
+          />
+        )}
 
         {(detected.previewImages?.length ?? 0) > 0 && (
           <UploadImagePreviews
@@ -220,7 +282,7 @@ function UploadImagePreviews({
   if (!selected) return null;
 
   return (
-    <div className="mt-5">
+    <div className="mt-5 min-w-0 max-w-full">
       <div className="flex items-center justify-between mb-2.5">
         <h3 className="text-[13px] font-semibold" style={{ color: 'var(--ax-fg)' }}>
           Image previews
@@ -231,13 +293,13 @@ function UploadImagePreviews({
       </div>
 
       <div
-        className="overflow-hidden rounded-xl"
+        className="min-w-0 max-w-full overflow-hidden rounded-xl"
         style={{
           background: 'var(--ax-bg-elev)',
           border: '1px solid var(--ax-border)',
         }}
       >
-        <div className="relative aspect-[16/9] bg-black/5">
+        <div className="relative aspect-[16/9] min-w-0 overflow-hidden bg-black/5">
           <img
             src={previewImageUrl(sessionId, selected.relativePath)}
             alt={selected.filename}
@@ -256,7 +318,7 @@ function UploadImagePreviews({
         </div>
 
         {images.length > 1 && (
-          <div className="flex gap-2 overflow-x-auto ax-scroll p-2">
+          <div className="ax-scroll flex min-w-0 max-w-full gap-2 overflow-x-auto p-2">
             {images.map((image, index) => (
               <button
                 key={image.relativePath}
@@ -289,48 +351,114 @@ function UploadImagePreviews({
 function FolderTree({
   nodes,
   depth,
-  maxDepth,
+  pathPrefix,
 }: {
   nodes: DetectedFolderNode[];
   depth: number;
-  maxDepth: number;
+  pathPrefix: string[];
 }) {
-  if (depth > maxDepth) {
-    return (
-      <div
-        style={{ paddingLeft: depth * 16, color: 'var(--ax-fg-muted)' }}
-        className="flex items-center gap-1.5"
-      >
-        <span>…</span>
-      </div>
-    );
-  }
-
   return (
     <>
-      {nodes.map((node, i) => (
-        <div key={i}>
-          <div
-            style={{
-              paddingLeft: depth * 16,
-              color: node.type === 'folder' ? 'var(--ax-fg)' : 'var(--ax-fg-muted)',
-            }}
-            className="flex items-center gap-1.5"
-          >
-            {node.type === 'folder' ? (
-              <Folder className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--ax-amber)' }} />
-            ) : node.fileType === 'stl' ? (
-              <FileCode2 className="w-3 h-3 flex-shrink-0" />
-            ) : (
-              <File className="w-3 h-3 flex-shrink-0" />
+      {nodes.map((node, i) => {
+        const segments = [...pathPrefix, node.name];
+        const isArchive = node.type === 'file' && isArchiveFileName(node.name);
+        const relativePath = segments.join('/');
+
+        return (
+          <div key={`${relativePath}-${i}`}>
+            <div
+              style={{
+                paddingLeft: depth * 16,
+                color: node.type === 'folder' ? 'var(--ax-fg)' : 'var(--ax-fg-muted)',
+              }}
+              className="group flex min-w-0 items-center gap-1.5"
+            >
+              {node.type === 'folder' ? (
+                <Folder className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--ax-amber)' }} />
+              ) : isArchive ? (
+                <Package className="w-3 h-3 flex-shrink-0" />
+              ) : node.fileType === 'stl' ? (
+                <FileCode2 className="w-3 h-3 flex-shrink-0" />
+              ) : (
+                <File className="w-3 h-3 flex-shrink-0" />
+              )}
+              <span className="min-w-0 flex-1 truncate">{node.name}</span>
+            </div>
+            {node.children && node.children.length > 0 && (
+              <FolderTree
+                nodes={node.children}
+                depth={depth + 1}
+                pathPrefix={segments}
+              />
             )}
-            <span>{node.name}</span>
           </div>
-          {node.children && node.children.length > 0 && (
-            <FolderTree nodes={node.children} depth={depth + 1} maxDepth={maxDepth} />
-          )}
-        </div>
-      ))}
+        );
+      })}
     </>
+  );
+}
+
+function NestedArchiveList({
+  archives,
+  onExtract,
+  extractingPath,
+}: {
+  archives: DetectedArchiveFile[];
+  onExtract: (relativePath: string) => void;
+  extractingPath?: string;
+}) {
+  return (
+    <div className="mt-5">
+      <div className="flex items-center justify-between mb-2.5">
+        <h3 className="text-[13px] font-semibold" style={{ color: 'var(--ax-fg)' }}>
+          Nested archives
+        </h3>
+        <span className="ax-mono text-[12px]" style={{ color: 'var(--ax-fg-muted)' }}>
+          {archives.length}
+        </span>
+      </div>
+      <div
+        className="overflow-hidden rounded-lg"
+        style={{ background: 'var(--ax-bg-elev)', border: '1px solid var(--ax-border)' }}
+      >
+        {archives.map((archive) => {
+          const isExtracting = extractingPath === archive.relativePath;
+          return (
+            <div
+              key={archive.relativePath}
+              className="flex min-w-0 items-center gap-2 border-b px-3 py-2 last:border-b-0"
+              style={{ borderColor: 'var(--ax-border)' }}
+            >
+              <Package className="h-3.5 w-3.5 flex-shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[12px]" style={{ color: 'var(--ax-fg)' }}>
+                  {archive.relativePath}
+                </div>
+                <div className="ax-mono text-[10.5px]" style={{ color: 'var(--ax-fg-muted)' }}>
+                  {formatFileSize(archive.sizeBytes)}
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => onExtract(archive.relativePath)}
+                disabled={Boolean(extractingPath)}
+                aria-label={`Extract ${archive.filename}`}
+                title={`Extract ${archive.filename}`}
+                className="h-7 gap-1.5 px-2 text-[11px]"
+              >
+                {isExtracting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <PackageOpen className="h-3.5 w-3.5" />
+                )}
+                Extract
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

@@ -15,6 +15,7 @@ import type {
   UpdateModelFileRequest,
   UpdateModelFolderRequest,
   DeleteModelFolderRequest,
+  ExtractImportSessionArchiveRequest,
 } from '@alexandria/shared';
 import {
   createModelFolderSchema,
@@ -29,6 +30,7 @@ import {
   chunkIndexParamsSchema,
   uploadCompleteParamsSchema,
   commitImportSessionSchema,
+  extractImportSessionArchiveSchema,
   importSessionIdParamsSchema,
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
@@ -279,6 +281,70 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /import-sessions/:id/extract — extract a nested archive in staged files
+  app.post(
+    '/import-sessions/:id/extract',
+    { preHandler: [requireAuth, requireLibrary, validate(extractImportSessionArchiveSchema)] },
+    async (request, reply) => {
+      const paramsResult = importSessionIdParamsSchema.safeParse(request.params);
+      if (!paramsResult.success) {
+        throw validationError(paramsResult.error.issues[0]?.message ?? 'Validation failed');
+      }
+      const body = request.body as ExtractImportSessionArchiveRequest;
+      const session = await ingestionService.extractSessionArchive(
+        paramsResult.data.id,
+        body.relativePath,
+        request.user!.id,
+        request.libraryId!,
+      );
+      return reply.status(200).send({ data: session, meta: null, errors: null });
+    },
+  );
+
+  // POST /import-sessions/:id/files — add loose files to a staged model
+  app.post(
+    '/import-sessions/:id/files',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const paramsResult = importSessionIdParamsSchema.safeParse(request.params);
+      if (!paramsResult.success) {
+        throw validationError(paramsResult.error.issues[0]?.message ?? 'Validation failed');
+      }
+
+      const uploads: Array<{ tempFilePath: string; originalFilename: string }> = [];
+      try {
+        for await (const data of request.files({
+          limits: { fileSize: Number.MAX_SAFE_INTEGER },
+        })) {
+          const tempFilePath = path.join(os.tmpdir(), `staged_${crypto.randomUUID()}`);
+          uploads.push({ tempFilePath, originalFilename: data.filename });
+          await pipeline(data.file, fs.createWriteStream(tempFilePath));
+
+          if (data.file.truncated) {
+            throw validationError('File exceeds the maximum size supported by the server');
+          }
+        }
+
+        if (uploads.length === 0) {
+          throw validationError('No file provided');
+        }
+
+        const session = await ingestionService.appendFilesToSession(
+          uploads,
+          paramsResult.data.id,
+          request.user!.id,
+          request.libraryId!,
+        );
+        return reply.status(200).send({ data: session, meta: null, errors: null });
+      } catch (error) {
+        await Promise.all(
+          uploads.map((upload) => fs.promises.rm(upload.tempFilePath, { force: true }).catch(() => {})),
+        );
+        throw error;
+      }
+    },
+  );
+
   // POST /import-sessions/:id/commit — apply batch metadata and create the model
   app.post(
     '/import-sessions/:id/commit',
@@ -444,6 +510,22 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const tree = presenterService.buildFileTree(files, folders);
 
       return reply.status(200).send({ data: tree, meta: null, errors: null });
+    },
+  );
+
+  // POST /:id/files/:fileId/extract — extract a stored nested archive in place
+  app.post(
+    '/:id/files/:fileId/extract',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const { id, fileId } = request.params as { id: string; fileId: string };
+      const result = await ingestionService.extractModelArchive(
+        id,
+        fileId,
+        request.user!.id,
+        request.libraryId!,
+      );
+      return reply.status(200).send({ data: result, meta: null, errors: null });
     },
   );
 

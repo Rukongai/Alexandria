@@ -1,8 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import type { FileTreeNode } from '@alexandria/shared';
-import { collectStlFiles, getPrimaryStl } from './model-files';
+import { collectStlFiles, getPrimaryStl, isArchiveFileName } from './model-files';
 
 const MODEL_ID = 'abc-123';
+
+describe('isArchiveFileName', () => {
+  it('recognizes supported archives including compound extensions', () => {
+    expect(isArchiveFileName('parts.zip')).toBe(true);
+    expect(isArchiveFileName('parts.TAR.GZ')).toBe(true);
+    expect(isArchiveFileName('parts.7z')).toBe(true);
+    expect(isArchiveFileName('parts.gz')).toBe(false);
+  });
+});
 
 describe('collectStlFiles', () => {
   it('returns an empty array for an empty tree', () => {

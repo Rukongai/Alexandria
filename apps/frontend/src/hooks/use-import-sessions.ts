@@ -5,6 +5,8 @@ import {
   getImportSession,
   commitImportSession,
   discardImportSession,
+  extractImportSessionArchive,
+  uploadImportSessionFiles,
   scanUpload,
 } from '../api/models';
 
@@ -85,6 +87,41 @@ export function useCommitSession() {
     onSuccess: (_data, { id }) => {
       queryClient.invalidateQueries({ queryKey: ['import-sessions'] });
       queryClient.invalidateQueries({ queryKey: ['import-session', id] });
+    },
+  });
+}
+
+export function useExtractSessionArchive() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, relativePath }: { id: string; relativePath: string }) =>
+      extractImportSessionArchive(id, relativePath),
+    onSuccess: (updatedSession, { id }) => {
+      queryClient.setQueryData(['import-session', id], updatedSession);
+      queryClient.setQueryData<ImportSession[]>(['import-sessions'], (sessions) =>
+        sessions?.map((session) => session.id === id ? updatedSession : session),
+      );
+    },
+  });
+}
+
+export function useAddSessionFiles() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      files,
+      onProgress,
+    }: {
+      id: string;
+      files: File[];
+      onProgress?: (pct: number) => void;
+    }) => uploadImportSessionFiles(id, files, onProgress),
+    onSuccess: (updatedSession, { id }) => {
+      queryClient.setQueryData(['import-session', id], updatedSession);
+      queryClient.setQueryData<ImportSession[]>(['import-sessions'], (sessions) =>
+        sessions?.map((session) => session.id === id ? updatedSession : session),
+      );
     },
   });
 }

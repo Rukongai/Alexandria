@@ -13,6 +13,10 @@ vi.mock('./model.service.js', () => ({
     createThumbnails: vi.fn(),
     updateModelStatus: vi.fn(),
     getModelById: vi.fn(),
+    requireOwnedModel: vi.fn(),
+    getModelFiles: vi.fn(),
+    getModelFolders: vi.fn(),
+    recalculateModelStats: vi.fn(),
   },
   ModelService: vi.fn(),
 }));
@@ -27,9 +31,26 @@ vi.mock('./job.service.js', () => ({
 vi.mock('./file-processing.service.js', () => ({
   fileProcessingService: {
     processArchive: vi.fn(),
+    scanDirectory: vi.fn(),
     copyManifestToStorage: vi.fn().mockResolvedValue(undefined),
   },
   FileProcessingService: vi.fn(),
+}));
+
+vi.mock('./import-session.service.js', () => ({
+  importSessionService: {
+    getOwnedRow: vi.fn(),
+    update: vi.fn(),
+    toDto: vi.fn(),
+  },
+  ImportSessionService: vi.fn(),
+}));
+
+vi.mock('./metadata.service.js', () => ({
+  metadataService: {
+    listFieldValues: vi.fn().mockResolvedValue([]),
+  },
+  MetadataService: vi.fn(),
 }));
 
 vi.mock('./thumbnail.service.js', () => ({
@@ -42,6 +63,8 @@ vi.mock('./thumbnail.service.js', () => ({
 vi.mock('./storage.service.js', () => ({
   storageService: {
     store: vi.fn(),
+    delete: vi.fn(),
+    resolveStoragePath: vi.fn(),
   },
   StorageService: vi.fn(),
 }));
@@ -57,6 +80,9 @@ vi.mock('node:fs', () => ({
 vi.mock('node:fs/promises', () => ({
   default: {
     rm: vi.fn().mockResolvedValue(undefined),
+    mkdtemp: vi.fn().mockResolvedValue('/tmp/alexandria-extract-test'),
+    copyFile: vi.fn().mockResolvedValue(undefined),
+    access: vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { code: 'ENOENT' })),
   },
 }));
 
@@ -67,6 +93,9 @@ import { IngestionService } from './ingestion.service.js';
 import { modelService } from './model.service.js';
 import { jobService } from './job.service.js';
 import { fileProcessingService } from './file-processing.service.js';
+import { storageService } from './storage.service.js';
+import { importSessionService } from './import-session.service.js';
+import fsPromises from 'node:fs/promises';
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -246,5 +275,215 @@ describe('IngestionService – processIngestionJob', () => {
     expect(job.updateProgress).toHaveBeenCalledWith(50);
     expect(job.updateProgress).toHaveBeenCalledWith(75);
     expect(job.updateProgress).toHaveBeenCalledWith(100);
+  });
+});
+
+describe('IngestionService – extractModelArchive', () => {
+  let service: IngestionService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new IngestionService();
+  });
+
+  it('extracts archive contents into a sibling folder and updates model stats', async () => {
+    vi.mocked(modelService.requireOwnedModel).mockResolvedValue({ id: 'model-1' } as never);
+    vi.mocked(modelService.getModelFiles).mockResolvedValue([
+      {
+        id: 'archive-1',
+        modelId: 'model-1',
+        filename: 'alternate-parts.zip',
+        relativePath: 'extras/alternate-parts.zip',
+        fileType: 'other',
+        mimeType: 'application/zip',
+        sizeBytes: 100,
+        storagePath: 'models/model-1/extras/alternate-parts.zip',
+        hash: 'archive-hash',
+        createdAt: new Date(),
+      },
+    ]);
+    vi.mocked(modelService.getModelFolders).mockResolvedValue([]);
+    vi.mocked(storageService.resolveStoragePath).mockReturnValue('/storage/alternate-parts.zip');
+    vi.mocked(fileProcessingService.processArchive).mockResolvedValue({
+      entries: [
+        {
+          filename: 'mesh.stl',
+          relativePath: 'parts/mesh.stl',
+          fileType: 'stl',
+          mimeType: 'model/stl',
+          sizeBytes: 42,
+          hash: 'mesh-hash',
+        },
+      ],
+      totalSizeBytes: 42,
+    });
+    vi.mocked(modelService.createModelFiles).mockResolvedValue([{ id: 'file-1', fileType: 'stl' }]);
+    vi.mocked(modelService.recalculateModelStats).mockResolvedValue(undefined);
+
+    const result = await service.extractModelArchive(
+      'model-1',
+      'archive-1',
+      'user-1',
+      'library-1',
+    );
+
+    expect(result).toEqual({
+      addedFileCount: 1,
+      destinationPath: 'extras/alternate-parts',
+    });
+    expect(storageService.store).toHaveBeenCalledWith(
+      'models/model-1/extras/alternate-parts/parts/mesh.stl',
+      expect.anything(),
+    );
+    expect(modelService.createModelFiles).toHaveBeenCalledWith(
+      'model-1',
+      [expect.objectContaining({ relativePath: 'extras/alternate-parts/parts/mesh.stl' })],
+    );
+    expect(modelService.recalculateModelStats).toHaveBeenCalledWith('model-1');
+  });
+});
+
+describe('IngestionService – extractSessionArchive', () => {
+  let service: IngestionService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new IngestionService();
+  });
+
+  it('rescans staged files after extracting a nested archive', async () => {
+    const sessionRow = {
+      id: 'session-1',
+      userId: 'user-1',
+      libraryId: 'library-1',
+      originalFilename: 'model-pack.zip',
+      status: 'ready_for_review',
+      stagingPath: '/staging',
+      manifest: {
+        entries: [
+          {
+            filename: 'parts.zip',
+            relativePath: 'extras/parts.zip',
+            fileType: 'other' as const,
+            mimeType: 'application/zip',
+            sizeBytes: 100,
+            hash: 'archive-hash',
+          },
+        ],
+        totalSizeBytes: 100,
+      },
+    };
+    vi.mocked(importSessionService.getOwnedRow).mockResolvedValue(sessionRow as never);
+    vi.mocked(importSessionService.update).mockResolvedValue(undefined);
+    vi.mocked(importSessionService.toDto).mockReturnValue({ id: 'session-1' } as never);
+    vi.mocked(fileProcessingService.processArchive).mockResolvedValue(makeManifest([]));
+    vi.mocked(fileProcessingService.scanDirectory).mockResolvedValue([
+      ...sessionRow.manifest.entries,
+      {
+        filename: 'mesh.stl',
+        relativePath: 'extras/parts/mesh.stl',
+        fileType: 'stl' as const,
+        mimeType: 'model/stl',
+        sizeBytes: 42,
+        hash: 'mesh-hash',
+      },
+    ]);
+
+    await service.extractSessionArchive(
+      'session-1',
+      'extras/parts.zip',
+      'user-1',
+      'library-1',
+    );
+
+    expect(fileProcessingService.processArchive).toHaveBeenCalledWith(
+      '/staging/extras/parts.zip',
+      '/staging/extras/parts',
+    );
+    expect(importSessionService.update).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        manifest: expect.objectContaining({ totalSizeBytes: 142 }),
+        detected: expect.objectContaining({
+          fileCount: 2,
+          archives: [
+            expect.objectContaining({ relativePath: 'extras/parts.zip' }),
+          ],
+        }),
+      }),
+    );
+  });
+});
+
+describe('IngestionService – appendFilesToSession', () => {
+  let service: IngestionService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new IngestionService();
+  });
+
+  it('adds loose files with collision-safe names and refreshes detected metadata', async () => {
+    const sessionRow = {
+      id: 'session-1',
+      userId: 'user-1',
+      libraryId: 'library-1',
+      originalFilename: 'model-pack.zip',
+      status: 'ready_for_review',
+      stagingPath: '/staging',
+      manifest: {
+        entries: [
+          {
+            filename: 'render.png',
+            relativePath: 'render.png',
+            fileType: 'image' as const,
+            mimeType: 'image/png',
+            sizeBytes: 100,
+            hash: 'old-render-hash',
+          },
+        ],
+        totalSizeBytes: 100,
+      },
+    };
+    const rescannedEntries = [
+      ...sessionRow.manifest.entries,
+      {
+        filename: 'render (2).png',
+        relativePath: 'render (2).png',
+        fileType: 'image' as const,
+        mimeType: 'image/png',
+        sizeBytes: 50,
+        hash: 'new-render-hash',
+      },
+    ];
+    vi.mocked(importSessionService.getOwnedRow).mockResolvedValue(sessionRow as never);
+    vi.mocked(importSessionService.update).mockResolvedValue(undefined);
+    vi.mocked(importSessionService.toDto).mockReturnValue({ id: 'session-1' } as never);
+    vi.mocked(fileProcessingService.scanDirectory).mockResolvedValue(rescannedEntries);
+
+    await service.appendFilesToSession(
+      [{ tempFilePath: '/tmp/new-render', originalFilename: 'render.png' }],
+      'session-1',
+      'user-1',
+      'library-1',
+    );
+
+    expect(fsPromises.copyFile).toHaveBeenCalledWith(
+      '/tmp/new-render',
+      '/staging/render (2).png',
+    );
+    expect(importSessionService.update).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        manifest: expect.objectContaining({ totalSizeBytes: 150 }),
+        detected: expect.objectContaining({
+          fileCount: 2,
+          previewImages: expect.arrayContaining([
+            expect.objectContaining({ relativePath: 'render (2).png' }),
+          ]),
+        }),
+      }),
+    );
+    expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/new-render', { force: true });
   });
 });

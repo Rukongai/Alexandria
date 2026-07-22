@@ -14,6 +14,7 @@ import type {
   ScanUploadResponse,
   UploadInitResponse,
   MergeModelsResponse,
+  ExtractArchiveResponse,
 } from '@alexandria/shared';
 import { get, post, patch, del, putRaw, postForm } from './client';
 import { buildQueryString } from '../lib/query';
@@ -81,6 +82,14 @@ export async function updateModelFile(
 
 export async function deleteModelFile(id: string, fileId: string): Promise<ModelDetail> {
   const response = await del<ModelDetail>(`/models/${id}/files/${fileId}`);
+  return response.data;
+}
+
+export async function extractModelArchive(
+  id: string,
+  fileId: string,
+): Promise<ExtractArchiveResponse> {
+  const response = await post<ExtractArchiveResponse>(`/models/${id}/files/${fileId}/extract`);
   return response.data;
 }
 
@@ -199,6 +208,33 @@ export async function commitImportSession(
 
 export async function discardImportSession(id: string): Promise<void> {
   await del(`/models/import-sessions/${id}`);
+}
+
+export async function extractImportSessionArchive(
+  id: string,
+  relativePath: string,
+): Promise<ImportSession> {
+  const response = await post<ImportSession>(`/models/import-sessions/${id}/extract`, {
+    relativePath,
+  });
+  return response.data;
+}
+
+export async function uploadImportSessionFiles(
+  id: string,
+  files: File[],
+  onProgress?: (pct: number) => void,
+): Promise<ImportSession> {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', file);
+  }
+  const response = await postForm<ImportSession>(
+    `/models/import-sessions/${id}/files`,
+    formData,
+    onProgress,
+  );
+  return response.data;
 }
 
 export async function importFolder(config: ImportConfig): Promise<{ modelId: string }> {

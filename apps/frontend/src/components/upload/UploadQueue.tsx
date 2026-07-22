@@ -1,4 +1,12 @@
-import { Loader2, CheckCircle2, AlertCircle, Archive, BookOpen } from 'lucide-react';
+import {
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  Archive,
+  BookOpen,
+  FilePlus2,
+  Trash2,
+} from 'lucide-react';
 import type { ImportSession } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
@@ -7,6 +15,10 @@ interface UploadQueueProps {
   sessions: ImportSession[];
   activeId: string | null;
   onSelect: (id: string) => void;
+  onDiscard: (id: string) => void;
+  onAddFiles: (id: string) => void;
+  discardingId: string | null;
+  addingFilesId: string | null;
 }
 
 function StatusIcon({ status }: { status: ImportSession['status'] }) {
@@ -74,7 +86,15 @@ function statusLabel(status: ImportSession['status']): string {
   }
 }
 
-export function UploadQueue({ sessions, activeId, onSelect }: UploadQueueProps) {
+export function UploadQueue({
+  sessions,
+  activeId,
+  onSelect,
+  onDiscard,
+  onAddFiles,
+  discardingId,
+  addingFilesId,
+}: UploadQueueProps) {
   const totalSize = sessions.reduce((acc, s) => {
     return acc + (s.detected?.totalSizeBytes ?? 0);
   }, 0);
@@ -140,44 +160,86 @@ export function UploadQueue({ sessions, activeId, onSelect }: UploadQueueProps) 
         )}
         {sessions.map((session) => {
           const active = session.id === activeId;
+          const canDiscard = session.status !== 'committing' && session.status !== 'committed';
+          const canAddFiles = session.status === 'ready_for_review';
+          const isDiscarding = session.id === discardingId;
+          const isAddingFiles = session.id === addingFilesId;
           return (
-            <button
+            <div
               key={session.id}
-              onClick={() => onSelect(session.id)}
-              className="flex flex-col gap-1.5 w-full text-left px-3 py-2.5 rounded-lg mt-1 transition-colors"
+              className="group flex items-start w-full rounded-lg mt-1 transition-colors"
               style={{
                 background: active ? 'var(--ax-rail-elev)' : 'transparent',
                 border: `1px solid ${active ? 'var(--ax-rail-border)' : 'transparent'}`,
                 color: 'inherit',
-                fontFamily: 'inherit',
-                cursor: 'pointer',
               }}
             >
-              <div className="flex items-center gap-2">
-                <StatusIcon status={session.status} />
-                <div className="flex-1 min-w-0">
-                  <div
-                    className="ax-code text-[12px] font-medium truncate"
-                    style={{ color: 'var(--ax-rail-fg)' }}
-                  >
-                    {session.originalFilename}
-                  </div>
-                  <div
-                    className="ax-mono text-[11px]"
-                    style={{ color: 'var(--ax-rail-fg-muted)' }}
-                  >
-                    {session.detected
-                      ? `${formatFileSize(session.detected.totalSizeBytes)} · ${session.detected.fileCount} files`
-                      : statusLabel(session.status)}
+              <button
+                type="button"
+                onClick={() => onSelect(session.id)}
+                className="flex min-w-0 flex-1 flex-col gap-1.5 px-3 py-2.5 text-left"
+                style={{ color: 'inherit', fontFamily: 'inherit' }}
+              >
+                <div className="flex items-center gap-2">
+                  <StatusIcon status={session.status} />
+                  <div className="flex-1 min-w-0">
+                    <div
+                      className="ax-code text-[12px] font-medium truncate"
+                      style={{ color: 'var(--ax-rail-fg)' }}
+                    >
+                      {session.originalFilename}
+                    </div>
+                    <div
+                      className="ax-mono text-[11px]"
+                      style={{ color: 'var(--ax-rail-fg-muted)' }}
+                    >
+                      {session.detected
+                        ? `${formatFileSize(session.detected.totalSizeBytes)} · ${session.detected.fileCount} files`
+                        : statusLabel(session.status)}
+                    </div>
                   </div>
                 </div>
-              </div>
-              {session.status === 'error' && session.error && (
-                <div className="text-[10.5px] pl-[34px]" style={{ color: '#fca5a5' }}>
-                  {session.error}
-                </div>
+                {session.status === 'error' && session.error && (
+                  <div className="text-[10.5px] pl-[34px]" style={{ color: '#fca5a5' }}>
+                    {session.error}
+                  </div>
+                )}
+              </button>
+              {canAddFiles && (
+                <button
+                  type="button"
+                  onClick={() => onAddFiles(session.id)}
+                  disabled={addingFilesId !== null || discardingId !== null}
+                  className="my-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--ax-rail-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ color: 'var(--ax-rail-fg-muted)' }}
+                  aria-label={`Add files to ${session.originalFilename}`}
+                  title={`Add files to ${session.originalFilename}`}
+                >
+                  {isAddingFiles ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <FilePlus2 className="h-3.5 w-3.5" />
+                  )}
+                </button>
               )}
-            </button>
+              {canDiscard && (
+                <button
+                  type="button"
+                  onClick={() => onDiscard(session.id)}
+                  disabled={discardingId !== null}
+                  className="m-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--ax-rail-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ color: 'var(--ax-rail-fg-muted)' }}
+                  aria-label={`Discard ${session.originalFilename}`}
+                  title={`Discard ${session.originalFilename}`}
+                >
+                  {isDiscarding ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              )}
+            </div>
           );
         })}
       </div>

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { Job } from 'bullmq';
 import type {
@@ -7,6 +8,8 @@ import type {
   BatchUploadMetadata,
   DetectedImportMetadata,
   DetectedFolderNode,
+  ExtractArchiveResponse,
+  ImportSession,
 } from '@alexandria/shared';
 import {
   jobService,
@@ -39,6 +42,26 @@ const TAG_STOPWORDS = new Set([
 ]);
 
 export class IngestionService {
+  private archiveDestinationPath(
+    archiveRelativePath: string,
+    occupiedPaths: Iterable<string>,
+  ): string {
+    const parentPath = path.posix.dirname(archiveRelativePath);
+    const archiveName = path.posix.basename(archiveRelativePath);
+    const folderName = stripArchiveExtension(archiveName) || 'extracted';
+    const parent = parentPath === '.' ? '' : parentPath;
+    const occupied = [...occupiedPaths];
+
+    for (let index = 1; ; index += 1) {
+      const suffix = index === 1 ? '' : `-${index}`;
+      const candidate = path.posix.join(parent, `${folderName}${suffix}`);
+      const isOccupied = occupied.some(
+        (entryPath) => entryPath === candidate || entryPath.startsWith(`${candidate}/`),
+      );
+      if (!isOccupied) return candidate;
+    }
+  }
+
   async handleUpload(
     file: { tempFilePath: string; originalFilename: string },
     userId: string,
@@ -141,6 +164,210 @@ export class IngestionService {
     } finally {
       // The uploaded archive is no longer needed once extracted (or on failure).
       await fsPromises.rm(tempFilePath, { force: true }).catch(() => {});
+    }
+  }
+
+  /** Extract one nested archive into a sibling folder inside a staged session. */
+  async extractSessionArchive(
+    sessionId: string,
+    relativePath: string,
+    userId: string,
+    libraryId: string,
+  ): Promise<ImportSession> {
+    const session = await importSessionService.getOwnedRow(sessionId, userId);
+    if (session.libraryId !== libraryId) {
+      throw validationError('Import session belongs to a different library');
+    }
+    if (session.status !== 'ready_for_review') {
+      throw validationError(`Import session is not ready for extraction (status: ${session.status})`);
+    }
+
+    const manifest = session.manifest as FileManifest | null;
+    const archiveEntry = manifest?.entries.find((entry) => entry.relativePath === relativePath);
+    if (!manifest || !session.stagingPath || !archiveEntry) {
+      throw validationError('Archive file was not found in this import session', 'relativePath');
+    }
+    if (!detectArchiveExtension(archiveEntry.filename)) {
+      throw validationError('Selected file is not a supported archive', 'relativePath');
+    }
+
+    const stagingRoot = path.resolve(session.stagingPath);
+    const archivePath = path.resolve(stagingRoot, archiveEntry.relativePath);
+    if (!archivePath.startsWith(stagingRoot + path.sep) || archivePath === stagingRoot) {
+      throw validationError('Archive path is outside the staged upload', 'relativePath');
+    }
+
+    const occupiedPaths = new Set(manifest.entries.map((entry) => entry.relativePath));
+    let destinationRelativePath: string;
+    let destinationPath: string;
+    while (true) {
+      destinationRelativePath = this.archiveDestinationPath(archiveEntry.relativePath, occupiedPaths);
+      destinationPath = path.resolve(stagingRoot, destinationRelativePath);
+      const exists = await fsPromises.access(destinationPath).then(() => true).catch(() => false);
+      if (!exists) break;
+      occupiedPaths.add(destinationRelativePath);
+    }
+
+    try {
+      await fileProcessingService.processArchive(archivePath, destinationPath);
+      const entries = await fileProcessingService.scanDirectory(stagingRoot, stagingRoot);
+      const nextManifest: FileManifest = {
+        entries,
+        totalSizeBytes: entries.reduce((sum, entry) => sum + entry.sizeBytes, 0),
+      };
+      const detected = await this.detectImportMetadata(
+        nextManifest,
+        session.originalFilename,
+        libraryId,
+      );
+      await importSessionService.update(sessionId, { manifest: nextManifest, detected });
+      const updated = await importSessionService.getOwnedRow(sessionId, userId);
+      return importSessionService.toDto(updated);
+    } catch (error) {
+      await fsPromises.rm(destinationPath, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  }
+
+  /** Add loose files to a staged session and refresh its detected metadata. */
+  async appendFilesToSession(
+    files: Array<{ tempFilePath: string; originalFilename: string }>,
+    sessionId: string,
+    userId: string,
+    libraryId: string,
+  ): Promise<ImportSession> {
+    const session = await importSessionService.getOwnedRow(sessionId, userId);
+    if (session.libraryId !== libraryId) {
+      throw validationError('Import session belongs to a different library');
+    }
+    if (session.status !== 'ready_for_review') {
+      throw validationError(`Import session is not ready for files (status: ${session.status})`);
+    }
+    if (!session.stagingPath || !session.manifest) {
+      throw validationError('Import session is missing its staged files');
+    }
+    if (files.length === 0) {
+      throw validationError('No file provided');
+    }
+
+    const stagingRoot = path.resolve(session.stagingPath);
+    const manifest = session.manifest as FileManifest;
+    const occupiedPaths = new Set(manifest.entries.map((entry) => entry.relativePath));
+    const addedPaths: string[] = [];
+
+    try {
+      for (const file of files) {
+        const requestedName = path.posix.basename(file.originalFilename.replaceAll('\\', '/'));
+        if (!requestedName || requestedName.startsWith('.')) {
+          throw validationError(`Unsupported filename: ${file.originalFilename}`);
+        }
+
+        const extension = path.posix.extname(requestedName);
+        const stem = requestedName.slice(0, requestedName.length - extension.length) || 'file';
+        let relativePath = requestedName;
+        for (let suffix = 2; occupiedPaths.has(relativePath); suffix += 1) {
+          relativePath = `${stem} (${suffix})${extension}`;
+        }
+
+        const destinationPath = path.resolve(stagingRoot, relativePath);
+        if (!destinationPath.startsWith(stagingRoot + path.sep)) {
+          throw validationError(`Unsupported filename: ${file.originalFilename}`);
+        }
+        await fsPromises.copyFile(file.tempFilePath, destinationPath);
+        occupiedPaths.add(relativePath);
+        addedPaths.push(destinationPath);
+      }
+
+      const entries = await fileProcessingService.scanDirectory(stagingRoot, stagingRoot);
+      const nextManifest: FileManifest = {
+        entries,
+        totalSizeBytes: entries.reduce((sum, entry) => sum + entry.sizeBytes, 0),
+      };
+      const detected = await this.detectImportMetadata(
+        nextManifest,
+        session.originalFilename,
+        libraryId,
+      );
+      await importSessionService.update(sessionId, { manifest: nextManifest, detected });
+      const updated = await importSessionService.getOwnedRow(sessionId, userId);
+      return importSessionService.toDto(updated);
+    } catch (error) {
+      await Promise.all(
+        addedPaths.map((filePath) => fsPromises.rm(filePath, { force: true }).catch(() => {})),
+      );
+      throw error;
+    } finally {
+      await Promise.all(
+        files.map((file) => fsPromises.rm(file.tempFilePath, { force: true }).catch(() => {})),
+      );
+    }
+  }
+
+  /** Extract one stored archive into a sibling folder in an existing model. */
+  async extractModelArchive(
+    modelId: string,
+    fileId: string,
+    userId: string,
+    libraryId: string,
+  ): Promise<ExtractArchiveResponse> {
+    await modelService.requireOwnedModel(modelId, userId, libraryId);
+    const [files, folders] = await Promise.all([
+      modelService.getModelFiles(modelId),
+      modelService.getModelFolders(modelId),
+    ]);
+    const archiveFile = files.find((file) => file.id === fileId);
+    if (!archiveFile) {
+      throw validationError('Archive file was not found in this model', 'fileId');
+    }
+    if (!detectArchiveExtension(archiveFile.filename)) {
+      throw validationError('Selected file is not a supported archive', 'fileId');
+    }
+
+    const destinationPath = this.archiveDestinationPath(
+      archiveFile.relativePath,
+      [
+        ...files.map((file) => file.relativePath),
+        ...folders.map((folder) => folder.path),
+      ],
+    );
+    const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'alexandria-extract-'));
+    const extractDir = path.join(tempRoot, 'contents');
+    const storedPaths: string[] = [];
+    let filesCreated = false;
+
+    try {
+      const manifest = await fileProcessingService.processArchive(
+        storageService.resolveStoragePath(archiveFile.storagePath),
+        extractDir,
+      );
+      const fileInputs = manifest.entries.map((entry) => ({
+        ...entry,
+        sourceRelativePath: entry.relativePath,
+        relativePath: path.posix.join(destinationPath, entry.relativePath),
+        storagePath: `models/${modelId}/${path.posix.join(destinationPath, entry.relativePath)}`,
+      }));
+
+      for (const fileInput of fileInputs) {
+        const sourcePath = path.join(extractDir, fileInput.sourceRelativePath);
+        await storageService.store(fileInput.storagePath, fs.createReadStream(sourcePath));
+        storedPaths.push(fileInput.storagePath);
+      }
+
+      const createdFiles = await modelService.createModelFiles(modelId, fileInputs);
+      filesCreated = true;
+      await this.generateAndStoreThumbnails(modelId, fileInputs, createdFiles, extractDir);
+      await modelService.recalculateModelStats(modelId);
+
+      return { addedFileCount: fileInputs.length, destinationPath };
+    } catch (error) {
+      if (!filesCreated) {
+        await Promise.all(
+          storedPaths.map((storedPath) => storageService.delete(storedPath).catch(() => {})),
+        );
+      }
+      throw error;
+    } finally {
+      await fsPromises.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
     }
   }
 
@@ -423,6 +650,13 @@ export class IngestionService {
           filename: entry.filename,
           relativePath: entry.relativePath,
           mimeType: entry.mimeType,
+          sizeBytes: entry.sizeBytes,
+        })),
+      archives: entries
+        .filter((entry) => Boolean(detectArchiveExtension(entry.filename)))
+        .map((entry) => ({
+          filename: entry.filename,
+          relativePath: entry.relativePath,
           sizeBytes: entry.sizeBytes,
         })),
     };
@@ -718,7 +952,7 @@ export class IngestionService {
 
   private async generateAndStoreThumbnails(
     modelId: string,
-    fileInputs: Array<{ fileType: string; relativePath: string }>,
+    fileInputs: Array<{ fileType: string; relativePath: string; sourceRelativePath?: string }>,
     createdFiles: Array<{ id: string; fileType: string }>,
     sourceDir: string,
   ): Promise<void> {
@@ -736,7 +970,10 @@ export class IngestionService {
 
       if (fileInput.fileType !== 'image') continue;
 
-      const sourcePath = path.join(sourceDir, fileInput.relativePath);
+      const sourcePath = path.join(
+        sourceDir,
+        fileInput.sourceRelativePath ?? fileInput.relativePath,
+      );
       try {
         const thumbnailRecords = await thumbnailService.generateThumbnails(
           sourcePath,

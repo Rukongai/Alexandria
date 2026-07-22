@@ -1,4 +1,4 @@
-import type { FileTreeNode } from '@alexandria/shared';
+import { SUPPORTED_ARCHIVE_EXTENSIONS, type FileTreeNode } from '@alexandria/shared';
 
 const MARKDOWN_EXTENSIONS = new Set(['markdown', 'md', 'mdown', 'mkd']);
 const TEXT_PREVIEW_EXTENSIONS = new Set([
@@ -55,6 +55,11 @@ export function isTextPreviewFileName(name: string): boolean {
     TEXT_PREVIEW_EXTENSIONS.has(getFileExtension(normalized)) ||
     TEXT_PREVIEW_FILENAMES.has(normalized)
   );
+}
+
+export function isArchiveFileName(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return SUPPORTED_ARCHIVE_EXTENSIONS.some((extension) => normalized.endsWith(extension));
 }
 
 function modelFileUrl(modelId: string, segments: string[]): string {

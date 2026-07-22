@@ -117,6 +117,11 @@ export interface DeleteModelFolderRequest {
   path: string;
 }
 
+export interface ExtractArchiveResponse {
+  addedFileCount: number;
+  destinationPath: string;
+}
+
 export interface UpdateModelRequest {
   name?: string;
   description?: string | null;

@@ -51,6 +51,11 @@ export const importSessionIdParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
+export const extractImportSessionArchiveSchema = z.object({
+  relativePath: z.string().min(1).max(1000),
+});
+
 export type UploadInitRequest = z.infer<typeof uploadInitSchema>;
 export type ChunkIndexParams = z.infer<typeof chunkIndexParamsSchema>;
 export type UploadCompleteParams = z.infer<typeof uploadCompleteParamsSchema>;
+export type ExtractImportSessionArchiveRequest = z.infer<typeof extractImportSessionArchiveSchema>;

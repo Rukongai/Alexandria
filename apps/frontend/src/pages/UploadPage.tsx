@@ -1,6 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FolderOpen } from 'lucide-react';
-import { useDiscardSession, useImportSessions } from '../hooks/use-import-sessions';
+import {
+  useAddSessionFiles,
+  useDiscardSession,
+  useImportSessions,
+} from '../hooks/use-import-sessions';
 import { useToast } from '../hooks/use-toast';
 import { UploadQueue } from '../components/upload/UploadQueue';
 import { DropZone } from '../components/upload/DropZone';
@@ -14,9 +18,13 @@ type Tab = 'queue' | 'folder';
 export function UploadPage() {
   const { data: sessions = [] } = useImportSessions();
   const discardSession = useDiscardSession();
+  const addSessionFiles = useAddSessionFiles();
   const { toast } = useToast();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('queue');
+  const [fileTargetId, setFileTargetId] = useState<string | null>(null);
+  const [addFilesProgress, setAddFilesProgress] = useState(0);
 
   // Auto-select the first actionable (non-committed) session when the list loads
   useEffect(() => {
@@ -35,15 +43,17 @@ export function UploadPage() {
   }, [sessions]);
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
+  const discardingId = discardSession.isPending ? (discardSession.variables ?? null) : null;
+  const addingFilesId = addSessionFiles.isPending
+    ? (addSessionFiles.variables?.id ?? null)
+    : null;
 
   const handleCommitted = (_modelId: string) => {
     // Session transitions to committing automatically via polling; nothing to do here
   };
 
-  const handleDiscard = async () => {
-    if (!activeSession || discardSession.isPending) return;
-
-    const discardedId = activeSession.id;
+  const handleDiscard = async (discardedId: string) => {
+    if (discardSession.isPending) return;
     try {
       await discardSession.mutateAsync(discardedId);
       setActiveId((current) => current === discardedId ? null : current);
@@ -52,13 +62,55 @@ export function UploadPage() {
     }
   };
 
+  const chooseFilesForSession = (sessionId: string) => {
+    setFileTargetId(sessionId);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    fileInputRef.current?.click();
+  };
+
+  const handleFilesSelected = async (files: File[]) => {
+    if (!fileTargetId || files.length === 0 || addSessionFiles.isPending) return;
+    setAddFilesProgress(0);
+    try {
+      await addSessionFiles.mutateAsync({
+        id: fileTargetId,
+        files,
+        onProgress: setAddFilesProgress,
+      });
+      toast({
+        title: `${files.length} file${files.length === 1 ? '' : 's'} added to queue`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Failed to add files',
+        description: error instanceof Error ? error.message : undefined,
+        variant: 'destructive',
+      });
+    } finally {
+      setFileTargetId(null);
+      setAddFilesProgress(0);
+    }
+  };
+
   return (
     <div className="flex h-screen overflow-hidden">
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="sr-only"
+        aria-label="Choose loose files for queued model"
+        onChange={(event) => void handleFilesSelected(Array.from(event.currentTarget.files ?? []))}
+      />
       {/* Left rail: queue */}
       <UploadQueue
         sessions={sessions}
         activeId={activeId}
         onSelect={(id) => { setActiveId(id); setTab('queue'); }}
+        onDiscard={(id) => void handleDiscard(id)}
+        onAddFiles={chooseFilesForSession}
+        discardingId={discardingId}
+        addingFilesId={addingFilesId}
       />
 
       {/* Main content */}
@@ -133,9 +185,12 @@ export function UploadPage() {
                 <ReviewPane
                   session={activeSession}
                   onCommitted={handleCommitted}
-                  onDiscard={handleDiscard}
-                  onRetry={handleDiscard}
-                  isDiscarding={discardSession.isPending}
+                  onDiscard={() => void handleDiscard(activeSession.id)}
+                  onRetry={() => void handleDiscard(activeSession.id)}
+                  isDiscarding={discardingId === activeSession.id}
+                  onAddFiles={() => chooseFilesForSession(activeSession.id)}
+                  isAddingFiles={addingFilesId === activeSession.id}
+                  addFilesProgress={addFilesProgress}
                 />
               ) : sessions.length === 0 ? (
                 <div className="space-y-4 mt-4">

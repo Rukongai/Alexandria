@@ -7,6 +7,7 @@ import {
   createModelFolder,
   deleteModelFile,
   deleteModelFolder,
+  extractModelArchive,
   getModel,
   getModelFiles,
   getModels,
@@ -84,6 +85,7 @@ export function ModelDetailPage() {
         | { type: 'rename-file'; fileId: string; filename: string }
         | { type: 'move-file'; fileId: string; parentPath: string }
         | { type: 'delete-file'; fileId: string; name: string }
+        | { type: 'extract-archive'; fileId: string; name: string }
         | { type: 'move-files'; fileIds: string[]; parentPath: string }
         | { type: 'delete-files'; fileIds: string[] }
         | { type: 'rename-folder'; path: string; name: string }
@@ -104,6 +106,10 @@ export function ModelDetailPage() {
         case 'delete-file':
           await deleteModelFile(id, action.fileId);
           return 'File deleted';
+        case 'extract-archive': {
+          const result = await extractModelArchive(id, action.fileId);
+          return `Extracted ${result.addedFileCount} file${result.addedFileCount === 1 ? '' : 's'} to ${result.destinationPath}`;
+        }
         case 'move-files':
           await Promise.all(
             action.fileIds.map((fileId) => updateModelFile(id, fileId, { parentPath: action.parentPath })),
@@ -271,6 +277,7 @@ export function ModelDetailPage() {
               onRenameFile={(fileId, filename) => fileMutation.mutate({ type: 'rename-file', fileId, filename })}
               onMoveFile={(fileId, parentPath) => fileMutation.mutate({ type: 'move-file', fileId, parentPath })}
               onDeleteFile={(fileId, name) => fileMutation.mutate({ type: 'delete-file', fileId, name })}
+              onExtractArchive={(fileId, name) => fileMutation.mutate({ type: 'extract-archive', fileId, name })}
               onMoveFiles={(fileIds, parentPath) => fileMutation.mutate({ type: 'move-files', fileIds, parentPath })}
               onDeleteFiles={(fileIds) => fileMutation.mutate({ type: 'delete-files', fileIds })}
               onRenameFolder={(path, name) => fileMutation.mutate({ type: 'rename-folder', path, name })}

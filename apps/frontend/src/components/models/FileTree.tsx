@@ -14,6 +14,7 @@ import {
   Pencil,
   SquareCheck,
   Trash2,
+  PackageOpen,
 } from 'lucide-react';
 import type { FileTreeNode, FileType } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
@@ -21,6 +22,7 @@ import { cn } from '../../lib/utils';
 import { Model3DIcon } from '../icons';
 import {
   isTextPreviewFileName,
+  isArchiveFileName,
   makeStlRef,
   makeTextFileRef,
   type StlFileRef,
@@ -59,6 +61,7 @@ interface FileNodeProps {
   onRenameFile?: (fileId: string, filename: string) => void;
   onMoveFile?: (fileId: string, parentPath: string) => void;
   onDeleteFile?: (fileId: string, name: string) => void;
+  onExtractArchive?: (fileId: string, name: string) => void;
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => void;
   onDeleteFolder?: (path: string, name: string) => void;
@@ -302,6 +305,7 @@ function FileNode({
   onRenameFile,
   onMoveFile,
   onDeleteFile,
+  onExtractArchive,
   onRenameFolder,
   onMoveFolder,
   onDeleteFolder,
@@ -419,6 +423,7 @@ function FileNode({
                 onRenameFile={onRenameFile}
                 onMoveFile={onMoveFile}
                 onDeleteFile={onDeleteFile}
+                onExtractArchive={onExtractArchive}
                 onRenameFolder={onRenameFolder}
                 onMoveFolder={onMoveFolder}
                 onDeleteFolder={onDeleteFolder}
@@ -437,6 +442,7 @@ function FileNode({
   const parentPath = joinPath(pathPrefix);
   const fileSegments = [...pathPrefix, node.name];
   const canPreviewText = !selectionMode && Boolean(onOpenText) && isTextPreviewFileName(node.name);
+  const canExtractArchive = !selectionMode && Boolean(node.id) && isArchiveFileName(node.name);
   const isImage = node.fileType === 'image' && Boolean(node.id);
   const isSelectedImage = isImage && node.id === selectedImageFileId;
   const canSelectImage = !selectionMode && isImage && Boolean(onSelectImageFile);
@@ -531,6 +537,22 @@ function FileNode({
           Preview
         </button>
       )}
+      {canExtractArchive && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onExtractArchive?.(node.id!, node.name);
+          }}
+          disabled={disabled}
+          className="flex flex-shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-primary opacity-0 transition-all hover:bg-primary/10 focus:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+          aria-label={`Extract ${node.name}`}
+          title={`Extract ${node.name}`}
+        >
+          <PackageOpen className="h-3.5 w-3.5" />
+          Extract
+        </button>
+      )}
       {node.sizeBytes !== undefined && (
         <span className="text-xs text-muted-foreground flex-shrink-0 ml-2">
           {formatFileSize(node.sizeBytes)}
@@ -551,6 +573,12 @@ function FileNode({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-36">
+            {canExtractArchive && (
+              <DropdownMenuItem onClick={() => onExtractArchive?.(node.id!, node.name)}>
+                <PackageOpen className="mr-2 h-3.5 w-3.5" />
+                Extract
+              </DropdownMenuItem>
+            )}
             {canPreviewText && (
               <DropdownMenuItem
                 onClick={() => {
@@ -634,6 +662,7 @@ interface FileTreeProps {
   onRenameFile?: (fileId: string, filename: string) => void;
   onMoveFile?: (fileId: string, parentPath: string) => void;
   onDeleteFile?: (fileId: string, name: string) => void;
+  onExtractArchive?: (fileId: string, name: string) => void;
   onMoveFiles?: (fileIds: string[], parentPath: string) => void;
   onDeleteFiles?: (fileIds: string[]) => void;
   onRenameFolder?: (path: string, name: string) => void;
@@ -653,6 +682,7 @@ export function FileTree({
   onRenameFile,
   onMoveFile,
   onDeleteFile,
+  onExtractArchive,
   onMoveFiles,
   onDeleteFiles,
   onRenameFolder,
@@ -921,6 +951,7 @@ export function FileTree({
               onRenameFile={onRenameFile}
               onMoveFile={onMoveFile}
               onDeleteFile={onDeleteFile}
+              onExtractArchive={onExtractArchive}
               onRenameFolder={onRenameFolder}
               onMoveFolder={onMoveFolder}
               onDeleteFolder={onDeleteFolder}
