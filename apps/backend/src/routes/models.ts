@@ -338,8 +338,11 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       if (!parseResult.success) {
         throw validationError(parseResult.error.issues[0]?.message ?? 'Validation failed');
       }
-      const row = await importSessionService.getOwnedRow(parseResult.data.id, request.user!.id);
-      return reply.status(200).send({ data: importSessionService.toDto(row), meta: null, errors: null });
+      const session = await importSessionService.getOwnedSession(
+        parseResult.data.id,
+        request.user!.id,
+      );
+      return reply.status(200).send({ data: session, meta: null, errors: null });
     },
   );
 

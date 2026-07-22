@@ -8,7 +8,11 @@ import * as tar from 'tar';
 import { createExtractorFromFile } from 'node-unrar-js';
 import Seven from 'node-7z';
 import { path7za } from '7zip-bin';
-import type { FileType, MultipartArchiveMode } from '@alexandria/shared';
+import type {
+  FileType,
+  ImportCommitProgress,
+  MultipartArchiveMode,
+} from '@alexandria/shared';
 import {
   SUPPORTED_IMAGE_FORMATS,
   SUPPORTED_DOCUMENT_FORMATS,
@@ -20,6 +24,9 @@ import { createLogger } from '../utils/logger.js';
 import type { IStorageService } from './storage.service.js';
 
 const logger = createLogger('FileProcessingService');
+
+const STORAGE_PROGRESS_MIN_BYTES = 1024 * 1024;
+const STORAGE_PROGRESS_MAX_INTERVAL_MS = 250;
 
 export interface FileManifestEntry {
   filename: string;
@@ -34,6 +41,8 @@ export interface FileManifest {
   entries: FileManifestEntry[];
   totalSizeBytes: number;
 }
+
+export type ManifestStorageProgress = Omit<ImportCommitProgress, 'phase' | 'percent'>;
 
 export interface MultipartArchiveFile {
   tempFilePath: string;
@@ -697,12 +706,67 @@ export class FileProcessingService {
     modelId: string,
     manifest: FileManifest,
     storage: IStorageService,
+    onProgress?: (progress: ManifestStorageProgress) => void | Promise<void>,
   ): Promise<void> {
-    for (const entry of manifest.entries) {
+    let completedBytes = 0;
+    const progressReporter = createCoalescedProgressReporter(onProgress, (error) => {
+      logger.warn(
+        { modelId, error: String(error) },
+        'Failed to report managed-storage progress',
+      );
+    });
+
+    for (let index = 0; index < manifest.entries.length; index++) {
+      const entry = manifest.entries[index];
       const storagePath = `models/${modelId}/${entry.relativePath}`;
       const sourcePath = path.join(extractDir, entry.relativePath);
       const readStream = fs.createReadStream(sourcePath);
-      await storage.store(storagePath, readStream);
+      let currentFileBytes = 0;
+      let lastReportedFileBytes = 0;
+      let lastReportedAt = Date.now();
+
+      await progressReporter.flush({
+        completedFiles: index,
+        totalFiles: manifest.entries.length,
+        completedBytes,
+        totalBytes: manifest.totalSizeBytes,
+        currentFilename: entry.filename,
+      });
+
+      await storage.store(storagePath, readStream, (transferredBytes) => {
+        const boundedBytes = Math.min(
+          entry.sizeBytes,
+          Math.max(0, Math.trunc(transferredBytes)),
+        );
+        if (boundedBytes <= currentFileBytes) return;
+        currentFileBytes = boundedBytes;
+
+        const now = Date.now();
+        const shouldReport =
+          boundedBytes === entry.sizeBytes ||
+          boundedBytes - lastReportedFileBytes >= STORAGE_PROGRESS_MIN_BYTES ||
+          now - lastReportedAt >= STORAGE_PROGRESS_MAX_INTERVAL_MS;
+        if (!shouldReport) return;
+
+        lastReportedFileBytes = boundedBytes;
+        lastReportedAt = now;
+        progressReporter.enqueue({
+          completedFiles: index,
+          totalFiles: manifest.entries.length,
+          completedBytes: completedBytes + currentFileBytes,
+          totalBytes: manifest.totalSizeBytes,
+          currentFilename: entry.filename,
+        });
+      });
+
+      completedBytes += entry.sizeBytes;
+      await progressReporter.flush({
+        completedFiles: index + 1,
+        totalFiles: manifest.entries.length,
+        completedBytes,
+        totalBytes: manifest.totalSizeBytes,
+        currentFilename: entry.filename,
+      });
     }
   }
 
@@ -743,6 +807,54 @@ export class FileProcessingService {
 
     return entries;
   }
+}
+
+function createCoalescedProgressReporter(
+  onProgress: ((progress: ManifestStorageProgress) => void | Promise<void>) | undefined,
+  onError: (error: unknown) => void,
+): {
+  enqueue(progress: ManifestStorageProgress): void;
+  flush(progress: ManifestStorageProgress): Promise<void>;
+} {
+  let pending: ManifestStorageProgress | null = null;
+  let drainPromise: Promise<void> | null = null;
+
+  const startDrain = (): void => {
+    if (!onProgress || drainPromise) return;
+
+    drainPromise = (async () => {
+      try {
+        while (pending) {
+          const progress = pending;
+          pending = null;
+          try {
+            await onProgress(progress);
+          } catch (error) {
+            onError(error);
+          }
+        }
+      } finally {
+        drainPromise = null;
+        if (pending) startDrain();
+      }
+    })();
+  };
+
+  const enqueue = (progress: ManifestStorageProgress): void => {
+    if (!onProgress) return;
+    pending = progress;
+    startDrain();
+  };
+
+  return {
+    enqueue,
+    async flush(progress: ManifestStorageProgress): Promise<void> {
+      enqueue(progress);
+      while (drainPromise) {
+        await drainPromise;
+      }
+    },
+  };
 }
 
 export const fileProcessingService = new FileProcessingService();

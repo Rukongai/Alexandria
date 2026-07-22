@@ -14,7 +14,7 @@
  * - delete()     — removes the row.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { users, libraries, importSessions } from '../db/schema/index.js';
@@ -501,6 +501,7 @@ describe('ImportSessionService.toDto()', () => {
     expect(dto).toHaveProperty('status', 'scanning');
     expect(dto).toHaveProperty('detected', null);
     expect(dto).toHaveProperty('modelId', null);
+    expect(dto).toHaveProperty('commitProgress', null);
     expect(dto).toHaveProperty('error', null);
     expect(dto).toHaveProperty('createdAt');
 
@@ -542,6 +543,88 @@ describe('ImportSessionService.toDto()', () => {
     expect(dto.detected).not.toBeNull();
     expect(dto.detected!.modelCount).toBe(1);
     expect(dto.detected!.fileCount).toBe(5);
+  });
+
+  it('should expose validated commit progress only while committing', async () => {
+    const { id } = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'dto-progress.zip',
+    });
+    track(id);
+    await importSessionService.update(id, { status: 'committing' });
+
+    const row = await importSessionService.getRow(id);
+    const progress = {
+      phase: 'storing_files' as const,
+      percent: 40,
+      completedFiles: 1,
+      totalFiles: 2,
+      completedBytes: 50,
+      totalBytes: 100,
+      currentFilename: 'model.stl',
+    };
+    const service = new ImportSessionService();
+
+    expect(service.toDto(row!, progress).commitProgress).toEqual(progress);
+    expect(service.toDto({ ...row!, status: 'ready_for_review' }, progress).commitProgress).toBeNull();
+  });
+
+  it('should use queued totals until BullMQ publishes structured commit progress', async () => {
+    const { id } = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'dto-queued.zip',
+    });
+    track(id);
+    await importSessionService.update(id, {
+      status: 'committing',
+      detected: {
+        modelCount: 1,
+        fileCount: 4,
+        totalSizeBytes: 1234,
+        artist: null,
+        tagsGuessed: [],
+        folderStructure: [],
+      },
+    });
+    const progressSource = { getImportCommitProgress: vi.fn().mockResolvedValue(null) };
+    const service = new ImportSessionService(progressSource);
+
+    const dto = await service.getOwnedSession(id, testUserId);
+
+    expect(dto.commitProgress).toEqual({
+      phase: 'queued',
+      percent: 0,
+      completedFiles: 0,
+      totalFiles: 4,
+      completedBytes: 0,
+      totalBytes: 1234,
+      currentFilename: null,
+    });
+    expect(progressSource.getImportCommitProgress).toHaveBeenCalledWith(id);
+  });
+
+  it('should preserve the session response when commit progress lookup fails', async () => {
+    const { id } = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'dto-progress-failure.zip',
+    });
+    track(id);
+    await importSessionService.update(id, { status: 'committing' });
+    const service = new ImportSessionService({
+      getImportCommitProgress: vi.fn().mockRejectedValue(new Error('Redis unavailable')),
+    });
+
+    await expect(service.getOwnedSession(id, testUserId)).resolves.toMatchObject({
+      id,
+      status: 'committing',
+      commitProgress: {
+        phase: 'queued',
+        percent: 0,
+      },
+    });
   });
 });
 

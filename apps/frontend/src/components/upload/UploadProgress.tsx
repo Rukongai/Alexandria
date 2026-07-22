@@ -1,26 +1,44 @@
-import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Loader2, CheckCircle2, AlertCircle, ArrowRight } from 'lucide-react';
 import { getModelStatus } from '../../api/models';
-import type { JobStatus } from '@alexandria/shared';
+import type { ImportCommitPhase, ImportCommitProgress } from '@alexandria/shared';
 import { useLibraryPath } from '../../hooks/use-libraries';
+import { formatFileSize } from '../../lib/format';
 
 interface UploadProgressProps {
   modelId: string;
+  commitProgress?: ImportCommitProgress | null;
 }
 
-function statusLabel(status: JobStatus['status'], progress: number | null): string {
-  if (status === 'error') return 'Processing failed';
-  if (status === 'ready') return 'Done!';
-  if (progress === null || progress === 0) return 'Processing...';
-  if (progress < 40) return 'Extracting files...';
-  if (progress < 70) return 'Classifying files...';
-  if (progress < 90) return 'Generating thumbnails...';
-  return 'Finishing up...';
+export function commitPhaseLabel(phase: ImportCommitPhase): string {
+  switch (phase) {
+    case 'queued':
+    case 'storing_files':
+      return 'Saving files to library storage';
+    case 'saving_records':
+      return 'Recording files';
+    case 'generating_thumbnails':
+      return 'Generating previews';
+    case 'applying_metadata':
+      return 'Applying details';
+    case 'complete':
+      return 'Finishing';
+  }
 }
 
-export function UploadProgress({ modelId }: UploadProgressProps) {
+export function commitProgressValueText(progress: ImportCommitProgress): string {
+  const parts = [
+    commitPhaseLabel(progress.phase),
+    `${progress.percent}%`,
+    `${formatFileSize(progress.completedBytes)} of ${formatFileSize(progress.totalBytes)}`,
+    `${progress.completedFiles} of ${progress.totalFiles} files`,
+  ];
+  if (progress.currentFilename) parts.push(`Current file: ${progress.currentFilename}`);
+  return parts.join('. ');
+}
+
+export function UploadProgress({ modelId, commitProgress = null }: UploadProgressProps) {
   const libPath = useLibraryPath();
   const { data: status, error } = useQuery({
     queryKey: ['model-status', modelId],
@@ -34,11 +52,6 @@ export function UploadProgress({ modelId }: UploadProgressProps) {
     staleTime: 0,
   });
 
-  // progress from job (0-100), null means indeterminate
-  const progress = status?.progress ?? null;
-  const pct = typeof progress === 'number' ? progress : 0;
-  const isIndeterminate = progress === null && status?.status === 'processing';
-
   if (error) {
     return (
       <div className="flex items-center gap-2 text-sm text-destructive">
@@ -51,7 +64,7 @@ export function UploadProgress({ modelId }: UploadProgressProps) {
   if (!status) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+        <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none shrink-0" />
         <span>Loading status...</span>
       </div>
     );
@@ -74,7 +87,9 @@ export function UploadProgress({ modelId }: UploadProgressProps) {
     );
   }
 
-  if (status.status === 'ready') {
+  const commitIsActive = commitProgress !== null && commitProgress.phase !== 'complete';
+
+  if (status.status === 'ready' && !commitIsActive) {
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--ax-success)' }}>
@@ -91,27 +106,61 @@ export function UploadProgress({ modelId }: UploadProgressProps) {
     );
   }
 
+  const label = commitProgress
+    ? commitPhaseLabel(commitProgress.phase)
+    : 'Saving to library storage';
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm">
         <span className="flex items-center gap-2 text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-          {statusLabel(status.status, progress)}
+          <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none shrink-0" />
+          {label}…
         </span>
-        {!isIndeterminate && (
-          <span className="text-xs tabular-nums text-muted-foreground">{pct}%</span>
+        {commitProgress && (
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {commitProgress.percent}%
+          </span>
         )}
       </div>
-      <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-        {isIndeterminate ? (
-          <div className="h-full w-1/3 rounded-full bg-primary animate-[slide_1.5s_ease-in-out_infinite]" />
-        ) : (
+      <div
+        className="h-2 w-full rounded-full bg-muted overflow-hidden"
+        role="progressbar"
+        aria-label="Import progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={commitProgress?.percent}
+        aria-valuetext={commitProgress
+          ? commitProgressValueText(commitProgress)
+          : 'Saving to library storage'}
+      >
+        {commitProgress ? (
           <div
-            className="h-full rounded-full bg-primary transition-all duration-500"
-            style={{ width: `${pct}%` }}
+            className="h-full rounded-full bg-primary transition-all duration-500 motion-reduce:transition-none"
+            style={{ width: `${commitProgress.percent}%` }}
           />
+        ) : (
+          <div className="h-full w-1/3 rounded-full bg-primary animate-[slide_1.5s_ease-in-out_infinite] motion-reduce:animate-none" />
         )}
       </div>
+      {commitProgress?.phase === 'storing_files' && (
+        <div className="space-y-0.5 text-xs text-muted-foreground">
+          <div className="flex items-center justify-between gap-3 tabular-nums">
+            <span>
+              {formatFileSize(commitProgress.completedBytes)} of{' '}
+              {formatFileSize(commitProgress.totalBytes)}
+            </span>
+            <span>
+              {commitProgress.completedFiles} of {commitProgress.totalFiles} files
+            </span>
+          </div>
+          {commitProgress.currentFilename && (
+            <p className="truncate font-mono text-[11px]" title={commitProgress.currentFilename}>
+              {commitProgress.currentFilename}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

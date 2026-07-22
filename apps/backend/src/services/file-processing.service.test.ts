@@ -17,8 +17,10 @@ import {
   validateSplitZipSet,
   validate7zArchiveEntry,
   type FileManifest,
+  type ManifestStorageProgress,
   type MultipartArchiveFile,
 } from './file-processing.service.js';
+import type { IStorageService } from './storage.service.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -61,6 +63,133 @@ let service: FileProcessingService;
 beforeAll(async () => {
   tmpDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'alex-fp-test-'));
   service = new FileProcessingService();
+});
+
+describe('FileProcessingService – managed-storage progress', () => {
+  it('should aggregate provider-reported bytes across files in order', async () => {
+    const extractDir = path.join(tmpDir, 'storage-progress');
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await fsPromises.writeFile(path.join(extractDir, 'first.stl'), 'first');
+    await fsPromises.writeFile(path.join(extractDir, 'second.stl'), 'second!');
+
+    const manifest: FileManifest = {
+      entries: [
+        {
+          filename: 'first.stl',
+          relativePath: 'first.stl',
+          fileType: 'stl',
+          mimeType: 'model/stl',
+          sizeBytes: 5,
+          hash: 'first-hash',
+        },
+        {
+          filename: 'second.stl',
+          relativePath: 'second.stl',
+          fileType: 'stl',
+          mimeType: 'model/stl',
+          sizeBytes: 7,
+          hash: 'second-hash',
+        },
+      ],
+      totalSizeBytes: 12,
+    };
+    const store = vi.fn<IStorageService['store']>(async (key, _data, onProgress) => {
+      if (key.endsWith('first.stl')) {
+        onProgress?.(2);
+        onProgress?.(5);
+        onProgress?.(50);
+      } else {
+        onProgress?.(3);
+        onProgress?.(7);
+      }
+    });
+    const storage = {
+      kind: 's3',
+      store,
+    } as unknown as IStorageService;
+    const progress = vi.fn();
+
+    await service.copyManifestToStorage(extractDir, 'model-1', manifest, storage, progress);
+
+    expect(progress.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ completedFiles: 0, completedBytes: 0, currentFilename: 'first.stl' }),
+      expect.objectContaining({ completedFiles: 0, completedBytes: 5, currentFilename: 'first.stl' }),
+      expect.objectContaining({ completedFiles: 1, completedBytes: 5, currentFilename: 'first.stl' }),
+      expect.objectContaining({ completedFiles: 1, completedBytes: 5, currentFilename: 'second.stl' }),
+      expect.objectContaining({ completedFiles: 1, completedBytes: 12, currentFilename: 'second.stl' }),
+      expect.objectContaining({ completedFiles: 2, completedBytes: 12, currentFilename: 'second.stl' }),
+    ]);
+    expect(progress.mock.calls.every(([event]) => event.totalFiles === 2 && event.totalBytes === 12)).toBe(true);
+  });
+
+  it('should coalesce high-frequency provider callbacks and flush exact final counters', async () => {
+    const extractDir = path.join(tmpDir, 'storage-progress-burst');
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await fsPromises.writeFile(path.join(extractDir, 'large.stl'), 'placeholder');
+    const totalBytes = 12 * 1024 * 1024;
+    const manifest: FileManifest = {
+      entries: [{
+        filename: 'large.stl',
+        relativePath: 'large.stl',
+        fileType: 'stl',
+        mimeType: 'model/stl',
+        sizeBytes: totalBytes,
+        hash: 'hash',
+      }],
+      totalSizeBytes: totalBytes,
+    };
+    const storage = {
+      kind: 'local',
+      store: vi.fn<IStorageService['store']>(async (_key, _data, onProgress) => {
+        for (let transferred = 4096; transferred <= totalBytes; transferred += 4096) {
+          onProgress?.(transferred);
+        }
+      }),
+    } as unknown as IStorageService;
+    const observed: ManifestStorageProgress[] = [];
+    const observer = vi.fn(async (progress) => {
+      observed.push(progress);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+
+    await service.copyManifestToStorage(extractDir, 'model-1', manifest, storage, observer);
+
+    expect(observer.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(observed.at(-1)).toEqual({
+      completedFiles: 1,
+      totalFiles: 1,
+      completedBytes: totalBytes,
+      totalBytes,
+      currentFilename: 'large.stl',
+    });
+  });
+
+  it('should not fail stored files when the progress observer rejects', async () => {
+    const extractDir = path.join(tmpDir, 'storage-progress-error');
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    await fsPromises.writeFile(path.join(extractDir, 'model.stl'), 'model');
+    const manifest: FileManifest = {
+      entries: [{
+        filename: 'model.stl',
+        relativePath: 'model.stl',
+        fileType: 'stl',
+        mimeType: 'model/stl',
+        sizeBytes: 5,
+        hash: 'hash',
+      }],
+      totalSizeBytes: 5,
+    };
+    const storage = {
+      kind: 'local',
+      store: vi.fn<IStorageService['store']>(async (_key, _data, onProgress) => onProgress?.(5)),
+    } as unknown as IStorageService;
+
+    await expect(
+      service.copyManifestToStorage(extractDir, 'model-1', manifest, storage, async () => {
+        throw new Error('progress unavailable');
+      }),
+    ).resolves.toBeUndefined();
+  });
 });
 
 afterAll(async () => {

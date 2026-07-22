@@ -10,10 +10,15 @@ import { S3StorageService } from './s3-storage.service.js';
 import { validateStorageKey } from './storage-key.js';
 
 export type StorageData = Buffer | Readable;
+export type StorageProgressCallback = (transferredBytes: number) => void;
 
 export interface IStorageService {
   readonly kind: 'local' | 's3';
-  store(filePath: string, data: StorageData): Promise<void>;
+  store(
+    filePath: string,
+    data: StorageData,
+    onProgress?: StorageProgressCallback,
+  ): Promise<void>;
   retrieve(filePath: string): Promise<Buffer>;
   retrieveStream(filePath: string): Promise<Readable>;
   copy(sourcePath: string, destinationPath: string): Promise<void>;
@@ -38,7 +43,11 @@ export class LocalStorageService implements IStorageService {
     return this.resolve(filePath);
   }
 
-  async store(filePath: string, data: StorageData): Promise<void> {
+  async store(
+    filePath: string,
+    data: StorageData,
+    onProgress?: StorageProgressCallback,
+  ): Promise<void> {
     const absolute = this.resolve(filePath);
     const dir = path.dirname(absolute);
 
@@ -47,9 +56,14 @@ export class LocalStorageService implements IStorageService {
 
       if (Buffer.isBuffer(data)) {
         await fsPromises.writeFile(absolute, data);
+        reportStorageProgress(onProgress, data.length);
       } else {
         const writeStream = fs.createWriteStream(absolute);
+        writeStream.on('drain', () => {
+          reportStorageProgress(onProgress, writeStream.bytesWritten);
+        });
         await pipeline(data, writeStream);
+        reportStorageProgress(onProgress, writeStream.bytesWritten);
       }
     } catch (error) {
       throw storageError(`Failed to store file at ${filePath}: ${errorMessage(error)}`);
@@ -160,4 +174,15 @@ export async function validateStorageBackend(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function reportStorageProgress(
+  onProgress: StorageProgressCallback | undefined,
+  transferredBytes: number,
+): void {
+  try {
+    onProgress?.(transferredBytes);
+  } catch {
+    // Progress is observational and must never turn a successful write into a failure.
+  }
 }

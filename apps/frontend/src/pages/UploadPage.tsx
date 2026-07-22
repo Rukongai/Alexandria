@@ -3,9 +3,11 @@ import { Files, FolderOpen } from 'lucide-react';
 import {
   useAddSessionFiles,
   useDiscardSession,
+  useImportSession,
   useImportSessions,
 } from '../hooks/use-import-sessions';
 import { useToast } from '../hooks/use-toast';
+import { useCurrentLibraryId } from '../hooks/use-libraries';
 import { UploadQueue } from '../components/upload/UploadQueue';
 import { DropZone } from '../components/upload/DropZone';
 import { ReviewPane } from '../components/upload/ReviewPane';
@@ -19,6 +21,7 @@ const UPLOAD_TABS: Tab[] = ['queue', 'multipart', 'folder'];
 
 export function UploadPage() {
   const { data: sessions = [] } = useImportSessions();
+  const currentLibraryId = useCurrentLibraryId();
   const discardSession = useDiscardSession();
   const addSessionFiles = useAddSessionFiles();
   const { toast } = useToast();
@@ -32,24 +35,37 @@ export function UploadPage() {
   const [tab, setTab] = useState<Tab>('queue');
   const [fileTargetId, setFileTargetId] = useState<string | null>(null);
   const [addFilesProgress, setAddFilesProgress] = useState(0);
+  const selectionLibraryIdRef = useRef(currentLibraryId);
+  const isCurrentLibrarySelection = selectionLibraryIdRef.current === currentLibraryId;
+  const scopedActiveId = isCurrentLibrarySelection ? activeId : null;
+  const scopedSessions = isCurrentLibrarySelection ? sessions : [];
+  const { data: selectedSession } = useImportSession(scopedActiveId);
 
-  // Auto-select the first actionable (non-committed) session when the list loads
   useEffect(() => {
-    if (activeId) {
-      // Keep existing selection if it's still in the list
-      const stillExists = sessions.some((s) => s.id === activeId);
-      if (stillExists) return;
-    }
-    // Find first ready_for_review, then scanning, then any
-    const preferred =
-      sessions.find((s) => s.status === 'ready_for_review') ??
-      sessions.find((s) => s.status !== 'committed') ??
-      sessions[0] ??
-      null;
-    setActiveId(preferred?.id ?? null);
-  }, [sessions]);
+    if (selectionLibraryIdRef.current === currentLibraryId) return;
+    selectionLibraryIdRef.current = currentLibraryId;
+    setActiveId(null);
+    setFileTargetId(null);
+    setAddFilesProgress(0);
+  }, [currentLibraryId]);
 
-  const activeSession = sessions.find((s) => s.id === activeId) ?? null;
+  // Prefer an actionable listed session, but retain a selected committing session
+  // after listActive drops it so the terminal success state remains reachable.
+  useEffect(() => {
+    if (!isCurrentLibrarySelection) return;
+    if (activeId && scopedSessions.some((session) => session.id === activeId)) return;
+
+    const preferred =
+      scopedSessions.find((s) => s.status === 'ready_for_review') ??
+      scopedSessions.find((s) => s.status !== 'committed') ??
+      scopedSessions[0] ??
+      null;
+    if (preferred && preferred.id !== activeId) setActiveId(preferred.id);
+  }, [activeId, isCurrentLibrarySelection, scopedSessions]);
+
+  const listedActiveSession = scopedSessions.find((s) => s.id === scopedActiveId) ?? null;
+  const activeSession = listedActiveSession
+    ?? (scopedSessions.length === 0 ? selectedSession ?? null : null);
   const discardingId = discardSession.isPending ? (discardSession.variables ?? null) : null;
   const addingFilesId = addSessionFiles.isPending
     ? (addSessionFiles.variables?.id ?? null)
@@ -132,8 +148,8 @@ export function UploadPage() {
       />
       {/* Left rail: queue */}
       <UploadQueue
-        sessions={sessions}
-        activeId={activeId}
+        sessions={scopedSessions}
+        activeId={scopedActiveId}
         onSelect={(id) => { setActiveId(id); setTab('queue'); }}
         onDiscard={(id) => void handleDiscard(id)}
         onAddFiles={chooseFilesForSession}
@@ -254,7 +270,7 @@ export function UploadPage() {
             className="flex-1 overflow-hidden flex flex-col"
           >
             {/* Drop zone — compact when sessions exist, full when empty */}
-            {sessions.length > 0 ? (
+            {scopedSessions.length > 0 ? (
               <DropZone compact onBrowseFolder={() => setTab('folder')} />
             ) : (
               <div className="px-7 pt-6">
@@ -283,7 +299,7 @@ export function UploadPage() {
                   isAddingFiles={addingFilesId === activeSession.id}
                   addFilesProgress={addFilesProgress}
                 />
-              ) : sessions.length === 0 ? (
+              ) : scopedSessions.length === 0 ? (
                 <div className="space-y-4 mt-4">
                   <h2 className="text-base font-semibold" style={{ color: 'var(--ax-fg)' }}>
                     Recent models

@@ -33,6 +33,7 @@ vi.mock('./job.service.js', () => ({
   jobService: {
     enqueueIngestionJob: vi.fn(),
     enqueueScanJob: vi.fn(),
+    enqueueCommitJob: vi.fn(),
     enqueueFolderImportJob: vi.fn(),
   },
   JobService: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('./file-processing.service.js', () => ({
 vi.mock('./import-session.service.js', () => ({
   importSessionService: {
     create: vi.fn(),
+    getRow: vi.fn(),
     getOwnedRow: vi.fn(),
     update: vi.fn(),
     toDto: vi.fn(),
@@ -310,6 +312,120 @@ describe('IngestionService – processIngestionJob', () => {
     expect(job.updateProgress).toHaveBeenCalledWith(50);
     expect(job.updateProgress).toHaveBeenCalledWith(75);
     expect(job.updateProgress).toHaveBeenCalledWith(100);
+  });
+});
+
+describe('IngestionService – staged commit progress', () => {
+  let service: IngestionService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new IngestionService();
+    vi.mocked(importSessionService.getRow).mockResolvedValue({
+      id: 'session-1',
+      stagingPath: '/staging',
+      manifest: {
+        entries: [{
+          filename: 'model.stl',
+          relativePath: 'model.stl',
+          fileType: 'stl',
+          mimeType: 'model/stl',
+          sizeBytes: 100,
+          hash: 'hash',
+        }],
+        totalSizeBytes: 100,
+      },
+    } as never);
+    vi.mocked(fileProcessingService.copyManifestToStorage).mockImplementation(
+      async (_stagingPath, _modelId, _manifest, _storage, onProgress) => {
+        await onProgress?.({
+          completedFiles: 0,
+          totalFiles: 1,
+          completedBytes: 50,
+          totalBytes: 100,
+          currentFilename: 'model.stl',
+        });
+        await onProgress?.({
+          completedFiles: 1,
+          totalFiles: 1,
+          completedBytes: 100,
+          totalBytes: 100,
+          currentFilename: 'model.stl',
+        });
+      },
+    );
+    vi.mocked(modelService.createModelFiles).mockResolvedValue([
+      { id: 'file-1', fileType: 'stl' },
+    ] as never);
+    vi.mocked(modelService.updateModelStatus).mockResolvedValue(undefined);
+    vi.mocked(importSessionService.update).mockResolvedValue(undefined);
+  });
+
+  it('should publish exact storage counters and ordered commit phases', async () => {
+    const updateProgress = vi.fn().mockResolvedValue(undefined);
+    const job = {
+      id: 'session-1',
+      data: {
+        sessionId: 'session-1',
+        modelId: 'model-1',
+        userId: 'user-1',
+        libraryId: 'library-1',
+      },
+      updateProgress,
+      opts: { attempts: 1 },
+      attemptsMade: 0,
+      failedReason: null,
+    };
+
+    await service.processCommitJob(job as never);
+
+    const progress = updateProgress.mock.calls.map(([value]) => value);
+    expect(progress.map((value) => value.phase)).toEqual([
+      'queued',
+      'storing_files',
+      'storing_files',
+      'saving_records',
+      'generating_thumbnails',
+      'applying_metadata',
+      'complete',
+    ]);
+    expect(progress[1]).toEqual(expect.objectContaining({
+      percent: 40,
+      completedFiles: 0,
+      completedBytes: 50,
+      currentFilename: 'model.stl',
+    }));
+    expect(progress.at(-1)).toEqual(expect.objectContaining({
+      percent: 100,
+      completedFiles: 1,
+      completedBytes: 100,
+      currentFilename: null,
+    }));
+  });
+
+  it('should complete the model when BullMQ progress persistence fails', async () => {
+    const job = {
+      id: 'session-1',
+      data: {
+        sessionId: 'session-1',
+        modelId: 'model-1',
+        userId: 'user-1',
+        libraryId: 'library-1',
+      },
+      updateProgress: vi.fn().mockRejectedValue(new Error('Redis progress failed')),
+      opts: { attempts: 1 },
+      attemptsMade: 0,
+      failedReason: null,
+    };
+
+    await expect(service.processCommitJob(job as never)).resolves.toBeUndefined();
+    expect(modelService.updateModelStatus).toHaveBeenCalledWith('model-1', 'ready', {
+      totalSizeBytes: 100,
+      fileCount: 1,
+    });
+    expect(importSessionService.update).toHaveBeenCalledWith('session-1', {
+      status: 'committed',
+    });
   });
 });
 

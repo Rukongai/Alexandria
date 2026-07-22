@@ -1,14 +1,28 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import type { ImportSession } from '@alexandria/shared';
 import { UploadPage } from './UploadPage';
+
+const libraryState = vi.hoisted(() => ({ currentLibraryId: null as string | null }));
+
+vi.mock('../hooks/use-libraries', () => ({
+  useCurrentLibraryId: () => libraryState.currentLibraryId,
+  useLibraryPath: () => (path: string) => (
+    libraryState.currentLibraryId
+      ? `/lib/${libraryState.currentLibraryId}${path}`
+      : path
+  ),
+}));
 
 vi.mock('../api/models', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/models')>();
   return {
     ...actual,
     listImportSessions: vi.fn(),
+    getImportSession: vi.fn(),
+    getModelStatus: vi.fn(),
     scanMultipartUpload: vi.fn(),
     discardImportSession: vi.fn(),
     uploadImportSessionFiles: vi.fn(),
@@ -21,6 +35,8 @@ vi.mock('../api/collections', () => ({
 
 import {
   discardImportSession,
+  getImportSession,
+  getModelStatus,
   listImportSessions,
   scanMultipartUpload,
   uploadImportSessionFiles,
@@ -32,6 +48,7 @@ const failedSession: ImportSession = {
   status: 'error',
   detected: null,
   modelId: null,
+  commitProgress: null,
   error: 'Archive is corrupt',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
@@ -63,6 +80,11 @@ const readySession: ImportSession = {
 describe('UploadPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    libraryState.currentLibraryId = null;
+    vi.mocked(getImportSession).mockImplementation(async (id) => ({
+      ...readySession,
+      id,
+    }));
   });
 
   it('opens the dedicated multi-part archive tab without changing ordinary uploads', async () => {
@@ -186,7 +208,7 @@ describe('UploadPage', () => {
     await waitFor(() => {
       expect(discardImportSession).toHaveBeenCalledWith(failedSession.id);
       expect(screen.queryByText('failed-upload.zip')).toBeNull();
-      expect(screen.getByText('No uploads yet. Drop an archive to start.')).toBeTruthy();
+      expect(screen.getByText('No imports yet. Drop an archive to start.')).toBeTruthy();
     });
   });
 
@@ -272,5 +294,134 @@ describe('UploadPage', () => {
       );
       expect(screen.getByText('150 B · 2 files')).toBeTruthy();
     });
+  });
+
+  it('retains a completed import until switching to another library', async () => {
+    libraryState.currentLibraryId = 'library-a';
+    const committingSession: ImportSession = {
+      ...readySession,
+      id: '55555555-5555-4555-8555-555555555555',
+      originalFilename: 'large-library.zip',
+      status: 'committing',
+      modelId: '66666666-6666-4666-8666-666666666666',
+      commitProgress: {
+        phase: 'storing_files',
+        percent: 80,
+        completedFiles: 1,
+        totalFiles: 2,
+        completedBytes: 100,
+        totalBytes: 200,
+        currentFilename: 'parts/final.stl',
+      },
+    };
+    const committedSession: ImportSession = {
+      ...committingSession,
+      status: 'committed',
+      commitProgress: {
+        ...committingSession.commitProgress!,
+        phase: 'complete',
+        percent: 100,
+        completedFiles: 2,
+        completedBytes: 200,
+        currentFilename: null,
+      },
+    };
+    vi.mocked(listImportSessions)
+      .mockResolvedValueOnce([committingSession])
+      .mockResolvedValue([]);
+    vi.mocked(getImportSession)
+      .mockResolvedValueOnce(committingSession)
+      .mockResolvedValue(committedSession);
+    vi.mocked(getModelStatus).mockResolvedValue({
+      modelId: committingSession.modelId!,
+      status: 'ready',
+      progress: null,
+      error: null,
+      startedAt: '',
+      completedAt: '2026-07-22T12:05:00.000Z',
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <UploadPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Saving model to library…' }))
+      .toBeVisible();
+
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['import-sessions'] });
+      await client.invalidateQueries({
+        queryKey: ['import-session', committingSession.id],
+      });
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Imported!' })).toBeVisible();
+    expect(screen.getByText('Model is ready.')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'View model' })).toBeVisible();
+    expect(screen.getByText('No imports yet. Drop an archive to start.')).toBeVisible();
+
+    const detailRequestCount = vi.mocked(getImportSession).mock.calls.length;
+    libraryState.currentLibraryId = 'library-b';
+    view.rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <UploadPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    await act(async () => Promise.resolve());
+
+    expect(screen.queryByRole('heading', { name: 'Imported!' })).toBeNull();
+    expect(screen.queryByText('Model is ready.')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'View model' })).toBeNull();
+    expect(getImportSession).toHaveBeenCalledTimes(detailRequestCount);
+  });
+
+  it('selects another actionable session when the committing session leaves the queue', async () => {
+    const committingSession: ImportSession = {
+      ...readySession,
+      id: '77777777-7777-4777-8777-777777777777',
+      status: 'committing',
+      modelId: '88888888-8888-4888-8888-888888888888',
+      commitProgress: null,
+    };
+    vi.mocked(listImportSessions)
+      .mockResolvedValueOnce([committingSession])
+      .mockResolvedValue([readySession]);
+    vi.mocked(getImportSession).mockResolvedValue(committingSession);
+    vi.mocked(getModelStatus).mockResolvedValue({
+      modelId: committingSession.modelId!,
+      status: 'processing',
+      progress: null,
+      error: null,
+      startedAt: '',
+      completedAt: null,
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Saving model to library…' }))
+      .toBeVisible();
+
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['import-sessions'] });
+    });
+
+    expect(await screen.findByTestId('upload-review-grid')).toBeVisible();
+    expect(screen.getByDisplayValue('ready-upload')).toBeVisible();
   });
 });

@@ -1,7 +1,8 @@
 import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { Readable } from 'node:stream';
+import { describe, expect, it, vi } from 'vitest';
 import { describeStorageServiceContract } from './storage-service.contract.js';
 import { LocalStorageService, StorageService, isLocalStorageService } from './storage.service.js';
 
@@ -37,6 +38,43 @@ describe('LocalStorageService', () => {
 
       expect(service).toBeInstanceOf(LocalStorageService);
       expect(isLocalStorageService(service)).toBe(true);
+    } finally {
+      await fsPromises.rm(storageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('should report completed bytes for buffer and stream writes', async () => {
+    const storageRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'alex-storage-progress-test-'));
+    try {
+      const service = new LocalStorageService(storageRoot);
+      const bufferProgress = vi.fn();
+      const streamProgress = vi.fn();
+
+      await service.store('buffers/file.bin', Buffer.from('buffer'), bufferProgress);
+      await service.store(
+        'streams/file.bin',
+        Readable.from([Buffer.from('streamed')]),
+        streamProgress,
+      );
+
+      expect(bufferProgress).toHaveBeenLastCalledWith(6);
+      expect(streamProgress).toHaveBeenLastCalledWith(8);
+    } finally {
+      await fsPromises.rm(storageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('should not fail a completed write when the progress callback throws', async () => {
+    const storageRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'alex-storage-progress-error-'));
+    try {
+      const service = new LocalStorageService(storageRoot);
+
+      await expect(
+        service.store('models/file.bin', Buffer.from('content'), () => {
+          throw new Error('observer failed');
+        }),
+      ).resolves.toBeUndefined();
+      await expect(service.retrieve('models/file.bin')).resolves.toEqual(Buffer.from('content'));
     } finally {
       await fsPromises.rm(storageRoot, { recursive: true, force: true });
     }
