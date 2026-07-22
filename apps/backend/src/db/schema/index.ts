@@ -10,3 +10,5 @@ export * from './tag.js';
 export * from './collection.js';
 export * from './smart-collection.js';
 export * from './import-session.js';
+export * from './ai-provider.js';
+export * from './ai-change-proposal.js';

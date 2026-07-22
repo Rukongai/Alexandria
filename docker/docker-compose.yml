@@ -45,6 +45,8 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
+      AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:?Set AI_ENCRYPTION_KEY to a long random secret}
+      AI_ALLOW_PRIVATE_PROVIDER_URLS: ${AI_ALLOW_PRIVATE_PROVIDER_URLS:-false}
       PORT: "3000"
       HOST: "0.0.0.0"
       NODE_ENV: production

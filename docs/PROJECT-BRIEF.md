@@ -63,19 +63,29 @@ These decisions were made deliberately during the architecture phase and should 
 
 ## Architecture Summary
 
-The backend is organized around 11 services with clear ownership boundaries:
+The backend is organized around focused services with clear ownership boundaries. Principal services include:
 
 - **IngestionService** — orchestrates upload and import pipelines
 - **FileProcessingService** — extracts zips, walks folders, classifies files
 - **StorageService** — manages blob storage through local-filesystem or S3-compatible providers
 - **ThumbnailService** — generates webp thumbnails from images
+- **UploadService** — manages bounded chunked uploads and multipart assembly
+- **ImportSessionService** — owns staged scan, review, and commit sessions
+- **ImportStrategyService** — moves folder imports into managed storage
 - **MetadataService** — manages field definitions and metadata values with hybrid storage
 - **ModelService** — CRUD for models and their files
+- **ModelDownloadService** — streams model downloads from managed storage
 - **SearchService** — all querying, filtering, sorting, pagination
 - **CollectionService** — collection management and nesting
+- **SmartCollectionService** — validates rules and resolves dynamic model sets
+- **LibraryService** — resolves user-owned libraries and defaults
 - **AuthService** — authentication and sessions
 - **JobService** — async job queue management
 - **PresenterService** — assembles API response payloads
+- **AiProviderService** — manages encrypted OpenAI-compatible BYOK providers
+- **AiAssistantService** — runs the bounded, library-scoped assistant tool loop
+- **AiProposalService** — validates immutable previews and atomically applies approved changes
+- **WebSearchService** — researches public metadata and image candidates without mutating the library
 
 The frontend communicates with the backend via a REST API using a consistent response envelope (`{ data, meta, errors }`) on every endpoint.
 
@@ -96,4 +106,4 @@ Implementation uses a team of 7 specialized Claude Code agents (Orchestrator, Ba
 
 ## Current Status
 
-Architecture complete. Implementation not yet started.
+The core application, staged ingestion workflow, multipart archive support, and preview-first AI assistant are implemented. Development continues through reviewed feature branches and pull requests.

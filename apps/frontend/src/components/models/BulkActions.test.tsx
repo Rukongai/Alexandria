@@ -60,8 +60,8 @@ describe('BulkActions', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Tag' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: /Fantasy/ })).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /Fantasy/ }));
+    await waitFor(() => expect(screen.getByRole('option', { name: /Fantasy/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole('option', { name: /Fantasy/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Add 1 tag' }));
 
     await waitFor(() => {
@@ -86,7 +86,7 @@ describe('BulkActions', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Tag' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Tag name' }), {
+    fireEvent.change(screen.getByRole('combobox', { name: 'Tag name' }), {
       target: { value: 'New Tag' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Add 1 tag' }));

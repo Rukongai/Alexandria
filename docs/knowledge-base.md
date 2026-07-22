@@ -30,20 +30,29 @@ Several decisions were made during the architecture phase and are treated as set
 
 Alexandria is a monorepo with three packages: a React frontend (`apps/frontend`), a Fastify backend (`apps/backend`), and a shared types and validation package (`packages/shared`).
 
-The backend is organized around twelve focused services. Each service owns a coherent set of operations and does not reach into another service's internals.
+The backend is organized around focused services. Each service owns a coherent set of operations and does not reach into another service's internals. Principal services include:
 
 - **IngestionService** — orchestrates the upload and import pipelines; creates model records and enqueues processing jobs
 - **FileProcessingService** — extracts archives and supported split archives, temporarily colocates split members and starts extraction from the set's entry member, rejects unsafe paths and link-like entries before 7-Zip extraction, combines explicitly grouped complete archives under collision-safe folders, walks import directories, classifies files by type, and computes SHA-256 hashes
 - **StorageService** — manages backend-independent logical keys through local-filesystem or S3-compatible providers
 - **ThumbnailService** — generates WebP thumbnails at grid and detail sizes using sharp
 - **UploadService** — manages chunked upload sessions in memory, bounds accepted chunk bytes to the declared file size, supports explicit abort and cleanup, and assembles single files or multipart groups for ingestion
+- **ImportSessionService** — owns staged scan, review, and commit sessions
+- **ImportStrategyService** — moves folder imports into managed storage using hardlink, copy, or move strategies
 - **JobService** — manages BullMQ queues and job lifecycle
 - **ModelService** — CRUD for Model and ModelFile records
+- **ModelDownloadService** — streams model downloads from managed storage
 - **MetadataService** — field definitions and metadata values, with internal routing for optimized field types (tags)
 - **SearchService** — all query execution: full-text search, metadata filtering, sorting, cursor pagination
 - **CollectionService** — collection CRUD, nesting, and model membership
+- **SmartCollectionService** — validates rule trees and resolves dynamic model sets
+- **LibraryService** — resolves user-owned libraries and default-library selection
 - **AuthService** — single-user email/password auth with argon2 hashing and signed HTTP-only session cookies
 - **PresenterService** — assembles API response payloads from domain data
+- **AiProviderService** — stores encrypted OpenAI-compatible BYOK provider credentials, discovers models, and enforces outbound network policy
+- **AiAssistantService** — runs the bounded, library-scoped assistant tool loop
+- **AiProposalService** — validates immutable change previews and atomically applies only user-approved proposals
+- **WebSearchService** — researches public metadata and image candidates without mutating the library
 
 Route handlers are thin: validate input, call a service, return the response envelope. All business logic lives in services. All response shaping lives in PresenterService. Services throw typed `AppError` instances for expected failures; the global error handler formats these as envelope responses.
 

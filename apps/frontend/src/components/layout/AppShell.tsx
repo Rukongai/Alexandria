@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom';
 import { PivotRail } from '../pivot/PivotRail';
 import { CommandPaletteProvider } from '../../hooks/use-command-palette';
 import { CommandPalette } from '../command/CommandPalette';
+import { AssistantBubble } from '../assistant/AssistantBubble';
 
 export function AppShell() {
   return (
@@ -13,6 +14,7 @@ export function AppShell() {
         </main>
       </div>
       <CommandPalette />
+      <AssistantBubble />
     </CommandPaletteProvider>
   );
 }

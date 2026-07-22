@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Loader2, X, FolderOpen, User, Tag } from 'lucide-react';
+import { Loader2, FolderOpen, User } from 'lucide-react';
 import type { DetectedImportMetadata, BatchUploadMetadata } from '@alexandria/shared';
 import { getCollections } from '../../api/collections';
+import { getFieldValues } from '../../api/metadata';
 import { useCommitSession } from '../../hooks/use-import-sessions';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Checkbox } from '../ui/checkbox';
 import { Textarea } from '../ui/textarea';
+import { TagAutocomplete } from '../metadata/tag-autocomplete';
 
 interface BatchMetadataFormProps {
   sessionId: string;
@@ -36,13 +38,23 @@ function archiveName(filename: string): string {
 }
 
 function createInitialForm(detected: DetectedImportMetadata, originalFilename: string): FormState {
+  const seenTags = new Set<string>();
+  const tags = detected.tagsGuessed.reduce<string[]>((result, rawTag) => {
+    const tag = rawTag.trim();
+    const key = tag.toLowerCase();
+    if (!key || seenTags.has(key)) return result;
+    seenTags.add(key);
+    result.push(tag);
+    return result;
+  }, []);
+
   return {
     modelName: archiveName(originalFilename),
     description: '',
     collectionId: '',
     newCollectionName: '',
     artist: detected.artist ?? '',
-    tags: [...detected.tagsGuessed],
+    tags,
     tagInput: '',
     markPreSupported: false,
     autoThumbnails: true,
@@ -70,20 +82,13 @@ export function BatchMetadataForm({
   });
   const availableCollections = collections ?? [];
 
+  const { data: tagSuggestions = [] } = useQuery({
+    queryKey: ['field-values', 'tags'],
+    queryFn: () => getFieldValues('tags'),
+    staleTime: 60_000,
+  });
+
   const commitMutation = useCommitSession();
-
-  function addTag(tag: string) {
-    const t = tag.trim();
-    if (t && !form.tags.includes(t)) {
-      setForm((f) => ({ ...f, tags: [...f.tags, t], tagInput: '' }));
-    } else {
-      setForm((f) => ({ ...f, tagInput: '' }));
-    }
-  }
-
-  function removeTag(tag: string) {
-    setForm((f) => ({ ...f, tags: f.tags.filter((t) => t !== tag) }));
-  }
 
   async function handleSubmit() {
     // collectionId and newCollectionName are mutually exclusive: if an existing
@@ -210,42 +215,22 @@ export function BatchMetadataForm({
       {/* Tags */}
       <FormSection label="Tags to apply to all">
         <div
-          className="flex flex-wrap gap-1.5 p-2.5 rounded-lg min-h-[40px]"
+          className="rounded-lg p-2.5 min-h-[40px]"
           style={{
             background: 'var(--ax-bg-elev)',
             border: '1px solid var(--ax-border)',
           }}
         >
-          {form.tags.map((tag) => (
-            <span
-              key={tag}
-              className="ax-chip ax-chip-amber flex items-center gap-1"
-              style={{ height: 22 }}
-            >
-              <Tag className="w-2.5 h-2.5" />
-              {tag}
-              <button
-                type="button"
-                onClick={() => removeTag(tag)}
-                className="ml-0.5 hover:opacity-70"
-                aria-label={`Remove tag ${tag}`}
-              >
-                <X className="w-2.5 h-2.5" />
-              </button>
-            </span>
-          ))}
-          <input
-            value={form.tagInput}
-            onChange={(e) => setForm((f) => ({ ...f, tagInput: e.target.value }))}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ',') {
-                e.preventDefault();
-                addTag(form.tagInput);
-              }
-            }}
+          <TagAutocomplete
+            value={form.tags}
+            onChange={(tags) => setForm((f) => ({ ...f, tags }))}
+            inputValue={form.tagInput}
+            onInputChange={(tagInput) => setForm((f) => ({ ...f, tagInput }))}
+            suggestions={tagSuggestions}
             placeholder={form.tags.length === 0 ? 'Type a tag and press Enter…' : '+ tag'}
-            className="bg-transparent text-[12px] outline-none flex-1 min-w-[80px] placeholder:text-[var(--ax-fg-muted)]"
-            style={{ color: 'var(--ax-fg)', fontFamily: 'inherit' }}
+            inputAriaLabel="Tag name"
+            chipClassName="ax-chip ax-chip-amber h-[22px] rounded-md"
+            inputClassName="h-7 min-w-[80px] border-0 bg-transparent px-1 text-[12px] shadow-none focus-visible:ring-0"
           />
         </div>
         <p className="text-[11.5px] mt-1.5" style={{ color: 'var(--ax-fg-muted)' }}>

@@ -12,6 +12,7 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Select } from '../components/ui/select';
 import { Skeleton } from '../components/ui/skeleton';
+import { AiProvidersSection } from '../components/assistant/AiProvidersSection';
 
 const TYPE_LABELS: Record<string, string> = {
   text: 'Text',
@@ -107,6 +108,8 @@ export function SettingsPage() {
           </div>
         </div>
       </section>
+
+      <AiProvidersSection />
 
       {/* Metadata Fields section */}
       <section className="flex flex-col gap-4">

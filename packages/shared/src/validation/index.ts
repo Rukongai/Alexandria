@@ -7,3 +7,4 @@ export * from './collection.js';
 export * from './library.js';
 export * from './upload.js';
 export * from './smart-collection.js';
+export * from './ai.js';

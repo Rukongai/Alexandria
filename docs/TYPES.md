@@ -336,6 +336,47 @@ type ImportSessionStatus =
   | 'error';            // scan or commit failed
 ```
 
+### AI Provider and Change Proposal
+
+`AiProvider` is a user-owned OpenAI-compatible endpoint configuration. The database row stores the API key encrypted; the public response never includes it. `AiChangeProposal` is server-owned preview state scoped to a user and library. Its exact `changes` payload is applied once or expires.
+
+```typescript
+interface AiProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  model: string;
+  isDefault: boolean;
+  hasApiKey: boolean;
+  apiKeyHint: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+type AiChange =
+  | {
+      type: 'update_model';
+      modelId: string;
+      modelName: string;
+      patch: Pick<UpdateModelRequest, 'name' | 'description' | 'previewImageFileId'>;
+    }
+  | { type: 'set_metadata'; modelId: string; modelName: string; values: SetModelMetadataRequest }
+  | { type: 'update_collections'; modelId: string; modelName: string; addCollectionIds: string[]; removeCollectionIds: string[] };
+
+interface AiChangePreview {
+  proposalId: string;
+  summary: string;
+  changes: AiChange[];
+  expiresAt: string;
+  display?: AiChangePreviewDisplay;
+}
+
+interface AiChangePreviewDisplay {
+  collections: Record<string, { name: string }>;
+  images: Record<string, { filename: string; thumbnailUrl: string | null }>;
+}
+```
+
 ---
 
 ## API Response Types
@@ -699,6 +740,62 @@ interface GlobalSearchResult {
 ## API Request Types
 
 Shared validation schemas (Zod) for request bodies.
+
+### AI Assistant Requests and Responses
+
+```typescript
+interface CreateAiProviderRequest {
+  name: string;
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+  isDefault?: boolean;
+}
+
+interface UpdateAiProviderRequest {
+  name?: string;
+  baseUrl?: string;
+  apiKey?: string | null; // omitted = retain; null or empty string = clear
+  model?: string;
+  isDefault?: boolean;
+}
+
+interface AiProviderModel {
+  id: string;
+  ownedBy: string | null;
+}
+
+interface AiProviderTestResult {
+  ok: true;
+  modelCount: number;
+}
+
+interface AiChatRequest {
+  message: string;
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>; // max 20; message + history <= 32k chars
+  providerId?: string; // omitted = user's default provider
+  context?: { modelId?: string };
+}
+
+interface AiChatResponse {
+  message: string;
+  sources: AiSource[];
+  proposal: AiChangePreview | null;
+}
+
+interface AiSource {
+  title: string;
+  url: string;
+  snippet?: string;
+  imageUrl?: string;
+}
+
+interface AiApplyProposalResponse {
+  proposalId: string;
+  status: 'applied';
+  changedModelIds: string[];
+}
+```
 
 ### Model Requests
 

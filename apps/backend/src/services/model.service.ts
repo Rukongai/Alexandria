@@ -10,6 +10,7 @@ import type {
   UpdateModelFolderRequest,
 } from '@alexandria/shared';
 import { db } from '../db/index.js';
+import type { DatabaseExecutor } from '../db/index.js';
 import {
   models,
   modelFiles,
@@ -250,8 +251,8 @@ export class ModelService {
       .where(eq(models.id, modelId));
   }
 
-  async getModelById(id: string): Promise<Model> {
-    const [row] = await db.select().from(models).where(eq(models.id, id)).limit(1);
+  async getModelById(id: string, executor: DatabaseExecutor = db): Promise<Model> {
+    const [row] = await executor.select().from(models).where(eq(models.id, id)).limit(1);
 
     if (!row) {
       throw notFound(`Model not found: ${id}`);
@@ -273,12 +274,17 @@ export class ModelService {
     return model;
   }
 
-  async requireOwnedModel(id: string, userId: string, libraryId?: string): Promise<Model> {
+  async requireOwnedModel(
+    id: string,
+    userId: string,
+    libraryId?: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<Model> {
     const whereClause = libraryId
       ? and(eq(models.id, id), eq(models.userId, userId), eq(models.libraryId, libraryId))
       : and(eq(models.id, id), eq(models.userId, userId));
 
-    const [row] = await db.select().from(models).where(whereClause).limit(1);
+    const [row] = await executor.select().from(models).where(whereClause).limit(1);
 
     if (!row) {
       throw notFound(`Model not found: ${id}`);
@@ -287,11 +293,39 @@ export class ModelService {
     return row;
   }
 
-  async updateModel(id: string, data: UpdateModelRequest): Promise<Model> {
-    await this.getModelById(id);
+  async lockOwnedModels(
+    ids: string[],
+    userId: string,
+    libraryId: string,
+    executor: DatabaseExecutor,
+  ): Promise<Model[]> {
+    const sortedIds = [...new Set(ids)].sort();
+    const rows = await executor
+      .select()
+      .from(models)
+      .where(and(
+        inArray(models.id, sortedIds),
+        eq(models.userId, userId),
+        eq(models.libraryId, libraryId),
+      ))
+      .orderBy(asc(models.id))
+      .for('update');
+
+    if (rows.length !== sortedIds.length) {
+      throw notFound('One or more models were not found');
+    }
+    return rows;
+  }
+
+  async updateModel(
+    id: string,
+    data: UpdateModelRequest,
+    executor: DatabaseExecutor = db,
+  ): Promise<Model> {
+    await this.getModelById(id, executor);
 
     if (data.previewImageFileId != null) {
-      const [file] = await db
+      const [file] = await executor
         .select({ id: modelFiles.id })
         .from(modelFiles)
         .where(
@@ -328,7 +362,7 @@ export class ModelService {
     if (data.previewCropY !== undefined) updateValues.previewCropY = data.previewCropY;
     if (data.previewCropScale !== undefined) updateValues.previewCropScale = data.previewCropScale;
 
-    const [updated] = await db
+    const [updated] = await executor
       .update(models)
       .set(updateValues)
       .where(eq(models.id, id))
@@ -337,8 +371,11 @@ export class ModelService {
     return updated;
   }
 
-  async getModelFiles(modelId: string): Promise<Array<typeof modelFiles.$inferSelect>> {
-    return db
+  async getModelFiles(
+    modelId: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<Array<typeof modelFiles.$inferSelect>> {
+    return executor
       .select()
       .from(modelFiles)
       .where(eq(modelFiles.modelId, modelId))
