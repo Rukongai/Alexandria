@@ -23,19 +23,19 @@ const STRATEGIES: { value: ImportStrategy; label: string; description: string }[
     value: 'hardlink',
     label: 'Hardlink',
     description:
-      'Creates hardlinks to avoid copying data. Fastest. Requires same filesystem as the library.',
+      'Local: creates hardlinks when possible (same filesystem required). S3: uploads files. Originals are preserved.',
   },
   {
     value: 'copy',
     label: 'Copy',
     description:
-      'Copies files into the library. Safe but uses more disk space. Originals are preserved.',
+      'Local: copies files into the library. S3: uploads files. Originals are preserved.',
   },
   {
     value: 'move',
     label: 'Move',
     description:
-      'Moves files into the library. Originals will be deleted after import.',
+      'Local: moves files into the library. S3: uploads and SHA-256 verifies every file, then deletes originals only after verification.',
   },
 ];
 
