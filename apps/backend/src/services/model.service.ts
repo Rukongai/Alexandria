@@ -533,7 +533,7 @@ export class ModelService {
       await this.ensureFolderAncestors(modelId, parentPath);
     }
 
-    await storageService.store(storagePath, storageService.retrieveStream(file.storagePath));
+    await storageService.copy(file.storagePath, storagePath);
     try {
       await db
         .update(modelFiles)
@@ -608,7 +608,7 @@ export class ModelService {
     });
 
     for (const move of fileMoves) {
-      await storageService.store(move.storagePath, storageService.retrieveStream(move.file.storagePath));
+      await storageService.copy(move.file.storagePath, move.storagePath);
     }
 
     try {
@@ -746,7 +746,7 @@ export class ModelService {
       const relativePath = this.uniqueRelativePath(file.relativePath, usedPaths);
       const storagePath = `models/${targetModelId}/${relativePath}`;
 
-      await storageService.store(storagePath, storageService.retrieveStream(file.storagePath));
+      await storageService.copy(file.storagePath, storagePath);
       try {
         await db
           .update(modelFiles)

@@ -52,7 +52,7 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
         throw notFound(`Thumbnail not found: ${thumbnailId}`);
       }
 
-      const stream = storageService.retrieveStream(thumb.storagePath);
+      const stream = await storageService.retrieveStream(thumb.storagePath);
 
       return reply
         .header('Content-Type', 'image/webp')
@@ -93,7 +93,7 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
         throw notFound(`File not found: ${relativePath}`);
       }
 
-      const stream = storageService.retrieveStream(file.storagePath);
+      const stream = await storageService.retrieveStream(file.storagePath);
       const contentType = file.mimeType || getMimeType(file.filename);
 
       const response = reply

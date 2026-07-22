@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Readable, Writable } from 'node:stream';
 
 // ---------------------------------------------------------------------------
 // Mock all collaborating services before the IngestionService module is
@@ -66,10 +67,13 @@ vi.mock('./thumbnail.service.js', () => ({
 
 vi.mock('./storage.service.js', () => ({
   storageService: {
+    kind: 'local',
     store: vi.fn(),
     delete: vi.fn(),
+    retrieveStream: vi.fn().mockResolvedValue(Readable.from(Buffer.from('archive'))),
     resolveStoragePath: vi.fn(),
   },
+  isLocalStorageService: vi.fn((storage) => storage.kind === 'local'),
   StorageService: vi.fn(),
 }));
 
@@ -77,6 +81,11 @@ vi.mock('./storage.service.js', () => ({
 vi.mock('node:fs', () => ({
   default: {
     createReadStream: vi.fn().mockReturnValue({ pipe: vi.fn() }),
+    createWriteStream: vi.fn().mockReturnValue(new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    })),
   },
 }));
 
@@ -501,7 +510,6 @@ describe('IngestionService – extractModelArchive', () => {
       },
     ]);
     vi.mocked(modelService.getModelFolders).mockResolvedValue([]);
-    vi.mocked(storageService.resolveStoragePath).mockReturnValue('/storage/alternate-parts.zip');
     vi.mocked(fileProcessingService.processArchive).mockResolvedValue({
       entries: [
         {

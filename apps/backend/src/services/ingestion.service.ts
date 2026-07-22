@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import type { Job } from 'bullmq';
 import type {
   ImportConfig,
@@ -24,13 +26,13 @@ import { thumbnailService } from './thumbnail.service.js';
 import { modelService } from './model.service.js';
 import { metadataService } from './metadata.service.js';
 import { collectionService } from './collection.service.js';
-import { storageService } from './storage.service.js';
+import { isLocalStorageService, storageService } from './storage.service.js';
 import { createImportStrategy } from './import-strategy.service.js';
 import { parsePattern } from '../utils/pattern-parser.js';
 import { detectArchiveExtension, stripArchiveExtension } from '../utils/archive.js';
 import { generateSlug } from '../utils/slug.js';
 import { createLogger } from '../utils/logger.js';
-import { AppError, validationError } from '../utils/errors.js';
+import { AppError, storageError, validationError } from '../utils/errors.js';
 
 const logger = createLogger('IngestionService');
 
@@ -394,7 +396,8 @@ export class IngestionService {
     if (!archiveFile) {
       throw validationError('Archive file was not found in this model', 'fileId');
     }
-    if (!detectArchiveExtension(archiveFile.filename)) {
+    const archiveExtension = detectArchiveExtension(archiveFile.filename);
+    if (!archiveExtension) {
       throw validationError('Selected file is not a supported archive', 'fileId');
     }
 
@@ -406,15 +409,17 @@ export class IngestionService {
       ],
     );
     const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'alexandria-extract-'));
+    const localArchivePath = path.join(tempRoot, `source${archiveExtension}`);
     const extractDir = path.join(tempRoot, 'contents');
     const storedPaths: string[] = [];
     let filesCreated = false;
 
     try {
-      const manifest = await fileProcessingService.processArchive(
-        storageService.resolveStoragePath(archiveFile.storagePath),
-        extractDir,
+      await pipeline(
+        await storageService.retrieveStream(archiveFile.storagePath),
+        fs.createWriteStream(localArchivePath),
       );
+      const manifest = await fileProcessingService.processArchive(localArchivePath, extractDir);
       const fileInputs = manifest.entries.map((entry) => ({
         ...entry,
         sourceRelativePath: entry.relativePath,
@@ -966,20 +971,26 @@ export class IngestionService {
       sourcePath: importConfig.sourcePath,
       pattern: importConfig.pattern,
       strategy: importConfig.strategy,
+      deleteAfterUpload: importConfig.deleteAfterUpload ?? importConfig.strategy === 'move',
       userId,
       libraryId,
     });
 
-    logger.info({ jobId, sourcePath: importConfig.sourcePath, pattern: importConfig.pattern }, 'Folder import job enqueued');
+    logger.info(
+      { jobId, sourcePath: importConfig.sourcePath, pattern: importConfig.pattern },
+      'Folder import job enqueued',
+    );
     return { jobId };
   }
 
   async processFolderImportJob(
     job: Job<FolderImportJobPayload>,
   ): Promise<void> {
-    const { sourcePath, pattern, strategy, userId, libraryId } = job.data;
+    const { sourcePath, pattern, strategy, deleteAfterUpload, userId, libraryId } = job.data;
     const parsedPattern = parsePattern(pattern);
-    const importStrategy = createImportStrategy(strategy);
+    const importStrategy = isLocalStorageService(storageService)
+      ? createImportStrategy(strategy)
+      : null;
 
     try {
       // Step 1: Discover models by walking directory tree
@@ -997,10 +1008,19 @@ export class IngestionService {
       // Step 2: Process each discovered model
       let processed = 0;
       let failed = 0;
+      const verifiedSourcePaths = new Set<string>();
 
       for (const model of discovered) {
         try {
-          await this.processDiscoveredModel(model, importStrategy, userId, libraryId, job);
+          const sourcePaths = await this.processDiscoveredModel(
+            model,
+            importStrategy,
+            userId,
+            libraryId,
+          );
+          for (const sourceFilePath of sourcePaths) {
+            verifiedSourcePaths.add(sourceFilePath);
+          }
           processed++;
         } catch (err) {
           failed++;
@@ -1013,6 +1033,22 @@ export class IngestionService {
         // Update progress proportionally
         const progressPct = Math.round(10 + ((processed + failed) / discovered.length) * 90);
         await job.updateProgress(progressPct);
+      }
+
+      if (storageService.kind === 's3' && deleteAfterUpload && failed === 0) {
+        const deletionResults = await Promise.allSettled(
+          [...verifiedSourcePaths].map((sourceFilePath) => fsPromises.unlink(sourceFilePath)),
+        );
+        const deletionFailures = deletionResults.filter((result) => result.status === 'rejected');
+        if (deletionFailures.length > 0) {
+          throw storageError(
+            `Remote import was verified, but ${deletionFailures.length} source file(s) could not be deleted`,
+          );
+        }
+        logger.info(
+          { jobId: job.id, deletedSourceFiles: verifiedSourcePaths.size },
+          'Verified remote import sources deleted',
+        );
       }
 
       logger.info(
@@ -1077,11 +1113,10 @@ export class IngestionService {
 
   private async processDiscoveredModel(
     discovered: import('./file-processing.service.js').DiscoveredModel,
-    importStrategy: import('./import-strategy.service.js').IImportStrategy,
+    importStrategy: import('./import-strategy.service.js').IImportStrategy | null,
     userId: string,
     libraryId: string,
-    job: Job,
-  ): Promise<void> {
+  ): Promise<string[]> {
     const slug = generateSlug(discovered.name);
 
     // Create model record in processing state. libraryId comes from the job
@@ -1103,12 +1138,35 @@ export class IngestionService {
       );
       const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
 
-      // Execute import strategy to copy/link files into managed storage
-      for (const entry of entries) {
-        const srcFile = path.join(discovered.sourcePath, entry.relativePath);
-        const storagePath = `models/${modelId}/${entry.relativePath}`;
-        const targetPath = storageService.resolveStoragePath(storagePath);
-        await importStrategy.execute(srcFile, targetPath);
+      const storedPaths: string[] = [];
+      const sourcePaths: string[] = [];
+      try {
+        for (const entry of entries) {
+          const sourceFilePath = path.join(discovered.sourcePath, entry.relativePath);
+          const storagePath = `models/${modelId}/${entry.relativePath}`;
+
+          if (isLocalStorageService(storageService)) {
+            if (!importStrategy) {
+              throw storageError('Local folder import strategy is unavailable');
+            }
+            await importStrategy.execute(
+              sourceFilePath,
+              storageService.resolveStoragePath(storagePath),
+            );
+          } else {
+            await storageService.store(storagePath, fs.createReadStream(sourceFilePath));
+            storedPaths.push(storagePath);
+            await this.verifyStoredFile(storagePath, entry.hash, entry.sizeBytes);
+            sourcePaths.push(sourceFilePath);
+          }
+        }
+      } catch (error) {
+        if (storageService.kind === 's3') {
+          await Promise.all(
+            storedPaths.map((storedPath) => storageService.delete(storedPath).catch(() => {})),
+          );
+        }
+        throw error;
       }
 
       // Create model file records
@@ -1125,7 +1183,12 @@ export class IngestionService {
       const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
 
       // Generate thumbnails for image files
-      await this.generateAndStoreThumbnails(modelId, modelFileInputs, createdFiles, discovered.sourcePath);
+      await this.generateAndStoreThumbnails(
+        modelId,
+        modelFileInputs,
+        createdFiles,
+        discovered.sourcePath,
+      );
 
       // Assign metadata from pattern
       if (Object.keys(discovered.metadata).length > 0) {
@@ -1150,9 +1213,29 @@ export class IngestionService {
       });
 
       logger.info({ modelId, name: discovered.name }, 'Model imported successfully');
+      return sourcePaths;
     } catch (err) {
       await modelService.updateModelStatus(modelId, 'error');
       throw err;
+    }
+  }
+
+  private async verifyStoredFile(
+    storagePath: string,
+    expectedHash: string,
+    expectedSize: number,
+  ): Promise<void> {
+    const hash = createHash('sha256');
+    let size = 0;
+    const stream = await storageService.retrieveStream(storagePath);
+    for await (const chunk of stream) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      hash.update(buffer);
+      size += buffer.length;
+    }
+
+    if (size !== expectedSize || hash.digest('hex') !== expectedHash) {
+      throw storageError(`Stored object failed SHA-256 verification: ${storagePath}`);
     }
   }
 }

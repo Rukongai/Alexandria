@@ -37,7 +37,7 @@ describe('createModelArchive', () => {
       ['models/m1/parts/body.stl', 'solid body'],
       ['models/m1/readme.txt', 'Print slowly'],
     ]);
-    const retrieveStream = vi.fn((storagePath: string) =>
+    const retrieveStream = vi.fn(async (storagePath: string) =>
       Readable.from(contents.get(storagePath) ?? ''),
     );
     const storage = { retrieveStream } as unknown as IStorageService;
@@ -50,7 +50,6 @@ describe('createModelArchive', () => {
     );
 
     const archiveData = buffer(archive);
-    await archive.finalize();
     const entries = await readZipEntries(await archiveData);
 
     expect(entries).toEqual(
