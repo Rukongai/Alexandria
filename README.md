@@ -24,8 +24,13 @@ A self-hosted personal library for managing 3D printing model collections. Think
 - Filter by any metadata field value
 - Cursor-based pagination for efficient large library browsing
 
+**AI assistant**
+- Connect user-owned, OpenAI-compatible providers; API keys are encrypted at rest and never returned by the API
+- Search and inspect the active library, research public sources, and prepare reviewable model, metadata, cover, or collection changes
+- Enforce preview-before-apply with immutable, expiring, single-use proposals applied atomically
+
 **API**
-- 32 REST endpoints with a consistent `{ data, meta, errors }` envelope on every response
+- REST endpoints with a consistent `{ data, meta, errors }` envelope on every response
 - Serves thumbnails and raw model files directly
 
 **Auth**
@@ -56,6 +61,9 @@ Requires Docker and Docker Compose.
 ```bash
 git clone <repo-url> alexandria
 cd alexandria
+cp .env.example .env
+
+# Replace SESSION_SECRET and AI_ENCRYPTION_KEY with long random values.
 
 # Start all services (Postgres, Redis, backend, frontend)
 docker compose -f docker/docker-compose.yml up --build
@@ -116,7 +124,7 @@ alexandria/
 │   ├── backend/            Fastify API server
 │   │   └── src/
 │   │       ├── routes/     Thin route handlers
-│   │       ├── services/   Business logic (12 services)
+│   │       ├── services/   Business logic services
 │   │       ├── workers/    BullMQ workers
 │   │       ├── db/
 │   │       │   ├── schema/ Drizzle table definitions
@@ -159,9 +167,13 @@ All backend variables have development defaults and can be set in the environmen
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection string |
 | `STORAGE_PATH` | `./data/storage` | Root path for managed file storage |
 | `SESSION_SECRET` | `dev-secret-change-in-production` | Secret for signing session cookies |
+| `AI_ENCRYPTION_KEY` | _(required in production)_ | Stable secret used to encrypt provider API keys; production rejects values under 32 characters, `SESSION_SECRET`, and checked placeholders |
+| `AI_ALLOW_PRIVATE_PROVIDER_URLS` | `true` in development; `false` in production | Allow trusted loopback/LAN AI providers; link-local, cloud-metadata, and reserved targets remain blocked |
 | `PORT` | `3000` | Port the backend listens on |
 | `HOST` | `0.0.0.0` | Host the backend binds to |
 | `NODE_ENV` | `development` | Affects log level and cookie security |
+
+Keep `AI_ENCRYPTION_KEY` stable for the lifetime of the stored provider configurations. Changing it makes existing encrypted API keys unreadable. Configure only trusted provider base URLs; the backend connects to them directly and validates their resolved addresses before saving and use. Public providers must use HTTPS. Set `AI_ALLOW_PRIVATE_PROVIDER_URLS=true` in production only when a trusted same-host or LAN provider is intentional; this is also required for an HTTP loopback/LAN provider. Assistant public lookup makes outbound requests to DuckDuckGo and Wikimedia Commons when the selected provider invokes those tools.
 
 Seed variables (read on every startup and by `npm run db:seed`):
 
@@ -182,8 +194,9 @@ npm run test
 Tests run with Vitest and live alongside source files. Integration tests require a running Postgres and Redis instance. Point `DATABASE_URL` at a local or Docker-hosted Postgres before running.
 
 ```bash
-# Start only the infrastructure services for testing
-docker compose -f docker/docker-compose.yml up -d postgres redis
+# Start only the infrastructure services for testing. Compose still resolves
+# the backend environment, so provide a test-only encryption value.
+AI_ENCRYPTION_KEY=test-only-not-for-production docker compose -f docker/docker-compose.yml up -d postgres redis
 ```
 
 ---
