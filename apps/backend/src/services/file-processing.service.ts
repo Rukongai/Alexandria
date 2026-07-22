@@ -40,11 +40,14 @@ export interface MultipartArchiveFile {
   originalFilename: string;
 }
 
-export interface ValidatedSplitZipSet {
-  kind: 'classic' | 'numbered';
+export interface ValidatedSplitArchiveSet {
+  kind: 'classic' | 'numbered' | 'rar';
   entryFilename: string;
   logicalFilename: string;
 }
+
+/** @deprecated Use ValidatedSplitArchiveSet. */
+export type ValidatedSplitZipSet = ValidatedSplitArchiveSet;
 
 interface SevenZipListEntry {
   file?: string;
@@ -106,26 +109,47 @@ async function computeHashAndSize(
   return { hash: hash.digest('hex'), sizeBytes };
 }
 
-/** Validate and identify the entry member for one complete split-ZIP set. */
-export function validateSplitZipSet(files: MultipartArchiveFile[]): ValidatedSplitZipSet {
+/** Validate and identify the entry member for one complete split archive set. */
+export function validateSplitArchiveSet(files: MultipartArchiveFile[]): ValidatedSplitArchiveSet {
   const filenames = files.map(({ originalFilename }) => {
     const basename = path.posix.basename(originalFilename.replaceAll('\\', '/'));
     if (basename !== originalFilename) {
-      throw validationError('Split ZIP members must use plain filenames');
+      throw validationError('Split archive members must use plain filenames');
     }
     return basename;
   });
 
   const uniqueNames = new Set(filenames.map((filename) => filename.toLowerCase()));
   if (uniqueNames.size !== filenames.length) {
-    throw validationError('Split ZIP set contains duplicate members');
+    throw validationError('Split archive set contains duplicate members');
   }
 
   const classicParts: Array<{ filename: string; base: string; index: number }> = [];
   const classicTerminals: Array<{ filename: string; base: string }> = [];
   const numberedParts: Array<{ filename: string; base: string; index: number }> = [];
+  const rarParts: Array<{
+    filename: string;
+    base: string;
+    index: number;
+    partToken: string;
+  }> = [];
 
   for (const filename of filenames) {
+    const rarMatch = /^(.*)\.part(\d+)\.rar$/i.exec(filename);
+    if (rarMatch) {
+      const index = Number(rarMatch[2]);
+      if (!Number.isSafeInteger(index) || index < 1) {
+        throw validationError(`Unrecognized split RAR member: ${filename}`);
+      }
+      rarParts.push({
+        filename,
+        base: rarMatch[1],
+        index,
+        partToken: rarMatch[2],
+      });
+      continue;
+    }
+
     const classicMatch = /^(.*)\.z(\d{2})$/i.exec(filename);
     if (classicMatch) {
       classicParts.push({
@@ -152,7 +176,44 @@ export function validateSplitZipSet(files: MultipartArchiveFile[]): ValidatedSpl
       continue;
     }
 
-    throw validationError(`Unrecognized split ZIP member: ${filename}`);
+    throw validationError(`Unrecognized split archive member: ${filename}`);
+  }
+
+  if (rarParts.length > 0) {
+    if (classicParts.length > 0 || classicTerminals.length > 0 || numberedParts.length > 0) {
+      throw validationError('Split archive set mixes ZIP and RAR naming schemes');
+    }
+    const ordered = [...rarParts].sort((a, b) => a.index - b.index);
+    const partOne = ordered[0];
+    if (partOne.index !== 1) {
+      throw validationError('Split RAR set is missing part 1');
+    }
+    const base = partOne.base.toLowerCase();
+    if (!base.trim() || /^\.+$/.test(base)) {
+      throw validationError('Split RAR members must have a safe base filename');
+    }
+    if (ordered.some((part) => part.base.toLowerCase() !== base)) {
+      throw validationError('Split RAR members must share the same base filename');
+    }
+    const uniquePartNumbers = new Set(ordered.map((part) => part.index));
+    if (uniquePartNumbers.size !== ordered.length) {
+      throw validationError('Split RAR set contains duplicate part numbers');
+    }
+    const partWidth = partOne.partToken.length;
+    for (let position = 0; position < ordered.length; position += 1) {
+      const expected = position + 1;
+      if (ordered[position].index !== expected) {
+        throw validationError(`Split RAR set is missing part ${expected}`);
+      }
+      if (ordered[position].partToken !== String(expected).padStart(partWidth, '0')) {
+        throw validationError('Split RAR members must use consistent part-number padding');
+      }
+    }
+    return {
+      kind: 'rar',
+      entryFilename: partOne.filename.toLowerCase(),
+      logicalFilename: `${partOne.base}.rar`,
+    };
   }
 
   if (numberedParts.length > 0) {
@@ -199,6 +260,9 @@ export function validateSplitZipSet(files: MultipartArchiveFile[]): ValidatedSpl
   };
 }
 
+/** @deprecated Use validateSplitArchiveSet. */
+export const validateSplitZipSet = validateSplitArchiveSet;
+
 function plainArchiveFilename(filename: string): string {
   const normalized = filename.replaceAll('\\', '/');
   const basename = path.posix.basename(normalized);
@@ -206,6 +270,10 @@ function plainArchiveFilename(filename: string): string {
     throw validationError('Archive members must use plain filenames');
   }
   return basename;
+}
+
+function isModernSplitRarFilename(filename: string): boolean {
+  return /\.part\d+\.rar$/i.test(filename);
 }
 
 export function validate7zArchiveEntry(entry: SevenZipListEntry): void {
@@ -260,11 +328,16 @@ export class FileProcessingService {
     mode: MultipartArchiveMode,
   ): string {
     if (mode === 'split') {
-      return validateSplitZipSet(files).logicalFilename;
+      return validateSplitArchiveSet(files).logicalFilename;
     }
 
     for (const file of files) {
-      plainArchiveFilename(file.originalFilename);
+      const basename = plainArchiveFilename(file.originalFilename);
+      if (isModernSplitRarFilename(basename)) {
+        throw validationError(
+          `Multi-volume RAR member ${basename} must be uploaded using Split archive mode`,
+        );
+      }
       if (!detectArchiveExtension(file.originalFilename)) {
         throw validationError(`Unsupported archive format: ${file.originalFilename}`);
       }
@@ -280,7 +353,7 @@ export class FileProcessingService {
     this.validateMultipartArchives(files, mode);
 
     if (mode === 'split') {
-      return this.processSplitZip(files, extractDir);
+      return this.processSplitArchive(files, extractDir);
     }
 
     const extractRoot = path.resolve(extractDir);
@@ -312,21 +385,24 @@ export class FileProcessingService {
     };
   }
 
-  private async processSplitZip(
+  private async processSplitArchive(
     files: MultipartArchiveFile[],
     extractDir: string,
   ): Promise<FileManifest> {
-    const { entryFilename } = validateSplitZipSet(files);
-    const partsDir = await fsPromises.mkdtemp(path.join(path.dirname(extractDir), 'split-zip-'));
+    const { kind, entryFilename } = validateSplitArchiveSet(files);
+    const partsDir = await fsPromises.mkdtemp(path.join(path.dirname(extractDir), 'split-archive-'));
 
     try {
       await Promise.all(files.map(async (file) => {
         // Normalize case so a set accepted case-insensitively can still be
-        // resolved by 7-Zip on a case-sensitive filesystem.
+        // resolved by the archive extractor on a case-sensitive filesystem.
         const basename = path.posix.basename(file.originalFilename).toLowerCase();
         await fsPromises.copyFile(file.tempFilePath, path.join(partsDir, basename));
       }));
-      return await this.process7z(path.join(partsDir, entryFilename), extractDir);
+      const entryPath = path.join(partsDir, entryFilename);
+      return kind === 'rar'
+        ? await this.processRar(entryPath, extractDir)
+        : await this.process7z(entryPath, extractDir);
     } finally {
       await fsPromises.rm(partsDir, { recursive: true, force: true }).catch(() => {});
     }

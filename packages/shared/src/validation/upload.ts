@@ -6,9 +6,17 @@ const isSupportedArchiveFilename = (filename: string): boolean => {
   return SUPPORTED_ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 };
 
-const isSplitZipPartFilename = (filename: string): boolean =>
+const isSplitArchivePartFilename = (filename: string): boolean =>
   /\.z(?:0[1-9]|[1-9]\d)$/i.test(filename)
-  || /\.zip\.(?:00[1-9]|0[1-9]\d|[1-9]\d{2})$/i.test(filename);
+  || /\.zip\.(?:00[1-9]|0[1-9]\d|[1-9]\d{2})$/i.test(filename)
+  || /\.part(?:0*[1-9]\d*)\.rar$/i.test(filename);
+
+const isMultipartArchiveFilename = (filename: string): boolean => {
+  if (/\.part\d+\.rar$/i.test(filename)) {
+    return /\.part(?:0*[1-9]\d*)\.rar$/i.test(filename);
+  }
+  return isSupportedArchiveFilename(filename) || isSplitArchivePartFilename(filename);
+};
 
 export const uploadInitSchema = z.object({
   filename: z.string().min(1).max(512).refine(
@@ -21,9 +29,9 @@ export const uploadInitSchema = z.object({
 
 export const multipartUploadInitSchema = uploadInitSchema.extend({
   filename: z.string().min(1).max(512).refine(
-    (filename) => isSupportedArchiveFilename(filename) || isSplitZipPartFilename(filename),
+    isMultipartArchiveFilename,
     {
-      message: 'File must be a supported archive or split ZIP part (.z01-.z99, .zip.001-.zip.999)',
+      message: 'File must be a supported archive or split archive part (.z01-.z99, .zip.001-.zip.999, .partN.rar)',
     },
   ),
 });

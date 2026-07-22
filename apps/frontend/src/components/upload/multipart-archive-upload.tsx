@@ -18,6 +18,7 @@ const MAX_FILES = 100;
 const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024;
 const SPLIT_ARCHIVE_ACCEPT = [
   '.zip',
+  '.rar',
   ...Array.from({ length: 99 }, (_, index) => `.z${String(index + 1).padStart(2, '0')}`),
   ...Array.from({ length: 999 }, (_, index) => `.${String(index + 1).padStart(3, '0')}`),
 ].join(',');
@@ -31,6 +32,10 @@ function isCombineArchive(filename: string): boolean {
   return SUPPORTED_ARCHIVE_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
+function isModernSplitRar(filename: string): boolean {
+  return /\.part\d+\.rar$/i.test(filename);
+}
+
 function missingPartMessage(indices: number[], digits: number): string | null {
   const unique = new Set(indices);
   if (unique.size !== indices.length) return 'The split archive contains duplicate part numbers.';
@@ -42,6 +47,76 @@ function missingPartMessage(indices: number[], digits: number): string | null {
     }
   }
   return null;
+}
+
+function validateNumberedZipSet(names: string[]): string | null | undefined {
+  const matches = names.map((name) =>
+    name.match(/^(.+\.zip)\.(00[1-9]|0[1-9]\d|[1-9]\d{2})$/));
+  if (matches.every((match) => !match)) return undefined;
+  if (matches.some((match) => !match)) {
+    return 'Choose exactly one split archive set. Do not mix split ZIP and split RAR naming schemes.';
+  }
+
+  const numberedMatches = matches as RegExpMatchArray[];
+  const base = numberedMatches[0][1];
+  if (numberedMatches.some((match) => match[1] !== base)) {
+    return 'All numbered ZIP parts must have the same base filename.';
+  }
+  return missingPartMessage(numberedMatches.map((match) => Number(match[2])), 3);
+}
+
+function validateRarSet(names: string[]): string | null | undefined {
+  const matches = names.map((name) => name.match(/^(.+)\.part(\d+)\.rar$/));
+  if (matches.every((match) => !match)) return undefined;
+  if (matches.some((match) => !match)) {
+    return 'Choose exactly one split archive set. Do not mix split ZIP and split RAR naming schemes.';
+  }
+
+  const rarMatches = matches as RegExpMatchArray[];
+  const base = rarMatches[0][1];
+  if (rarMatches.some((match) => match[1] !== base)) {
+    return 'All split RAR parts must have the same base filename.';
+  }
+
+  const indices = rarMatches.map((match) => Number(match[2]));
+  if (indices.some((index) => index < 1 || index > MAX_FILES)) {
+    return `Split RAR part numbers must run from 1 through ${MAX_FILES}.`;
+  }
+
+  const unique = new Set(indices);
+  if (unique.size !== indices.length) {
+    return 'The split archive contains duplicate part numbers.';
+  }
+
+  const partOne = rarMatches.find((match) => Number(match[2]) === 1);
+  if (!partOne) return missingPartMessage(indices, rarMatches[0][2].length);
+
+  const partNumberWidth = partOne[2].length;
+  const hasInconsistentPadding = rarMatches.some((match) => (
+    match[2] !== String(Number(match[2])).padStart(partNumberWidth, '0')
+  ));
+  if (hasInconsistentPadding) {
+    return 'All split RAR part numbers must use consistent zero-padding.';
+  }
+
+  return missingPartMessage(indices, partNumberWidth);
+}
+
+function validateClassicZipSet(names: string[]): string | null {
+  const terminalZips = names.filter((name) => name.endsWith('.zip'));
+  const classicParts = names
+    .filter((name) => !name.endsWith('.zip'))
+    .map((name) => name.match(/^(.*)\.z(0[1-9]|[1-9]\d)$/));
+  if (terminalZips.length !== 1 || classicParts.some((match) => !match)) {
+    return 'Choose one complete split archive: .z01 … .zip, .zip.001 …, or .part1.rar …';
+  }
+
+  const matches = classicParts as RegExpMatchArray[];
+  const terminalBase = terminalZips[0].slice(0, -4);
+  if (matches.some((match) => match[1] !== terminalBase)) {
+    return 'All classic ZIP parts must have the same base filename.';
+  }
+  return missingPartMessage(matches.map((match) => Number(match[2])), 2);
 }
 
 export function validateMultipartSelection(
@@ -59,6 +134,11 @@ export function validateMultipartSelection(
   if (longFilename) return `${longFilename.name.slice(0, 40)}… has a filename longer than 512 characters.`;
 
   if (mode === 'combine') {
+    const splitRarPart = files.find((file) => isModernSplitRar(file.name));
+    if (splitRarPart) {
+      return `${splitRarPart.name} is part of a split RAR. Choose Split archive mode and select every part.`;
+    }
+
     const unsupported = files.find((file) => !isCombineArchive(file.name));
     return unsupported
       ? `${unsupported.name} is not a supported archive (.zip, .rar, .7z, .tar.gz, or .tgz).`
@@ -66,36 +146,13 @@ export function validateMultipartSelection(
   }
 
   const names = files.map((file) => file.name.toLowerCase());
-  const numberedParts = names.map((name) =>
-    name.match(/^(.+\.zip)\.(00[1-9]|0[1-9]\d|[1-9]\d{2})$/));
-  const hasNumberedPart = numberedParts.some(Boolean);
+  const numberedZipResult = validateNumberedZipSet(names);
+  if (numberedZipResult !== undefined) return numberedZipResult;
 
-  if (hasNumberedPart) {
-    if (numberedParts.some((match) => !match)) {
-      return 'Do not mix .zip.001 parts with classic .z01/.zip parts.';
-    }
-    const matches = numberedParts as RegExpMatchArray[];
-    const base = matches[0][1];
-    if (matches.some((match) => match[1] !== base)) {
-      return 'All numbered ZIP parts must have the same base filename.';
-    }
-    return missingPartMessage(matches.map((match) => Number(match[2])), 3);
-  }
+  const rarResult = validateRarSet(names);
+  if (rarResult !== undefined) return rarResult;
 
-  const terminalZips = names.filter((name) => name.endsWith('.zip'));
-  const classicParts = names
-    .filter((name) => !name.endsWith('.zip'))
-    .map((name) => name.match(/^(.*)\.z(0[1-9]|[1-9]\d)$/));
-  if (terminalZips.length !== 1 || classicParts.some((match) => !match)) {
-    return 'Classic split ZIPs need .z01, .z02, … parts and exactly one terminal .zip file.';
-  }
-
-  const matches = classicParts as RegExpMatchArray[];
-  const terminalBase = terminalZips[0].slice(0, -4);
-  if (matches.some((match) => match[1] !== terminalBase)) {
-    return 'All classic ZIP parts must have the same base filename.';
-  }
-  return missingPartMessage(matches.map((match) => Number(match[2])), 2);
+  return validateClassicZipSet(names);
 }
 
 interface MultipartArchiveUploadProps {
@@ -161,7 +218,7 @@ export function MultipartArchiveUpload({ onSessionCreated }: MultipartArchiveUpl
           Create one model from several files
         </h1>
         <p className="text-[13px] leading-5" style={{ color: 'var(--ax-fg-muted)' }}>
-          Group independent archives or upload every part of one split ZIP. This creates one
+          Group independent archives or upload every part of one split archive. This creates one
           model in one review session. Ordinary multi-select under Archive upload still
           creates a separate model and session for each archive.
         </p>
@@ -182,8 +239,8 @@ export function MultipartArchiveUpload({ onSessionCreated }: MultipartArchiveUpl
           <ModeChoice
             checked={mode === 'split'}
             icon={Files}
-            title="Split ZIP"
-            description="All numbered parts of one ZIP are assembled and extracted together. No part can be missing."
+            title="Split archive"
+            description="All parts of one split ZIP or RAR are assembled and extracted together. No part can be missing."
             onSelect={() => { setMode('split'); setUploadError(null); }}
           />
         </div>
@@ -230,7 +287,7 @@ export function MultipartArchiveUpload({ onSessionCreated }: MultipartArchiveUpl
             <p className="mt-0.5 text-[12px]" style={{ color: 'var(--ax-fg-muted)' }}>
               {mode === 'combine'
                 ? 'Choose 2–100 complete .zip, .rar, .7z, .tar.gz, or .tgz archives.'
-                : 'Choose one complete .z01 … .zip or .zip.001 … numbered set.'}
+                : 'Choose one complete .z01 … .zip, .zip.001 …, or .part1.rar … set.'}
             </p>
           </div>
           <span className="ax-chip shrink-0">Browse files</span>

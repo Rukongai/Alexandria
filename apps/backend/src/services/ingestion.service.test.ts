@@ -100,6 +100,7 @@ import { fileProcessingService } from './file-processing.service.js';
 import { storageService } from './storage.service.js';
 import { importSessionService } from './import-session.service.js';
 import fsPromises from 'node:fs/promises';
+import { validationError } from '../utils/errors.js';
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -420,13 +421,16 @@ describe('IngestionService – multipart scan orchestration', () => {
     expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/model-b.zip', { force: true });
   });
 
-  it('cleans all multipart inputs and partial extraction output when extraction fails', async () => {
+  it('does not persist an internal ENOENT path when multipart extraction fails', async () => {
     const files = [
       { tempFilePath: '/tmp/model.z01', originalFilename: 'model.z01' },
       { tempFilePath: '/tmp/model.zip', originalFilename: 'model.zip' },
     ];
     vi.mocked(fileProcessingService.processMultipartArchives)
-      .mockRejectedValue(new Error('corrupt split set'));
+      .mockRejectedValue(Object.assign(
+        new Error("ENOENT: no such file or directory, open '/tmp/upload_private_part2.rar'"),
+        { code: 'ENOENT' },
+      ));
 
     await expect(service.processScanJob(
       'session-1',
@@ -438,7 +442,7 @@ describe('IngestionService – multipart scan orchestration', () => {
 
     expect(importSessionService.update).toHaveBeenCalledWith('session-1', {
       status: 'error',
-      error: 'corrupt split set',
+      error: 'Could not process this archive',
     });
     expect(fsPromises.rm).toHaveBeenCalledWith(
       '/tmp/model.z01_extracted',
@@ -446,6 +450,29 @@ describe('IngestionService – multipart scan orchestration', () => {
     );
     expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/model.z01', { force: true });
     expect(fsPromises.rm).toHaveBeenCalledWith('/tmp/model.zip', { force: true });
+  });
+
+  it('persists actionable validation guidance when multipart extraction is rejected', async () => {
+    const files = [
+      { tempFilePath: '/tmp/model.part1.rar', originalFilename: 'model.part1.rar' },
+      { tempFilePath: '/tmp/model.part3.rar', originalFilename: 'model.part3.rar' },
+    ];
+    vi.mocked(fileProcessingService.processMultipartArchives).mockRejectedValue(
+      validationError('Split RAR set is missing part 2'),
+    );
+
+    await expect(service.processScanJob(
+      'session-1',
+      files[0].tempFilePath,
+      files[0].originalFilename,
+      'library-1',
+      { files, mode: 'split' },
+    )).resolves.toBeUndefined();
+
+    expect(importSessionService.update).toHaveBeenCalledWith('session-1', {
+      status: 'error',
+      error: 'Split RAR set is missing part 2',
+    });
   });
 });
 

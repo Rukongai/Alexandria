@@ -16,7 +16,7 @@ Alexandria fills this gap: a library manager that understands what a 3D printing
 
 ### What Alexandria Does (MVP)
 
-- **Ingests models** from archive uploads, explicitly grouped archives, split ZIP sets, and existing folder-based libraries with user-defined hierarchy patterns
+- **Ingests models** from archive uploads, explicitly grouped archives, supported split archives (split ZIP or modern split RAR sets), and existing folder-based libraries with user-defined hierarchy patterns
 - **Processes uploaded files** asynchronously — extracts zips, classifies files by type, generates image thumbnails, computes file hashes
 - **Provides flexible metadata** — ships with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL) and supports user-defined custom fields. Tags have optimized query performance under the hood.
 - **Organizes via collections** — nestable collection hierarchy, models can belong to multiple collections
@@ -36,7 +36,7 @@ Alexandria fills this gap: a library manager that understands what a 3D printing
 
 These decisions were made deliberately during the architecture phase and should not be reversed without revisiting the rationale.
 
-**Upload session = one model.** A normal archive upload creates one model entry. An explicit multipart session may combine several independent archives or every part of one split ZIP, but still creates one model. Archive contents are never automatically split into multiple models.
+**Upload session = one model.** A normal archive upload creates one model entry. An explicit multipart session may combine several independent complete archives or every part of one supported split archive, including modern `<base>.partN.rar` sets, but still creates one model. Archive contents are never automatically split into multiple models.
 
 **Metadata is unified.** Tags, Artist, Year, NSFW — all are metadata fields. The system doesn't have separate entity types for each. Some fields (like tags) have optimized database storage for query performance, but this is invisible to the API and UI. New attribute types are added by creating new metadata fields, not new database entities.
 

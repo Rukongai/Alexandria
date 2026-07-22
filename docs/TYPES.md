@@ -309,7 +309,7 @@ interface SmartCollectionDetail {
 
 ### ImportSession
 
-A staged archive upload awaiting review and commit. Created by `POST /models/upload`, the single-file chunked complete endpoint, or multipart complete; destroyed by commit or discard. One session always creates one model, even when its scan input contains several independent archives or a split ZIP set. The database schema is in `apps/backend/src/db/schema/import-session.ts` and migration `0008_add_import_sessions.sql`.
+A staged archive upload awaiting review and commit. Created by `POST /models/upload`, the single-file chunked complete endpoint, or multipart complete; destroyed by commit or discard. One session always creates one model, even when its scan input contains several independent archives or one supported split ZIP or modern split RAR set. The database schema is in `apps/backend/src/db/schema/import-session.ts` and migration `0008_add_import_sessions.sql`.
 
 ```typescript
 interface ImportSession {
@@ -555,7 +555,8 @@ interface UploadInitRequest {
 }
 
 // POST /models/upload/multipart/init uses the same numeric limits but also
-// permits split ZIP member names in .z01–.z99 and .zip.001–.zip.999 ranges.
+// permits split ZIP names in .z01–.z99 and .zip.001–.zip.999 ranges,
+// plus modern <base>.partN.rar member names.
 type MultipartUploadInitRequest = UploadInitRequest;
 
 // POST /models/upload/init and POST /models/upload/multipart/init
@@ -586,7 +587,7 @@ type MultipartArchiveMode = 'combine' | 'split';
 // POST /models/upload/multipart/complete
 interface CompleteMultipartUploadRequest {
   uploadIds: string[];           // 2–100 unique chunked upload session IDs
-  mode: MultipartArchiveMode;    // combine independent archives or extract one split set
+  mode: MultipartArchiveMode;    // combine independent complete archives or extract one split set
 }
 
 // A node in the folder-structure preview detected during scan
@@ -642,6 +643,8 @@ interface BatchUploadMetadata {
   options?: UploadOptions;
 }
 ```
+
+In `split` mode, ZIP sets use the classic `.z01` … terminal `.zip` scheme or numbered `.zip.001` … scheme. Modern RAR sets use contiguous `<base>.partN.rar` members starting at part 1, with one case-insensitive safe base name and consistent part-number padding. The service colocates normalized members temporarily, extracts RAR sets from part 1, and derives the stable logical filename `<base>.rar` independently of upload-ID order.
 
 ### Global Search Types
 

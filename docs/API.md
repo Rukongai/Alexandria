@@ -55,7 +55,7 @@ For single-request uploads (`POST /models/upload`), archive files are capped at 
 
 Both upload paths now use the staged ingestion workflow. They return a `sessionId` (not a `modelId`) — the model is created only after the session is committed. See the Import Sessions section below for the full scan → review → commit protocol.
 
-To create one model from several archives, use the multipart protocol exposed in the frontend's dedicated **Multi-part archive** tab. Initiate each of 2–100 members through `POST /models/upload/multipart/init`, upload its chunks through the existing chunk endpoint, then submit all upload IDs together to `POST /models/upload/multipart/complete`. The 5 GB limit applies to each member; there is no separate aggregate-size field in the multipart request. Multipart `combine` mode accepts independent supported archives; `split` mode accepts one complete `.z01` … `.zip` or `.zip.001` … split-ZIP set. A multipart group creates one import session and therefore one model. Ordinary multi-select under Archive upload continues to create a separate session for each archive.
+To create one model from several archives, use the multipart protocol exposed in the frontend's dedicated **Multi-part archive** tab. Initiate each of 2–100 members through `POST /models/upload/multipart/init`, upload its chunks through the existing chunk endpoint, then submit all upload IDs together to `POST /models/upload/multipart/complete`. The 5 GB limit applies to each member; there is no separate aggregate-size field in the multipart request. Multipart `combine` mode accepts independent complete archives. `split` mode accepts one complete classic `.z01` … `.zip` set, numbered `.zip.001` … set, or modern `<base>.part1.rar` … `<base>.partN.rar` set. A multipart group creates one import session and therefore one model. Ordinary multi-select under Archive upload continues to create a separate session for each archive.
 
 ---
 
@@ -372,11 +372,11 @@ The session expires after 2 hours. All chunks must be uploaded and the upload co
 
 ### POST /models/upload/multipart/init
 
-Initiate one chunked member of an explicit multipart archive group. The request and response match `POST /models/upload/init`, but filename validation also accepts split-ZIP member names (`.z01` through `.z99`, and `.zip.001` through `.zip.999`). Standard archive names are accepted for `combine` mode.
+Initiate one chunked member of an explicit multipart archive group. The request and response match `POST /models/upload/init`, but filename validation also accepts split-archive member names (`.z01` through `.z99`, `.zip.001` through `.zip.999`, and modern `.partN.rar` members). Standard archive names are accepted for `combine` mode.
 
 **Auth required:** Yes
 
-**Request body:** The same `filename`, `totalSize`, and `totalChunks` fields as `POST /models/upload/init`. `totalSize` is capped at 5 GB for each member. The multipart endpoint additionally permits split member filenames in the ranges `.z01`–`.z99` and `.zip.001`–`.zip.999`.
+**Request body:** The same `filename`, `totalSize`, and `totalChunks` fields as `POST /models/upload/init`. `totalSize` is capped at 5 GB for each member. The multipart endpoint additionally permits split member filenames in the ranges `.z01`–`.z99` and `.zip.001`–`.zip.999`, plus modern `<base>.partN.rar` names.
 
 **Response (201):** The same `{ uploadId, expiresAt }` data as `POST /models/upload/init`. Each member is an independent two-hour, in-memory upload session until its ID is submitted with the rest of the group.
 
@@ -480,22 +480,23 @@ Assemble two to 100 previously uploaded multipart members and begin one staged s
 | Field | Type | Constraints |
 |-------|------|-------------|
 | `uploadIds` | UUID string[] | 2–100 unique upload IDs, all owned by the authenticated user |
-| `mode` | `combine` \| `split` | `combine` extracts independent archives into collision-safe archive-named folders; `split` validates and extracts one complete split-ZIP set |
+| `mode` | `combine` \| `split` | `combine` extracts independent complete archives into collision-safe archive-named folders; `split` validates and extracts one complete split ZIP or modern split RAR set |
 
 In `combine` mode, each member must be a complete `.zip`, `.rar`, `.7z`, `.tar.gz`, or `.tgz` archive with a plain filename rather than a path. Each archive is extracted below a folder named from its filename without the archive extension. Empty or dot-only derived folder names are rejected. Case-insensitive folder-name collisions receive `-2`, `-3`, and later suffixes, and every resolved folder must be a strict descendant of the extraction root, so archive roots cannot overwrite one another or escape staging.
 
-In `split` mode, all files must share one base name (compared case-insensitively) and use exactly one supported naming scheme. Accepted parts are normalized to consistent lowercase filenames when colocated so extraction also works on case-sensitive filesystems:
+In `split` mode, all files must share one base name (compared case-insensitively) and use exactly one supported naming scheme. Accepted parts are copied into a temporary colocation directory and normalized to lowercase filenames so extraction also works on case-sensitive filesystems:
 
 - Classic: contiguous `.z01` through at most `.z99` parts, starting at `.z01`, plus exactly one terminal `.zip` file.
 - Numbered: contiguous `.zip.001` through at most `.zip.999` parts, starting at `.zip.001`; the `.zip.001` member is the extraction entry point.
+- Modern RAR: contiguous `<base>.part1.rar` through `<base>.partN.rar` members, starting at part 1 and ending no later than part 100 under the group-size limit. The base must be non-empty and cannot consist only of dots. Part numbers must use consistent zero-padding across the set (for example, `part001`, `part002`, and `part003`), and the normalized part-1 member is the extraction entry point.
 
-Missing or duplicate part numbers, duplicate member names, mixed naming schemes, unrelated base names, and unrecognized filenames return `VALIDATION_ERROR`. All parts must be present before extraction begins.
+Missing or duplicate part numbers, inconsistent RAR number padding, duplicate member names, mixed ZIP/RAR or ZIP naming schemes, unrelated base names, an unsafe RAR base, and unrecognized filenames return `VALIDATION_ERROR`. All parts must be present before extraction begins.
 
-The import session uses a stable logical filename independent of the order of `uploadIds`: the terminal `.zip` filename for a classic set, or the base `.zip` filename with `.001` removed for a numbered set. Metadata detection uses that logical name, and multipart scans always report `detected.modelCount: 1` because the group commits as one model.
+The import session uses a stable logical filename independent of the order of `uploadIds`: the terminal `.zip` filename for a classic set, the base `.zip` filename with `.001` removed for a numbered set, or `<base>.rar` derived from RAR part 1. Metadata detection uses that logical name, and multipart scans always report `detected.modelCount: 1` because the group commits as one model.
 
-Before any 7-Zip-based extraction, including split ZIP extraction, Alexandria requests a technical listing and rejects absolute paths, drive-qualified or UNC paths, `..` path segments, symbolic links, hard links, and reparse entries. Link detection checks dedicated technical fields as well as Unix link modes reported through either `Mode` or `Attributes`; reparse markers in `Attributes` are also rejected. Extraction then checks the paths reported by 7-Zip and fails if any path resolves outside the destination.
+Before any 7-Zip-based extraction, including split ZIP extraction, Alexandria requests a technical listing and rejects absolute paths, drive-qualified or UNC paths, `..` path segments, symbolic links, hard links, and reparse entries. Link detection checks dedicated technical fields as well as Unix link modes reported through either `Mode` or `Attributes`; reparse markers in `Attributes` are also rejected. Extraction then checks the paths reported by 7-Zip and fails if any path resolves outside the destination. Modern split RAR sets are extracted through the RAR handler from the colocated part-1 file, allowing the extractor to resolve the remaining volumes beside it.
 
-Multipart completion acquires the member-session locks in stable ID order, verifies the entire group, and atomically transitions every member from `uploading` to `assembling` before reading files. No member is marked `consumed` until every file has assembled and passed its declared byte-size check. If any member fails, assembled temporary files are removed and every still-present member returns to `uploading`, so the group can be corrected and retried without reinitializing successful members. After successful assembly, every member is consumed together. Multipart validation or queueing failures remove assembled temporary files. The scan worker removes uploaded source files on success or failure, removes failed extraction output, and always removes the temporary directory used to colocate split parts.
+Multipart completion acquires the member-session locks in stable ID order, verifies the entire group, and atomically transitions every member from `uploading` to `assembling` before reading files. No member is marked `consumed` until every file has assembled and passed its declared byte-size check. If any member fails, assembled temporary files are removed and every still-present member returns to `uploading`, so the group can be corrected and retried without reinitializing successful members. After successful assembly, every member is consumed together. Multipart validation or queueing failures remove assembled temporary files. The scan worker removes uploaded source files on success or failure, removes failed extraction output, and always removes the temporary directory used to colocate split ZIP or RAR parts.
 
 **Response (202):**
 

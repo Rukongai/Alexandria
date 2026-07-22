@@ -10,7 +10,7 @@ A self-hosted personal library for managing 3D printing model collections. Think
 
 **Ingestion and storage**
 - Upload `.zip`, `.rar`, `.7z`, `.tar.gz`, and `.tgz` archives containing STL files, images, and supporting documents
-- Combine 2–100 independent archives into one model, or upload every part of a split ZIP set
+- Combine 2–100 independent archives into one model, or upload every part of one supported split archive (`.z01` … `.zip`, `.zip.001` …, or modern `.partN.rar`)
 - Chunked uploads up to 5 GB per file with 10 MB chunks and automatic retry
 - Async processing pipeline with thumbnail generation (WebP at multiple sizes)
 - Import existing library folders with pattern-based hierarchy parsing (e.g. `{artist}/{year}/{name}`) using hardlink, copy, or move strategies

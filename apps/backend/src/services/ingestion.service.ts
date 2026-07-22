@@ -218,10 +218,17 @@ export class IngestionService {
       });
       logger.info({ sessionId, fileCount: manifest.entries.length }, 'Scan complete — ready for review');
     } catch (err) {
-      logger.error({ sessionId, error: String(err) }, 'Scan failed');
+      const clientError = err instanceof AppError
+        ? err.message
+        : 'Could not process this archive';
+      if (err instanceof AppError) {
+        logger.warn({ sessionId, errorCode: err.code, error: err.message }, 'Scan rejected');
+      } else {
+        logger.error({ sessionId, err }, 'Scan failed');
+      }
       await importSessionService.update(sessionId, {
         status: 'error',
-        error: err instanceof Error ? err.message : 'Could not process this archive',
+        error: clientError,
       });
       await fsPromises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
     } finally {

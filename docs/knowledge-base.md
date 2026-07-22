@@ -12,7 +12,7 @@ It is designed to run on a home server or NAS via Docker Compose. There is no cl
 
 Several decisions were made during the architecture phase and are treated as settled.
 
-**One upload session, one model.** A normal archive upload creates one review session and then one model. The dedicated Multi-part archive workflow can instead combine several complete archives or upload every part of one split ZIP into that same session. Alexandria never infers separate models from archive contents, and ordinary multi-select still creates one session per archive.
+**One upload session, one model.** A normal archive upload creates one review session and then one model. The dedicated Multi-part archive workflow can instead combine several independent complete archives or upload every part of one supported split archive—split ZIP or modern split RAR—into that same session. Alexandria never infers separate models from archive contents, and ordinary multi-select still creates one session per archive.
 
 **Metadata is unified, storage is not.** Tags, Artist, Year, NSFW, and user-defined custom fields are all accessed through the same metadata API. Internally, some field types (tags, which are multi-value enumeration) use a dedicated join table for query performance. This routing is invisible to the API and to the frontend. Adding a new field type does not require a new API surface — it is a new metadata field definition.
 
@@ -33,7 +33,7 @@ Alexandria is a monorepo with three packages: a React frontend (`apps/frontend`)
 The backend is organized around twelve focused services. Each service owns a coherent set of operations and does not reach into another service's internals.
 
 - **IngestionService** — orchestrates the upload and import pipelines; creates model records and enqueues processing jobs
-- **FileProcessingService** — extracts archives and split ZIP sets, rejects unsafe paths and link-like entries before 7-Zip extraction, combines explicitly grouped archives under collision-safe folders, walks import directories, classifies files by type, and computes SHA-256 hashes
+- **FileProcessingService** — extracts archives and supported split archives, temporarily colocates split members and starts extraction from the set's entry member, rejects unsafe paths and link-like entries before 7-Zip extraction, combines explicitly grouped complete archives under collision-safe folders, walks import directories, classifies files by type, and computes SHA-256 hashes
 - **StorageService** — manages file storage; the local filesystem is the current implementation, with an S3-compatible implementation planned
 - **ThumbnailService** — generates WebP thumbnails at grid and detail sizes using sharp
 - **UploadService** — manages chunked upload sessions in memory, bounds accepted chunk bytes to the declared file size, supports explicit abort and cleanup, and assembles single files or multipart groups for ingestion
@@ -59,6 +59,6 @@ Default credentials (`admin@alexandria.local` / `changeme`) are applied by the a
 
 ## Current Status
 
-Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, and the React frontend — is implemented and reviewed. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent archives or uploading one complete split ZIP set into a single review session and model.
+Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, and the React frontend — is implemented and reviewed. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent complete archives or uploading one complete supported split archive, including a modern `<base>.partN.rar` set, into a single review session and model.
 
 Planned but not yet implemented: 3D model viewer (in-browser STL/3MF rendering), multi-user support, S3-compatible storage backend, and print job tracking.

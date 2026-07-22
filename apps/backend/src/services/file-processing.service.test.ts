@@ -13,6 +13,7 @@ import { path7za } from '7zip-bin';
 import Seven from 'node-7z';
 import {
   FileProcessingService,
+  validateSplitArchiveSet,
   validateSplitZipSet,
   validate7zArchiveEntry,
   type FileManifest,
@@ -371,6 +372,68 @@ describe('validateSplitZipSet', () => {
   });
 });
 
+describe('validateSplitArchiveSet – multi-volume RAR', () => {
+  const files = (...filenames: string[]): MultipartArchiveFile[] => filenames.map(
+    (originalFilename, index) => ({ tempFilePath: `/tmp/upload-${index}`, originalFilename }),
+  );
+
+  it('accepts a contiguous modern RAR set and derives its name from part 1', () => {
+    expect(validateSplitArchiveSet(files(
+      'NYMPHA3D - 2026-02.part2.RAR',
+      'Nympha3D - 2026-02.part1.rar',
+    ))).toEqual({
+      kind: 'rar',
+      entryFilename: 'nympha3d - 2026-02.part1.rar',
+      logicalFilename: 'Nympha3D - 2026-02.rar',
+    });
+  });
+
+  it('accepts consistent zero-padded part numbers', () => {
+    expect(validateSplitArchiveSet(files(
+      'bundle.part003.rar',
+      'bundle.part001.rar',
+      'bundle.part002.rar',
+    ))).toEqual({
+      kind: 'rar',
+      entryFilename: 'bundle.part001.rar',
+      logicalFilename: 'bundle.rar',
+    });
+  });
+
+  it('accepts unpadded part numbers across a digit-width boundary', () => {
+    const filenames = Array.from({ length: 10 }, (_, index) => `bundle.part${index + 1}.rar`);
+    expect(validateSplitArchiveSet(files(...filenames.reverse()))).toMatchObject({
+      kind: 'rar',
+      entryFilename: 'bundle.part1.rar',
+      logicalFilename: 'bundle.rar',
+    });
+  });
+
+  it('accepts two-digit padding across part09 to part10', () => {
+    const filenames = Array.from(
+      { length: 10 },
+      (_, index) => `bundle.part${String(index + 1).padStart(2, '0')}.rar`,
+    );
+    expect(validateSplitArchiveSet(files(...filenames.reverse()))).toMatchObject({
+      kind: 'rar',
+      entryFilename: 'bundle.part01.rar',
+      logicalFilename: 'bundle.rar',
+    });
+  });
+
+  it.each([
+    ['a missing part 1', ['bundle.part2.rar', 'bundle.part3.rar']],
+    ['a numbering gap', ['bundle.part1.rar', 'bundle.part3.rar']],
+    ['unrelated bases', ['bundle.part1.rar', 'other.part2.rar']],
+    ['duplicate part numbers', ['bundle.part1.rar', 'bundle.part01.rar']],
+    ['inconsistent zero padding', ['bundle.part01.rar', 'bundle.part2.rar']],
+    ['mixed ZIP and RAR members', ['bundle.part1.rar', 'bundle.zip.001']],
+    ['part zero', ['bundle.part0.rar', 'bundle.part1.rar']],
+  ])('rejects %s', (_label, filenames) => {
+    expect(() => validateSplitArchiveSet(files(...filenames))).toThrow();
+  });
+});
+
 describe('FileProcessingService – multipart archives', () => {
   it('selects the canonical name from selection order for combine and part order for split', () => {
     expect(service.validateMultipartArchives([
@@ -423,6 +486,37 @@ describe('FileProcessingService – multipart archives', () => {
     )).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
 
     expect(processArchive).not.toHaveBeenCalled();
+  });
+
+  it('directs multi-volume RAR members to split mode before extraction', async () => {
+    const processArchive = vi.spyOn(service, 'processArchive');
+
+    await expect(service.processMultipartArchives(
+      [
+        {
+          tempFilePath: '/tmp/upload_first_Nympha3D.part1.rar',
+          originalFilename: 'Nympha3D.part1.rar',
+        },
+        {
+          tempFilePath: '/tmp/upload_second_Nympha3D.part2.rar',
+          originalFilename: 'Nympha3D.part2.rar',
+        },
+      ],
+      path.join(tmpDir, 'invalid-combine-rar-output'),
+      'combine',
+    )).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: expect.stringContaining('Split archive mode'),
+    });
+
+    expect(processArchive).not.toHaveBeenCalled();
+  });
+
+  it('continues to accept independent complete RAR archives in combine mode', () => {
+    expect(service.validateMultipartArchives([
+      { tempFilePath: '/tmp/first.rar', originalFilename: 'first.rar' },
+      { tempFilePath: '/tmp/second.rar', originalFilename: 'second.rar' },
+    ], 'combine')).toBe('first.rar');
   });
 
   it('extracts colliding archive names into distinct archive-named folders', async () => {
@@ -480,6 +574,48 @@ describe('FileProcessingService – multipart archives', () => {
     process7z.mockRestore();
   });
 
+  it('colocates differently prefixed RAR volumes and extracts from part 1', async () => {
+    const firstSource = path.join(
+      tmpDir,
+      'upload_11111111-1111-4111-8111-111111111111_Nympha3D - 2026-02.part1.rar',
+    );
+    const secondSource = path.join(
+      tmpDir,
+      'upload_22222222-2222-4222-8222-222222222222_Nympha3D - 2026-02.part2.rar',
+    );
+    await fsPromises.writeFile(firstSource, 'part one');
+    await fsPromises.writeFile(secondSource, 'part two');
+    const expectedManifest = { entries: [], totalSizeBytes: 0 };
+    const processRar = vi
+      .spyOn(service as unknown as {
+        processRar: (archivePath: string, extractDir: string) => Promise<FileManifest>;
+      }, 'processRar')
+      .mockImplementation(async (archivePath, extractDir) => {
+        expect(path.basename(archivePath)).toBe('nympha3d - 2026-02.part1.rar');
+        expect(extractDir).toBe(path.join(tmpDir, 'split-rar-output'));
+        const partsDir = path.dirname(archivePath);
+        await expect(fsPromises.access(
+          path.join(partsDir, 'nympha3d - 2026-02.part1.rar'),
+        )).resolves.toBeUndefined();
+        await expect(fsPromises.access(
+          path.join(partsDir, 'nympha3d - 2026-02.part2.rar'),
+        )).resolves.toBeUndefined();
+        return expectedManifest;
+      });
+
+    await expect(service.processMultipartArchives(
+      [
+        { tempFilePath: secondSource, originalFilename: 'Nympha3D - 2026-02.part2.rar' },
+        { tempFilePath: firstSource, originalFilename: 'Nympha3D - 2026-02.part1.rar' },
+      ],
+      path.join(tmpDir, 'split-rar-output'),
+      'split',
+    )).resolves.toEqual(expectedManifest);
+
+    expect(processRar).toHaveBeenCalledOnce();
+    processRar.mockRestore();
+  });
+
   it('removes the temporary split-parts directory when extraction fails', async () => {
     const partOne = path.join(tmpDir, 'failed-split-source-z01');
     const terminal = path.join(tmpDir, 'failed-split-source-zip');
@@ -507,6 +643,35 @@ describe('FileProcessingService – multipart archives', () => {
     expect(entryPath).toBeDefined();
     await expect(fsPromises.access(path.dirname(entryPath!))).rejects.toThrow();
     process7z.mockRestore();
+  });
+
+  it('removes the temporary RAR parts directory when extraction fails', async () => {
+    const partOne = path.join(tmpDir, 'failed-rar-source-part1');
+    const partTwo = path.join(tmpDir, 'failed-rar-source-part2');
+    await fsPromises.writeFile(partOne, 'part one');
+    await fsPromises.writeFile(partTwo, 'part two');
+    let entryPath: string | undefined;
+    const processRar = vi
+      .spyOn(service as unknown as {
+        processRar: (archivePath: string, extractDir: string) => Promise<FileManifest>;
+      }, 'processRar')
+      .mockImplementation(async (archivePath) => {
+        entryPath = archivePath;
+        throw new Error('RAR extraction failed');
+      });
+
+    await expect(service.processMultipartArchives(
+      [
+        { tempFilePath: partTwo, originalFilename: 'bundle.part2.rar' },
+        { tempFilePath: partOne, originalFilename: 'bundle.part1.rar' },
+      ],
+      path.join(tmpDir, 'failed-rar-output'),
+      'split',
+    )).rejects.toThrow('RAR extraction failed');
+
+    expect(entryPath).toBeDefined();
+    await expect(fsPromises.access(path.dirname(entryPath!))).rejects.toThrow();
+    processRar.mockRestore();
   });
 
   it('extracts a real classic .z01 + terminal .zip fixture', async () => {

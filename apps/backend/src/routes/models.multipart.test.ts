@@ -70,6 +70,8 @@ describe('multipart archive upload routes', () => {
     'dragon.Z99',
     'dragon.zip.001',
     'dragon.ZIP.999',
+    'Nympha3D - 2026-02.part1.rar',
+    'Nympha3D - 2026-02.part001.RAR',
   ])('accepts supported archive member %s at multipart init', async (filename) => {
     vi.mocked(uploadService.initUpload).mockReturnValue({
       uploadId: FIRST_UPLOAD_ID,
@@ -101,6 +103,8 @@ describe('multipart archive upload routes', () => {
     'dragon.zip.000',
     'dragon.zip.1000',
     'dragon.zip.001.bak',
+    'bundle.part0.rar',
+    'bundle.part000.rar',
   ])('rejects unrelated or out-of-range member %s at multipart init', async (filename) => {
     const response = await app.inject({
       method: 'POST',
