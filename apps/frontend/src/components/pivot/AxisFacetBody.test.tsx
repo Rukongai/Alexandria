@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation } from 'react-router-dom';
-import type { CollectionDetail, MetadataFieldValue } from '@alexandria/shared';
+import type { CollectionDetail, LibrarySummary, MetadataFieldValue } from '@alexandria/shared';
 import { AxisFacetBody } from './AxisFacetBody';
 import { BatchMetadataForm } from '../upload/BatchMetadataForm';
+import { LibraryProvider } from '../../hooks/use-libraries';
 
 // ---------------------------------------------------------------------------
 // Mock API modules
@@ -17,11 +18,27 @@ vi.mock('../../api/metadata', () => ({
   getFieldValues: vi.fn(),
 }));
 
+vi.mock('../../api/libraries', () => ({
+  listLibraries: vi.fn(),
+}));
+
+vi.mock('../../hooks/use-auth', () => ({
+  useAuth: () => ({
+    user: { id: 'user-1' },
+    isLoading: false,
+    isAuthenticated: true,
+    login: vi.fn(),
+    logout: vi.fn(),
+  }),
+}));
+
 import { getCollections } from '../../api/collections';
 import { getFieldValues } from '../../api/metadata';
+import { listLibraries } from '../../api/libraries';
 
 const mockGetCollections = vi.mocked(getCollections);
 const mockGetFieldValues = vi.mocked(getFieldValues);
+const mockListLibraries = vi.mocked(listLibraries);
 
 function LocationProbe() {
   const location = useLocation();
@@ -54,6 +71,19 @@ const COLLECTION: CollectionDetail = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
+const LIBRARY: LibrarySummary = {
+  id: 'library-1',
+  name: 'Models',
+  slug: 'models',
+  userId: 'user-1',
+  isDefault: true,
+  color: 'amber',
+  modelCount: 3,
+  collectionCount: 1,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -67,6 +97,24 @@ function makeWrapper(initialUrl = '/') {
         <MemoryRouter initialEntries={[initialUrl]}>
           {children}
           <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+  };
+}
+
+function makeLibraryWrapper(initialUrl = '/lib/library-1') {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return function Wrapper({ children }: { children: React.ReactNode }) {
+    return (
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[initialUrl]}>
+          <LibraryProvider>
+            {children}
+            <LocationProbe />
+          </LibraryProvider>
         </MemoryRouter>
       </QueryClientProvider>
     );
@@ -219,6 +267,7 @@ describe('AxisFacetBody — collections axis', () => {
     vi.clearAllMocks();
     mockGetFieldValues.mockResolvedValue([]);
     mockGetCollections.mockResolvedValue({ data: [], meta: null, errors: null });
+    mockListLibraries.mockResolvedValue({ data: [LIBRARY], meta: null, errors: null });
   });
 
   it('renders the collections axis without crashing', async () => {
@@ -229,6 +278,22 @@ describe('AxisFacetBody — collections axis', () => {
     await waitFor(() => {
       // CollectionTree renders empty state
       expect(container).toBeTruthy();
+    });
+  });
+
+  it('should keep the active library route when a collection is selected', async () => {
+    mockGetCollections.mockResolvedValue({ data: [COLLECTION], meta: null, errors: null });
+    render(<AxisFacetBody axis="collections" />, {
+      wrapper: makeLibraryWrapper(),
+    });
+
+    await waitFor(() => expect(screen.getByText('Figures')).toBeTruthy());
+    fireEvent.click(screen.getByText('Figures'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(
+        '/lib/library-1?collectionId=collection-1'
+      );
     });
   });
 
