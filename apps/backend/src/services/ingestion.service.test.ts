@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,7 @@ vi.mock('./job.service.js', () => ({
   jobService: {
     enqueueIngestionJob: vi.fn(),
     enqueueScanJob: vi.fn(),
+    enqueueFolderImportJob: vi.fn(),
   },
   JobService: vi.fn(),
 }));
@@ -36,6 +38,7 @@ vi.mock('./file-processing.service.js', () => ({
     processMultipartArchives: vi.fn(),
     validateMultipartArchives: vi.fn(),
     scanDirectory: vi.fn(),
+    walkDirectoryForImport: vi.fn(),
     copyManifestToStorage: vi.fn().mockResolvedValue(undefined),
   },
   FileProcessingService: vi.fn(),
@@ -54,6 +57,7 @@ vi.mock('./import-session.service.js', () => ({
 vi.mock('./metadata.service.js', () => ({
   metadataService: {
     listFieldValues: vi.fn().mockResolvedValue([]),
+    setModelMetadata: vi.fn().mockResolvedValue(undefined),
   },
   MetadataService: vi.fn(),
 }));
@@ -63,6 +67,14 @@ vi.mock('./thumbnail.service.js', () => ({
     generateThumbnails: vi.fn(),
   },
   ThumbnailService: vi.fn(),
+}));
+
+vi.mock('./collection.service.js', () => ({
+  collectionService: {
+    findOrCreateByName: vi.fn(),
+    addModelToCollection: vi.fn(),
+  },
+  CollectionService: vi.fn(),
 }));
 
 vi.mock('./storage.service.js', () => ({
@@ -95,6 +107,8 @@ vi.mock('node:fs/promises', () => ({
     rm: vi.fn().mockResolvedValue(undefined),
     mkdtemp: vi.fn().mockResolvedValue('/tmp/alexandria-extract-test'),
     copyFile: vi.fn().mockResolvedValue(undefined),
+    unlink: vi.fn().mockResolvedValue(undefined),
+    stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
     access: vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { code: 'ENOENT' })),
   },
 }));
@@ -617,6 +631,113 @@ describe('IngestionService – extractSessionArchive', () => {
           ],
         }),
       }),
+    );
+  });
+});
+
+describe('IngestionService – remote folder import', () => {
+  const sourcePath = '/imports/model-one/model.stl';
+  const contents = Buffer.from('verified model contents');
+  const hash = createHash('sha256').update(contents).digest('hex');
+  let service: IngestionService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Object.defineProperty(storageService, 'kind', { value: 's3', configurable: true });
+    service = new IngestionService();
+    vi.mocked(fileProcessingService.walkDirectoryForImport).mockResolvedValue([
+      {
+        name: 'Model One',
+        sourcePath: '/imports/model-one',
+        collectionName: null,
+        metadata: {},
+      },
+    ]);
+    vi.mocked(fileProcessingService.scanDirectory).mockResolvedValue([
+      {
+        filename: 'model.stl',
+        relativePath: 'model.stl',
+        fileType: 'stl',
+        mimeType: 'model/stl',
+        sizeBytes: contents.length,
+        hash,
+      },
+    ]);
+    vi.mocked(modelService.createModel).mockResolvedValue({ id: 'model-1' } as never);
+    vi.mocked(modelService.createModelFiles).mockResolvedValue([
+      { id: 'file-1', fileType: 'stl' },
+    ] as never);
+    vi.mocked(modelService.updateModelStatus).mockResolvedValue(undefined);
+    vi.mocked(storageService.store).mockResolvedValue(undefined);
+    vi.mocked(storageService.delete).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    Object.defineProperty(storageService, 'kind', { value: 'local', configurable: true });
+  });
+
+  it('deletes move sources only after the uploaded object is verified', async () => {
+    vi.mocked(storageService.retrieveStream).mockResolvedValue(Readable.from(contents));
+
+    await service.processFolderImportJob({
+      id: 'job-1',
+      data: {
+        sourcePath: '/imports',
+        pattern: '{model}',
+        strategy: 'move',
+        deleteAfterUpload: true,
+        userId: 'user-1',
+        libraryId: 'library-1',
+      },
+      updateProgress: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    expect(storageService.store).toHaveBeenCalledWith(
+      'models/model-1/model.stl',
+      expect.anything(),
+    );
+    expect(storageService.retrieveStream).toHaveBeenCalledWith('models/model-1/model.stl');
+    expect(fsPromises.unlink).toHaveBeenCalledWith(sourcePath);
+    expect(modelService.updateModelStatus).toHaveBeenCalledWith('model-1', 'ready', {
+      totalSizeBytes: contents.length,
+      fileCount: 1,
+    });
+  });
+
+  it('cleans up an unverifiable object and preserves its source', async () => {
+    vi.mocked(storageService.retrieveStream).mockResolvedValue(
+      Readable.from(Buffer.from('corrupted contents')),
+    );
+
+    await service.processFolderImportJob({
+      id: 'job-1',
+      data: {
+        sourcePath: '/imports',
+        pattern: '{model}',
+        strategy: 'move',
+        deleteAfterUpload: true,
+        userId: 'user-1',
+        libraryId: 'library-1',
+      },
+      updateProgress: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    expect(storageService.delete).toHaveBeenCalledWith('models/model-1/model.stl');
+    expect(fsPromises.unlink).not.toHaveBeenCalled();
+    expect(modelService.updateModelStatus).toHaveBeenCalledWith('model-1', 'error');
+  });
+
+  it('maps move requests to verified source deletion', async () => {
+    vi.mocked(jobService.enqueueFolderImportJob).mockResolvedValue('job-1');
+
+    await service.handleFolderImport(
+      { sourcePath: '/imports', pattern: '{model}', strategy: 'move' },
+      'user-1',
+      'library-1',
+    );
+
+    expect(jobService.enqueueFolderImportJob).toHaveBeenCalledWith(
+      expect.objectContaining({ deleteAfterUpload: true }),
     );
   });
 });
