@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Trash2, FolderInput, Tag, X } from 'lucide-react';
-import type { CollectionDetail, MetadataFieldValue } from '@alexandria/shared';
+import type { CollectionDetail } from '@alexandria/shared';
 import { bulkDelete, bulkCollection, bulkMetadata } from '../../api/bulk';
 import { getCollections } from '../../api/collections';
 import { getFieldValues } from '../../api/metadata';
 import { useToast } from '../../hooks/use-toast';
 import { Button } from '../ui/button';
-import { Input } from '../ui/input';
 import { AlertDialog } from '../ui/alert-dialog';
+import { TagAutocomplete } from '../metadata/tag-autocomplete';
 
 interface BulkActionsProps {
   selectedIds: Set<string>;
@@ -98,7 +98,7 @@ function TagPicker({ selectedIds, onClose, onDone }: TagPickerProps) {
     queryFn: () => getFieldValues('tags'),
   });
 
-  const existingTags: MetadataFieldValue[] = data ?? [];
+  const existingTags = data ?? [];
   const selectedKeys = new Set(selectedTags.map((tag) => tag.toLowerCase()));
   const trimmedInput = input.trim();
   const normalizedInput = trimmedInput.toLowerCase();
@@ -106,18 +106,6 @@ function TagPicker({ selectedIds, onClose, onDone }: TagPickerProps) {
     trimmedInput && !selectedKeys.has(normalizedInput)
       ? [...selectedTags, trimmedInput]
       : selectedTags;
-  const suggestions = existingTags
-    .filter((tag) => !selectedKeys.has(tag.value.toLowerCase()))
-    .filter((tag) => !normalizedInput || tag.value.toLowerCase().includes(normalizedInput))
-    .slice(0, 6);
-
-  const addTag = (rawTag: string) => {
-    const tag = rawTag.trim();
-    if (!tag || selectedKeys.has(tag.toLowerCase())) return;
-    setSelectedTags((current) => [...current, tag]);
-    setInput('');
-  };
-
   const tagMutation = useMutation({
     mutationFn: (tags: string[]) =>
       bulkMetadata({
@@ -152,59 +140,16 @@ function TagPicker({ selectedIds, onClose, onDone }: TagPickerProps) {
       </div>
       <p className="text-xs text-muted-foreground">Existing tags will be kept.</p>
 
-      {selectedTags.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {selectedTags.map((tag) => (
-            <span
-              key={tag}
-              className="inline-flex h-6 items-center gap-1 rounded-md bg-accent px-2 text-xs"
-            >
-              {tag}
-              <button
-                type="button"
-                onClick={() =>
-                  setSelectedTags((current) => current.filter((item) => item !== tag))
-                }
-                aria-label={`Remove tag ${tag}`}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
-      <Input
-        value={input}
-        onChange={(event) => setInput(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ',') {
-            event.preventDefault();
-            addTag(input);
-          }
-        }}
+      <TagAutocomplete
+        value={selectedTags}
+        onChange={setSelectedTags}
+        inputValue={input}
+        onInputChange={setInput}
+        suggestions={existingTags}
         placeholder="Add or create tags"
-        aria-label="Tag name"
+        inputAriaLabel="Tag name"
         autoFocus
       />
-
-      {suggestions.length > 0 && (
-        <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
-          {suggestions.map((tag) => (
-            <li key={tag.value}>
-              <button
-                type="button"
-                onClick={() => addTag(tag.value)}
-                className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-              >
-                <span className="truncate">{tag.value}</span>
-                <span className="text-xs text-muted-foreground tabular-nums">{tag.modelCount}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
 
       <Button
         size="sm"

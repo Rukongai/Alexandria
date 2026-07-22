@@ -18,6 +18,7 @@ A self-hosted personal library for managing 3D printing model collections. Think
 **Organization**
 - Flexible metadata system with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL) and user-defined custom fields
 - Nestable collections — models can belong to multiple collections simultaneously
+- Existing tag values are suggested during model editing, upload review, and bulk tagging; free-form tags remain supported
 - Tag normalization prevents case-variant duplicates
 
 **Search and browse**

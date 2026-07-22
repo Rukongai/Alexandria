@@ -8,6 +8,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select } from '../ui/select';
 import { toast } from '../../hooks/use-toast';
+import { TagAutocomplete } from '../metadata/tag-autocomplete';
 
 interface MetadataPanelProps {
   metadata: MetadataValue[];
@@ -124,6 +125,29 @@ function TagInput({ value, onChange }: TagInputProps) {
         </Button>
       </div>
     </div>
+  );
+}
+
+function TagsFieldEditor({ value, onChange }: TagInputProps) {
+  const [inputValue, setInputValue] = React.useState('');
+  const { data: suggestions = [] } = useQuery<MetadataFieldValue[]>({
+    queryKey: ['field-values', 'tags'],
+    queryFn: () => getFieldValues('tags'),
+    staleTime: 60_000,
+  });
+
+  return (
+    <TagAutocomplete
+      value={value}
+      onChange={onChange}
+      inputValue={inputValue}
+      onInputChange={setInputValue}
+      suggestions={suggestions}
+      placeholder="Add tag..."
+      inputAriaLabel="Tag name"
+      showAddButton
+      inputClassName="h-7 text-xs"
+    />
   );
 }
 
@@ -252,6 +276,14 @@ function EditFieldValue({
         <EnumMultiSelect
           value={Array.isArray(value) ? value : [value as string].filter(Boolean)}
           options={enumOptions}
+          onChange={onChange}
+        />
+      );
+    }
+    if (field.fieldSlug === 'tags') {
+      return (
+        <TagsFieldEditor
+          value={Array.isArray(value) ? value : [value as string].filter(Boolean)}
           onChange={onChange}
         />
       );
@@ -418,8 +450,11 @@ export function MetadataPanel({ metadata, modelId }: MetadataPanelProps) {
 
   const mutation = useMutation({
     mutationFn: (req: SetModelMetadataRequest) => setModelMetadata(modelId, req),
-    onSuccess: () => {
+    onSuccess: (_data, request) => {
       queryClient.invalidateQueries({ queryKey: ['model', modelId] });
+      if ('tags' in request) {
+        queryClient.invalidateQueries({ queryKey: ['field-values', 'tags'] });
+      }
       setEditing(false);
       setEditState({});
       toast({ title: 'Metadata saved' });
