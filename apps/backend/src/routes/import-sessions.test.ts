@@ -291,6 +291,7 @@ describe('GET /models/import-sessions', () => {
     expect(session).toHaveProperty('status');
     expect(session).toHaveProperty('detected');
     expect(session).toHaveProperty('modelId');
+    expect(session).toHaveProperty('commitProgress', null);
     expect(session).toHaveProperty('error');
     expect(session).toHaveProperty('createdAt');
     // Internal fields must NOT be exposed
@@ -383,6 +384,38 @@ describe('GET /models/import-sessions/:id', () => {
     expect(session.status).toBe('ready_for_review');
     expect(session.detected).not.toBeNull();
     expect(session.detected.artist).toBe('detected-artist');
+    expect(session.commitProgress).toBeNull();
+  });
+
+  it('should return queued commit totals before the worker publishes progress', async () => {
+    const id = await createSession({ status: 'committing' });
+    await importSessionService.update(id, {
+      detected: {
+        modelCount: 1,
+        fileCount: 3,
+        totalSizeBytes: 4096,
+        artist: null,
+        tagsGuessed: [],
+        folderStructure: [],
+      },
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/models/import-sessions/${id}`,
+      headers: { cookie: sessionCookie },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.commitProgress).toEqual({
+      phase: 'queued',
+      percent: 0,
+      completedFiles: 0,
+      totalFiles: 3,
+      completedBytes: 0,
+      totalBytes: 4096,
+      currentFilename: null,
+    });
   });
 
   it('should return 404 NOT_FOUND for an unknown session id', async () => {

@@ -1,5 +1,10 @@
 import { Queue } from 'bullmq';
-import type { ImportStrategy, BatchUploadMetadata, MultipartArchiveMode } from '@alexandria/shared';
+import type {
+  ImportCommitProgress,
+  ImportStrategy,
+  BatchUploadMetadata,
+  MultipartArchiveMode,
+} from '@alexandria/shared';
 import { config } from '../config/index.js';
 import { parseRedisUrl } from '../utils/redis.js';
 
@@ -99,8 +104,15 @@ export class JobService {
   }
 
   async enqueueCommitJob(payload: CommitJobPayload): Promise<string> {
-    const job = await this.importCommitQueue.add('commit', payload);
+    const job = await this.importCommitQueue.add('commit', payload, {
+      jobId: payload.sessionId,
+    });
     return job.id!;
+  }
+
+  async getImportCommitProgress(sessionId: string): Promise<ImportCommitProgress | null> {
+    const job = await this.importCommitQueue.getJob(sessionId);
+    return parseImportCommitProgress(job?.progress);
   }
 
   async getJobStatus(
@@ -136,3 +148,41 @@ export class JobService {
 }
 
 export const jobService = new JobService();
+
+const IMPORT_COMMIT_PHASES = new Set<ImportCommitProgress['phase']>([
+  'queued',
+  'storing_files',
+  'saving_records',
+  'generating_thumbnails',
+  'applying_metadata',
+  'complete',
+]);
+
+export function parseImportCommitProgress(value: unknown): ImportCommitProgress | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const candidate = value as Partial<ImportCommitProgress>;
+  if (
+    !IMPORT_COMMIT_PHASES.has(candidate.phase as ImportCommitProgress['phase']) ||
+    !isIntegerBetween(candidate.percent, 0, 100) ||
+    !isNonNegativeSafeInteger(candidate.completedFiles) ||
+    !isNonNegativeSafeInteger(candidate.totalFiles) ||
+    candidate.completedFiles > candidate.totalFiles ||
+    !isNonNegativeSafeInteger(candidate.completedBytes) ||
+    !isNonNegativeSafeInteger(candidate.totalBytes) ||
+    candidate.completedBytes > candidate.totalBytes ||
+    (candidate.currentFilename !== null && typeof candidate.currentFilename !== 'string')
+  ) {
+    return null;
+  }
+
+  return candidate as ImportCommitProgress;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isIntegerBetween(value: unknown, min: number, max: number): value is number {
+  return Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
+}

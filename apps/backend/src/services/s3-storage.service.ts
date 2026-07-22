@@ -9,7 +9,11 @@ import {
 import { Upload } from '@aws-sdk/lib-storage';
 import { Readable } from 'node:stream';
 import { storageError } from '../utils/errors.js';
-import type { IStorageService, StorageData } from './storage.service.js';
+import type {
+  IStorageService,
+  StorageData,
+  StorageProgressCallback,
+} from './storage.service.js';
 import { normalizeStoragePrefix, validateStorageKey } from './storage-key.js';
 
 export const S3_MULTIPART_PART_SIZE = 8 * 1024 * 1024;
@@ -38,7 +42,11 @@ export class S3StorageService implements IStorageService {
     this.prefix = normalizeStoragePrefix(options.prefix);
   }
 
-  async store(filePath: string, data: StorageData): Promise<void> {
+  async store(
+    filePath: string,
+    data: StorageData,
+    onProgress?: StorageProgressCallback,
+  ): Promise<void> {
     const key = this.objectKey(filePath);
 
     try {
@@ -51,6 +59,11 @@ export class S3StorageService implements IStorageService {
         },
         partSize: S3_MULTIPART_PART_SIZE,
         leavePartsOnError: false,
+      });
+      upload.on('httpUploadProgress', ({ loaded }) => {
+        if (loaded !== undefined) {
+          reportStorageProgress(onProgress, loaded);
+        }
       });
       await upload.done();
     } catch (error) {
@@ -174,4 +187,15 @@ function isNotFound(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function reportStorageProgress(
+  onProgress: StorageProgressCallback | undefined,
+  transferredBytes: number,
+): void {
+  try {
+    onProgress?.(transferredBytes);
+  } catch {
+    // Progress is observational and must never turn a successful upload into a failure.
+  }
 }

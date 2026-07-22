@@ -22,12 +22,20 @@ import { createStorageService } from './storage.service.js';
 const uploadMocks = vi.hoisted(() => ({
   construct: vi.fn(),
   done: vi.fn(),
+  progressListeners: [] as Array<(progress: { loaded?: number }) => void>,
 }));
 
 vi.mock('@aws-sdk/lib-storage', () => ({
   Upload: vi.fn(function (options: unknown) {
     uploadMocks.construct(options);
-    return { done: () => uploadMocks.done(options) };
+    const uploader = {
+      on: vi.fn((_event: string, listener: (progress: { loaded?: number }) => void) => {
+        uploadMocks.progressListeners.push(listener);
+        return uploader;
+      }),
+      done: () => uploadMocks.done(options),
+    };
+    return uploader;
   }),
 }));
 
@@ -117,6 +125,7 @@ describe('S3StorageService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    uploadMocks.progressListeners.length = 0;
     client = new InMemoryS3Client();
     service = new S3StorageService({
       client: asS3Client(client),
@@ -151,6 +160,34 @@ describe('S3StorageService', () => {
         leavePartsOnError: false,
       }),
     );
+  });
+
+  it('should report bytes acknowledged by managed-upload progress events', async () => {
+    uploadMocks.done.mockImplementationOnce(async () => {
+      for (const listener of uploadMocks.progressListeners) {
+        listener({ loaded: 8 });
+        listener({ loaded: 13 });
+      }
+      return {};
+    });
+    const onProgress = vi.fn();
+
+    await service.store('models/progress.stl', Buffer.from('solid content'), onProgress);
+
+    expect(onProgress.mock.calls).toEqual([[8], [13]]);
+  });
+
+  it('should not fail an upload when the progress callback throws', async () => {
+    uploadMocks.done.mockImplementationOnce(async () => {
+      uploadMocks.progressListeners[0]?.({ loaded: 7 });
+      return {};
+    });
+
+    await expect(
+      service.store('models/progress.stl', Buffer.from('content'), () => {
+        throw new Error('observer failed');
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('should use a native copy command with encoded and prefixed source and destination keys', async () => {

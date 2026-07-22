@@ -11,6 +11,7 @@ import type {
   DetectedImportMetadata,
   DetectedFolderNode,
   ExtractArchiveResponse,
+  ImportCommitProgress,
   ImportSession,
   MultipartArchiveMode,
 } from '@alexandria/shared';
@@ -529,9 +530,48 @@ export class IngestionService {
     }
 
     try {
-      await job.updateProgress(10);
-      await fileProcessingService.copyManifestToStorage(stagingPath, modelId, manifest, storageService);
-      await job.updateProgress(50);
+      const progressBase = {
+        completedFiles: 0,
+        totalFiles: manifest.entries.length,
+        completedBytes: 0,
+        totalBytes: manifest.totalSizeBytes,
+        currentFilename: null,
+      };
+      await this.updateCommitProgress(job, {
+        ...progressBase,
+        phase: 'queued',
+        percent: 0,
+      });
+      await fileProcessingService.copyManifestToStorage(
+        stagingPath,
+        modelId,
+        manifest,
+        storageService,
+        async (storageProgress) => {
+          const storageRatio = storageProgress.totalBytes > 0
+            ? storageProgress.completedBytes / storageProgress.totalBytes
+            : storageProgress.totalFiles > 0
+              ? storageProgress.completedFiles / storageProgress.totalFiles
+              : 1;
+          await this.updateCommitProgress(job, {
+            ...storageProgress,
+            phase: 'storing_files',
+            percent: Math.min(80, Math.max(0, Math.round(storageRatio * 80))),
+          });
+        },
+      );
+      const transferred = {
+        completedFiles: manifest.entries.length,
+        totalFiles: manifest.entries.length,
+        completedBytes: manifest.totalSizeBytes,
+        totalBytes: manifest.totalSizeBytes,
+        currentFilename: null,
+      };
+      await this.updateCommitProgress(job, {
+        ...transferred,
+        phase: 'saving_records',
+        percent: 85,
+      });
 
       const modelFileInputs = manifest.entries.map((entry) => ({
         filename: entry.filename,
@@ -544,18 +584,31 @@ export class IngestionService {
       }));
 
       const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
-      await job.updateProgress(75);
+      await this.updateCommitProgress(job, {
+        ...transferred,
+        phase: 'generating_thumbnails',
+        percent: 90,
+      });
       await this.generateAndStoreThumbnails(modelId, modelFileInputs, createdFiles, stagingPath);
 
       await modelService.updateModelStatus(modelId, 'ready', {
         totalSizeBytes: manifest.totalSizeBytes,
         fileCount: manifest.entries.length,
       });
-      await job.updateProgress(100);
 
       // Apply user-reviewed metadata after the model is ready — non-fatal.
+      await this.updateCommitProgress(job, {
+        ...transferred,
+        phase: 'applying_metadata',
+        percent: 95,
+      });
       await this.applyBatchMetadata(modelId, userId, libraryId, batchMetadata);
 
+      await this.updateCommitProgress(job, {
+        ...transferred,
+        phase: 'complete',
+        percent: 100,
+      });
       await importSessionService.update(sessionId, { status: 'committed' });
       logger.info({ sessionId, modelId }, 'Commit complete — model is ready');
     } catch (err) {
@@ -575,6 +628,20 @@ export class IngestionService {
       if (!job.failedReason || isFinalAttempt) {
         await fsPromises.rm(stagingPath, { recursive: true, force: true }).catch(() => {});
       }
+    }
+  }
+
+  private async updateCommitProgress(
+    job: Job<CommitJobPayload>,
+    progress: ImportCommitProgress,
+  ): Promise<void> {
+    try {
+      await job.updateProgress(progress);
+    } catch (error) {
+      logger.warn(
+        { jobId: job.id, sessionId: job.data.sessionId, error: String(error) },
+        'Failed to update commit progress',
+      );
     }
   }
 

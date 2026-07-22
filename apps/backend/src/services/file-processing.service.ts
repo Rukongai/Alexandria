@@ -8,7 +8,11 @@ import * as tar from 'tar';
 import { createExtractorFromFile } from 'node-unrar-js';
 import Seven from 'node-7z';
 import { path7za } from '7zip-bin';
-import type { FileType, MultipartArchiveMode } from '@alexandria/shared';
+import type {
+  FileType,
+  ImportCommitProgress,
+  MultipartArchiveMode,
+} from '@alexandria/shared';
 import {
   SUPPORTED_IMAGE_FORMATS,
   SUPPORTED_DOCUMENT_FORMATS,
@@ -34,6 +38,8 @@ export interface FileManifest {
   entries: FileManifestEntry[];
   totalSizeBytes: number;
 }
+
+export type ManifestStorageProgress = Omit<ImportCommitProgress, 'phase' | 'percent'>;
 
 export interface MultipartArchiveFile {
   tempFilePath: string;
@@ -697,12 +703,63 @@ export class FileProcessingService {
     modelId: string,
     manifest: FileManifest,
     storage: IStorageService,
+    onProgress?: (progress: ManifestStorageProgress) => void | Promise<void>,
   ): Promise<void> {
-    for (const entry of manifest.entries) {
+    let completedBytes = 0;
+    let progressReports = Promise.resolve();
+
+    const report = (progress: ManifestStorageProgress): void => {
+      if (!onProgress) return;
+      progressReports = progressReports
+        .then(() => onProgress(progress))
+        .catch((error) => {
+          logger.warn(
+            { modelId, error: String(error) },
+            'Failed to report managed-storage progress',
+          );
+        });
+    };
+
+    for (let index = 0; index < manifest.entries.length; index++) {
+      const entry = manifest.entries[index];
       const storagePath = `models/${modelId}/${entry.relativePath}`;
       const sourcePath = path.join(extractDir, entry.relativePath);
       const readStream = fs.createReadStream(sourcePath);
-      await storage.store(storagePath, readStream);
+      let currentFileBytes = 0;
+
+      report({
+        completedFiles: index,
+        totalFiles: manifest.entries.length,
+        completedBytes,
+        totalBytes: manifest.totalSizeBytes,
+        currentFilename: entry.filename,
+      });
+
+      await storage.store(storagePath, readStream, (transferredBytes) => {
+        const boundedBytes = Math.min(
+          entry.sizeBytes,
+          Math.max(0, Math.trunc(transferredBytes)),
+        );
+        if (boundedBytes <= currentFileBytes) return;
+        currentFileBytes = boundedBytes;
+        report({
+          completedFiles: index,
+          totalFiles: manifest.entries.length,
+          completedBytes: completedBytes + currentFileBytes,
+          totalBytes: manifest.totalSizeBytes,
+          currentFilename: entry.filename,
+        });
+      });
+
+      completedBytes += entry.sizeBytes;
+      report({
+        completedFiles: index + 1,
+        totalFiles: manifest.entries.length,
+        completedBytes,
+        totalBytes: manifest.totalSizeBytes,
+        currentFilename: entry.filename,
+      });
+      await progressReports;
     }
   }
 

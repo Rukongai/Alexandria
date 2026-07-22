@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import type {
   ImportSession,
+  ImportCommitProgress,
   ImportSessionStatus,
   DetectedImportMetadata,
 } from '@alexandria/shared';
@@ -9,6 +10,7 @@ import { db } from '../db/index.js';
 import { importSessions } from '../db/schema/index.js';
 import { notFound } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
+import { jobService } from './job.service.js';
 
 const logger = createLogger('ImportSessionService');
 
@@ -25,7 +27,13 @@ const ACTIVE_STATUSES: ImportSessionStatus[] = [
 
 type ImportSessionRow = typeof importSessions.$inferSelect;
 
+interface CommitProgressSource {
+  getImportCommitProgress(sessionId: string): Promise<ImportCommitProgress | null>;
+}
+
 export class ImportSessionService {
+  constructor(private readonly commitProgressSource: CommitProgressSource = jobService) {}
+
   async create(input: {
     userId: string;
     libraryId: string;
@@ -58,6 +66,11 @@ export class ImportSessionService {
     return row;
   }
 
+  async getOwnedSession(id: string, userId: string): Promise<ImportSession> {
+    const row = await this.getOwnedRow(id, userId);
+    return this.toDto(row, await this.resolveCommitProgress(row));
+  }
+
   async listActive(userId: string, libraryId: string): Promise<ImportSession[]> {
     const rows = await db
       .select()
@@ -70,7 +83,9 @@ export class ImportSessionService {
         ),
       )
       .orderBy(desc(importSessions.createdAt));
-    return rows.map((r) => this.toDto(r));
+    return Promise.all(
+      rows.map(async (row) => this.toDto(row, await this.resolveCommitProgress(row))),
+    );
   }
 
   async update(
@@ -95,15 +110,46 @@ export class ImportSessionService {
     logger.info({ sessionId: id }, 'Import session deleted');
   }
 
-  toDto(row: ImportSessionRow): ImportSession {
+  toDto(
+    row: ImportSessionRow,
+    commitProgress: ImportCommitProgress | null = null,
+  ): ImportSession {
     return {
       id: row.id,
       originalFilename: row.originalFilename,
       status: row.status as ImportSessionStatus,
       detected: (row.detected as DetectedImportMetadata | null) ?? null,
       modelId: row.modelId,
+      commitProgress: row.status === 'committing' ? commitProgress : null,
       error: row.error,
       createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  private async resolveCommitProgress(
+    row: ImportSessionRow,
+  ): Promise<ImportCommitProgress | null> {
+    if (row.status !== 'committing') return null;
+
+    try {
+      const progress = await this.commitProgressSource.getImportCommitProgress(row.id);
+      if (progress) return progress;
+    } catch (error) {
+      logger.warn(
+        { sessionId: row.id, error: String(error) },
+        'Failed to read import commit progress',
+      );
+    }
+
+    const detected = (row.detected as DetectedImportMetadata | null) ?? null;
+    return {
+      phase: 'queued',
+      percent: 0,
+      completedFiles: 0,
+      totalFiles: detected?.fileCount ?? 0,
+      completedBytes: 0,
+      totalBytes: detected?.totalSizeBytes ?? 0,
+      currentFilename: null,
     };
   }
 }

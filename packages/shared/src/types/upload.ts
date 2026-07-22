@@ -42,6 +42,31 @@ export type ImportSessionStatus =
   | 'committed'
   | 'error';
 
+export type ImportCommitPhase =
+  | 'queued'
+  | 'storing_files'
+  | 'saving_records'
+  | 'generating_thumbnails'
+  | 'applying_metadata'
+  | 'complete';
+
+/**
+ * Live progress for the commit phase of a staged import.
+ *
+ * File and byte counters describe managed-storage transfer. `percent` is an
+ * overall pipeline percentage: storage occupies 0-80 and the remaining
+ * phases advance it to 100.
+ */
+export interface ImportCommitProgress {
+  phase: ImportCommitPhase;
+  percent: number;
+  completedFiles: number;
+  totalFiles: number;
+  completedBytes: number;
+  totalBytes: number;
+  currentFilename: string | null;
+}
+
 /**
  * A node in the detected folder structure preview.
  */
@@ -93,6 +118,7 @@ export interface ImportSession {
   status: ImportSessionStatus;
   detected: DetectedImportMetadata | null;
   modelId: string | null;
+  commitProgress: ImportCommitProgress | null;
   error: string | null;
   createdAt: string;
 }
