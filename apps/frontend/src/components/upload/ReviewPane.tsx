@@ -10,9 +10,16 @@ interface ReviewPaneProps {
   onCommitted: (modelId: string) => void;
   onDiscard: () => void;
   onRetry: () => void;
+  isDiscarding?: boolean;
 }
 
-export function ReviewPane({ session, onCommitted, onDiscard, onRetry }: ReviewPaneProps) {
+export function ReviewPane({
+  session,
+  onCommitted,
+  onDiscard,
+  onRetry,
+  isDiscarding = false,
+}: ReviewPaneProps) {
   if (session.status === 'scanning') {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-5">
@@ -70,11 +77,12 @@ export function ReviewPane({ session, onCommitted, onDiscard, onRetry }: ReviewP
             {session.error ?? 'An unknown error occurred during scanning.'}
           </p>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={onRetry}>
+            <Button variant="outline" size="sm" onClick={onRetry} disabled={isDiscarding}>
               Retry upload
             </Button>
-            <Button variant="outline" size="sm" onClick={onDiscard}>
-              Discard
+            <Button variant="outline" size="sm" onClick={onDiscard} disabled={isDiscarding}>
+              {isDiscarding && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+              {isDiscarding ? 'Discarding' : 'Discard'}
             </Button>
           </div>
         </div>

@@ -13,6 +13,7 @@ import { ModelList } from '../models/ModelList';
 import { ModelGroupView } from '../models/ModelGroupView';
 import { ModelCardSkeleton } from '../models/ModelCardSkeleton';
 import { EmptyLibrary } from '../models/EmptyLibrary';
+import { BulkActions } from '../models/BulkActions';
 import { Breadcrumb } from './Breadcrumb';
 import { ViewSwitch } from './ViewSwitch';
 import {
@@ -114,6 +115,11 @@ export function PivotMain() {
     setBulkMode((v) => !v);
   }
 
+  function finishBulkOperation() {
+    clear();
+    setBulkMode(false);
+  }
+
   const AxisIcon = AXIS_ICONS[axis];
   const contextTitle = isSmart
     ? activeSmart?.name ?? 'Smart Collections'
@@ -128,7 +134,7 @@ export function PivotMain() {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0" style={{ background: 'var(--ax-bg)', color: 'var(--ax-fg)' }}>
+    <div className="relative flex flex-col h-full min-h-0" style={{ background: 'var(--ax-bg)', color: 'var(--ax-fg)' }}>
       {/* ── Top bar ─────────────────────────────────────────────────── */}
       <div
         className="flex-shrink-0 flex items-center gap-3 px-6 py-2.5"
@@ -412,6 +418,12 @@ export function PivotMain() {
           </p>
         )}
       </div>
+
+      <BulkActions
+        selectedIds={selected}
+        onClear={clear}
+        onComplete={finishBulkOperation}
+      />
     </div>
   );
 }

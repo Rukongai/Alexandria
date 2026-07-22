@@ -23,13 +23,13 @@ export interface BulkMetadataRequest {
 
 export interface BulkMetadataOperation {
   fieldSlug: string;
-  action: 'set' | 'remove';
+  action: 'set' | 'add' | 'remove';
   value?: string | string[] | number | boolean;
 }
 
 export interface BulkCollectionRequest {
   modelIds: string[];
-  action: 'add' | 'remove';
+  action: 'add' | 'remove' | 'move';
   collectionId: string;
 }
 

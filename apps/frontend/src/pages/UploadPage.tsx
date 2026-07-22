@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { FolderOpen } from 'lucide-react';
-import { useImportSessions } from '../hooks/use-import-sessions';
+import { useDiscardSession, useImportSessions } from '../hooks/use-import-sessions';
+import { useToast } from '../hooks/use-toast';
 import { UploadQueue } from '../components/upload/UploadQueue';
 import { DropZone } from '../components/upload/DropZone';
 import { ReviewPane } from '../components/upload/ReviewPane';
@@ -12,6 +13,8 @@ type Tab = 'queue' | 'folder';
 
 export function UploadPage() {
   const { data: sessions = [] } = useImportSessions();
+  const discardSession = useDiscardSession();
+  const { toast } = useToast();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('queue');
 
@@ -37,8 +40,16 @@ export function UploadPage() {
     // Session transitions to committing automatically via polling; nothing to do here
   };
 
-  const handleDiscard = () => {
-    setActiveId(null);
+  const handleDiscard = async () => {
+    if (!activeSession || discardSession.isPending) return;
+
+    const discardedId = activeSession.id;
+    try {
+      await discardSession.mutateAsync(discardedId);
+      setActiveId((current) => current === discardedId ? null : current);
+    } catch {
+      toast({ title: 'Failed to discard upload', variant: 'destructive' });
+    }
   };
 
   return (
@@ -124,6 +135,7 @@ export function UploadPage() {
                   onCommitted={handleCommitted}
                   onDiscard={handleDiscard}
                   onRetry={handleDiscard}
+                  isDiscarding={discardSession.isPending}
                 />
               ) : sessions.length === 0 ? (
                 <div className="space-y-4 mt-4">

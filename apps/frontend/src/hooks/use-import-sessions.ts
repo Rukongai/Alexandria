@@ -96,9 +96,24 @@ export function useDiscardSession() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => discardImportSession(id),
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ['import-sessions'] });
+      const previousSessions = queryClient.getQueryData<ImportSession[]>(['import-sessions']);
+      queryClient.setQueryData<ImportSession[]>(['import-sessions'], (sessions) =>
+        sessions?.filter((session) => session.id !== id),
+      );
+      return { previousSessions };
+    },
+    onError: (_error, _id, context) => {
+      if (context?.previousSessions) {
+        queryClient.setQueryData(['import-sessions'], context.previousSessions);
+      }
+    },
     onSuccess: (_data, id) => {
-      queryClient.invalidateQueries({ queryKey: ['import-sessions'] });
       queryClient.removeQueries({ queryKey: ['import-session', id] });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['import-sessions'] });
     },
   });
 }

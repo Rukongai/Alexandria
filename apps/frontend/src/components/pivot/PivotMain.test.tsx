@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import type { ApiResponse, ModelCard } from '@alexandria/shared';
@@ -166,6 +166,18 @@ describe('PivotMain', () => {
     expect(screen.getByRole('button', { name: /grid view/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /list view/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /group view/i })).toBeTruthy();
+  });
+
+  it('shows move and delete actions after selecting a model', async () => {
+    render(<PivotMain />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(screen.getByText('Benchy')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select model: Benchy' }));
+
+    expect(screen.getByText('1 model selected')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Move' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
   });
 
   it('shows an error message when the API fails', async () => {

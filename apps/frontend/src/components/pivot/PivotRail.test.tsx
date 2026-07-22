@@ -169,9 +169,11 @@ describe('PivotRail', () => {
     expect(tagsBtn.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('renders the Alexandria brand name', async () => {
+  it('links the Alexandria brand to the library', async () => {
     render(<PivotRail />, { wrapper: makeWrapper() });
 
+    const brandLink = screen.getByRole('link', { name: /go to library/i });
+    expect(brandLink.getAttribute('href')).toBe('/');
     expect(screen.getByText('Alexandria')).toBeTruthy();
   });
 });

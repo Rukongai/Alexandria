@@ -44,7 +44,7 @@ export const setModelMetadataSchema = z.record(
 
 const bulkMetadataOperationSchema = z.object({
   fieldSlug: z.string().min(1),
-  action: z.enum(['set', 'remove']),
+  action: z.enum(['set', 'add', 'remove']),
   value: z.union([
     z.string(),
     z.array(z.string()),

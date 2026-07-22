@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { CollectionDetail, MetadataFieldValue } from '@alexandria/shared';
 import { AxisFacetBody } from './AxisFacetBody';
 import { BatchMetadataForm } from '../upload/BatchMetadataForm';
@@ -22,6 +22,11 @@ import { getFieldValues } from '../../api/metadata';
 
 const mockGetCollections = vi.mocked(getCollections);
 const mockGetFieldValues = vi.mocked(getFieldValues);
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}{location.search}</output>;
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -59,7 +64,10 @@ function makeWrapper(initialUrl = '/') {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={[initialUrl]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[initialUrl]}>
+          {children}
+          <LocationProbe />
+        </MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -120,6 +128,21 @@ describe('AxisFacetBody — tags axis', () => {
 
     await waitFor(() => {
       expect(btn.getAttribute('aria-pressed')).toBe('false');
+    });
+  });
+
+  it('returns to library browsing when a tag is selected from a model page', async () => {
+    render(<AxisFacetBody axis="tags" />, {
+      wrapper: makeWrapper('/models/model-1?axis=tags'),
+    });
+
+    await waitFor(() => expect(screen.getByText('miniature')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /miniature/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(
+        '/?axis=tags&tags=miniature'
+      );
     });
   });
 

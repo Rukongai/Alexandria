@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import type { ModelSearchParams } from '@alexandria/shared';
 
 export interface ModelFilters {
@@ -44,6 +44,26 @@ function parseMetaFilters(params: URLSearchParams): Record<string, string> {
 
 export function useModelFilters() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const updateSearchParams = useCallback(
+    (update: (params: URLSearchParams) => URLSearchParams | void) => {
+      if (location.pathname === '/') {
+        setSearchParams((prev) => {
+          const next = new URLSearchParams(prev);
+          return update(next) ?? next;
+        });
+        return;
+      }
+
+      const next = new URLSearchParams(searchParams);
+      const updated = update(next) ?? next;
+      const query = updated.toString();
+      navigate({ pathname: '/', search: query ? `?${query}` : '' });
+    },
+    [location.pathname, navigate, searchParams, setSearchParams]
+  );
 
   const filters: ModelFilters = {
     q: searchParams.get('q') ?? '',
@@ -95,17 +115,15 @@ export function useModelFilters() {
 
   const setFilter = useCallback(
     (key: string, value: string | undefined) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
+      updateSearchParams((next) => {
         if (value) {
           next.set(key, value);
         } else {
           next.delete(key);
         }
-        return next;
       });
     },
-    [setSearchParams]
+    [updateSearchParams]
   );
 
   const setQ = useCallback(
@@ -115,8 +133,7 @@ export function useModelFilters() {
 
   const setSort = useCallback(
     (sort: ModelSearchParams['sort'], sortDir: ModelSearchParams['sortDir']) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
+      updateSearchParams((next) => {
         if (sort) {
           next.set('sort', sort);
         } else {
@@ -127,25 +144,22 @@ export function useModelFilters() {
         } else {
           next.delete('sortDir');
         }
-        return next;
       });
     },
-    [setSearchParams]
+    [updateSearchParams]
   );
 
   const setTags = useCallback(
     (tags: string[]) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
+      updateSearchParams((next) => {
         if (tags.length > 0) {
           next.set('tags', tags.join(','));
         } else {
           next.delete('tags');
         }
-        return next;
       });
     },
-    [setSearchParams]
+    [updateSearchParams]
   );
 
   const toggleTag = useCallback(
@@ -162,17 +176,15 @@ export function useModelFilters() {
 
   const setMetaFilter = useCallback(
     (slug: string, value: string | undefined) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
+      updateSearchParams((next) => {
         if (value) {
           next.set(`meta_${slug}`, value);
         } else {
           next.delete(`meta_${slug}`);
         }
-        return next;
       });
     },
-    [setSearchParams]
+    [updateSearchParams]
   );
 
   const clearMetaFilter = useCallback(
@@ -182,28 +194,28 @@ export function useModelFilters() {
 
   const setCollectionId = useCallback(
     (id: string | undefined) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
+      updateSearchParams((next) => {
         if (id) {
           next.set('collectionId', id);
         } else {
           next.delete('collectionId');
         }
-        return next;
       });
     },
-    [setSearchParams]
+    [updateSearchParams]
   );
 
   const clearAllFilters = useCallback(() => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams();
+    updateSearchParams((next) => {
       // Preserve the axis param so clearing filters doesn't reset the user's chosen axis
-      const currentAxis = prev.get('axis');
-      if (currentAxis) next.set('axis', currentAxis);
-      return next;
+      const currentAxis = next.get('axis');
+      const cleared = new URLSearchParams();
+      if (currentAxis) {
+        cleared.set('axis', currentAxis);
+      }
+      return cleared;
     });
-  }, [setSearchParams]);
+  }, [updateSearchParams]);
 
   const hasActiveFilters =
     filters.q.length > 0 ||
@@ -214,34 +226,30 @@ export function useModelFilters() {
 
   const setSmartCollectionId = useCallback(
     (id: string | undefined) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
+      updateSearchParams((next) => {
         if (id) {
           next.set('smartCollectionId', id);
         } else {
           next.delete('smartCollectionId');
         }
-        return next;
       });
     },
-    [setSearchParams]
+    [updateSearchParams]
   );
 
   // setAxis writes ?axis= to the URL while preserving all other params.
   // The default axis ('collections') is omitted from the URL for cleaner links.
   const setAxis = useCallback(
     (a: PivotAxis) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
+      updateSearchParams((next) => {
         if (a === DEFAULT_AXIS) {
           next.delete('axis');
         } else {
           next.set('axis', a);
         }
-        return next;
       });
     },
-    [setSearchParams]
+    [updateSearchParams]
   );
 
   return {

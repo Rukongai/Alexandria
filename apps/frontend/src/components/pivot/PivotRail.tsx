@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { BookOpen, ChevronDown, Check, Plus, LayoutGrid } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useModelFilters } from '../../hooks/use-model-filters';
 import { useLibraries } from '../../hooks/use-libraries';
 import { libraryGradient, libraryInitials } from '../../lib/library-color';
@@ -50,7 +50,11 @@ export function PivotRail() {
         style={{ borderBottom: '1px solid var(--ax-rail-border)' }}
       >
         {/* Brand row */}
-        <div className="flex items-center gap-2 px-1 mb-2.5">
+        <Link
+          to="/"
+          aria-label="Go to library"
+          className="flex items-center gap-2 rounded-md px-1 mb-2.5 transition-colors hover:bg-[var(--ax-rail-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ax-rail-active)]"
+        >
           <BookOpen className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--ax-amber)' }} />
           <span
             className="font-semibold truncate"
@@ -58,7 +62,7 @@ export function PivotRail() {
           >
             Alexandria
           </span>
-        </div>
+        </Link>
 
         {/* Library switcher */}
         <DropdownMenu>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, Lock, Filter, Eye } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowLeft, Plus, Pencil, Trash2, Lock, Filter, Eye } from 'lucide-react';
 import type { MetadataFieldDetail } from '@alexandria/shared';
 import { getFields, deleteField } from '../api/metadata';
 import { useToast } from '../hooks/use-toast';
@@ -57,11 +58,20 @@ export function SettingsPage() {
 
   return (
     <div className="flex flex-col gap-8 max-w-4xl p-6">
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Settings</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Manage metadata fields and other library preferences.
-        </p>
+      <div className="flex flex-col gap-3">
+        <Link
+          to="/"
+          className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to Library
+        </Link>
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Settings</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Manage metadata fields and other library preferences.
+          </p>
+        </div>
       </div>
 
       {/* Library Display section */}

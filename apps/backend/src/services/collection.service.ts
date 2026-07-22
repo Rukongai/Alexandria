@@ -381,32 +381,52 @@ export class CollectionService {
   }
 
   /**
-   * Bulk add or remove models from a collection.
+   * Bulk add, remove, or move models to a collection.
    */
   async bulkCollectionOperation(data: BulkCollectionRequest): Promise<void> {
     if (data.action === 'add') {
       await this.addModelsToCollection(data.collectionId, data.modelIds);
-    } else {
-      await this._requireCollection(data.collectionId);
+      return;
+    }
 
-      if (data.modelIds.length === 0) {
-        return;
-      }
+    await this._requireCollection(data.collectionId);
 
-      await db
-        .delete(collectionModels)
-        .where(
-          and(
-            eq(collectionModels.collectionId, data.collectionId),
-            inArray(collectionModels.modelId, data.modelIds),
-          ),
-        );
+    if (data.modelIds.length === 0) {
+      return;
+    }
+
+    if (data.action === 'move') {
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(collectionModels)
+          .where(inArray(collectionModels.modelId, data.modelIds));
+
+        await tx
+          .insert(collectionModels)
+          .values(data.modelIds.map((modelId) => ({ collectionId: data.collectionId, modelId })))
+          .onConflictDoNothing();
+      });
 
       logger.info(
         { service: 'CollectionService', collectionId: data.collectionId, count: data.modelIds.length },
-        'Models removed from collection (bulk)',
+        'Models moved to collection (bulk)',
       );
+      return;
     }
+
+    await db
+      .delete(collectionModels)
+      .where(
+        and(
+          eq(collectionModels.collectionId, data.collectionId),
+          inArray(collectionModels.modelId, data.modelIds),
+        ),
+      );
+
+    logger.info(
+      { service: 'CollectionService', collectionId: data.collectionId, count: data.modelIds.length },
+      'Models removed from collection (bulk)',
+    );
   }
 
   // ---- Private helpers ----

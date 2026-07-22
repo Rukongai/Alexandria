@@ -14,7 +14,7 @@ import { db } from '../db/index.js';
 import { models, metadataFieldDefinitions, modelMetadata } from '../db/schema/index.js';
 import { tags, modelTags } from '../db/schema/index.js';
 import type { MetadataFieldDefinition as MetadataFieldDefinitionRow } from '../db/schema/metadata.js';
-import { notFound, forbidden } from '../utils/errors.js';
+import { notFound, forbidden, validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 import { generateSlug } from '../utils/slug.js';
 import { formatDisplayValue } from '../utils/format.js';
@@ -432,21 +432,58 @@ export class MetadataService {
     );
 
     for (const modelId of modelIds) {
-      const data: SetModelMetadataRequest = {};
-
       for (const operation of operations) {
         if (operation.action === 'remove') {
-          data[operation.fieldSlug] = null;
-        } else {
-          // action === 'set'
-          data[operation.fieldSlug] =
-            operation.value !== undefined
-              ? (operation.value as string | string[] | number | boolean)
-              : null;
+          await this.setModelMetadata(modelId, { [operation.fieldSlug]: null });
+          continue;
         }
-      }
 
-      await this.setModelMetadata(modelId, data);
+        if (operation.action === 'set') {
+          await this.setModelMetadata(modelId, {
+            [operation.fieldSlug]:
+              operation.value !== undefined
+                ? (operation.value as string | string[] | number | boolean)
+                : null,
+          });
+          continue;
+        }
+
+        const field = await this.getFieldBySlug(operation.fieldSlug);
+        if (!this.isTagField(field)) {
+          throw validationError("The 'add' bulk metadata action is only supported for tags");
+        }
+
+        if (
+          typeof operation.value !== 'string' &&
+          !Array.isArray(operation.value)
+        ) {
+          throw validationError("The 'add' tag action requires one or more tag names");
+        }
+
+        const additions = Array.isArray(operation.value)
+          ? operation.value
+          : [operation.value];
+        const currentMetadata = await this.getModelMetadata(modelId);
+        const currentValue = currentMetadata.find(
+          (item) => item.fieldSlug === operation.fieldSlug,
+        )?.value;
+        const currentTags = Array.isArray(currentValue) ? currentValue : [];
+        const seen = new Set(currentTags.map((tag) => tag.toLowerCase()));
+        const mergedTags = [...currentTags];
+
+        for (const tag of additions) {
+          const trimmedTag = tag.trim();
+          const key = trimmedTag.toLowerCase();
+          if (trimmedTag && !seen.has(key)) {
+            seen.add(key);
+            mergedTags.push(trimmedTag);
+          }
+        }
+
+        await this.setModelMetadata(modelId, {
+          [operation.fieldSlug]: mergedTags,
+        });
+      }
     }
 
     logger.info(

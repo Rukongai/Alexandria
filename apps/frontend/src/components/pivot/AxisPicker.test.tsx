@@ -1,11 +1,21 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AxisPicker } from './AxisPicker';
+
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname}{location.search}</output>;
+}
 
 function makeWrapper(initialUrl = '/') {
   return function Wrapper({ children }: { children: React.ReactNode }) {
-    return <MemoryRouter initialEntries={[initialUrl]}>{children}</MemoryRouter>;
+    return (
+      <MemoryRouter initialEntries={[initialUrl]}>
+        {children}
+        <LocationProbe />
+      </MemoryRouter>
+    );
   };
 }
 
@@ -69,5 +79,15 @@ describe('AxisPicker', () => {
     fireEvent.click(artistsBtn);
 
     expect(artistsBtn.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('returns to library browsing when an axis is selected from a model page', () => {
+    render(<AxisPicker />, { wrapper: makeWrapper('/models/model-1?collectionId=col-1') });
+
+    fireEvent.click(screen.getByRole('button', { name: /tags/i }));
+
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/?collectionId=col-1&axis=tags'
+    );
   });
 });

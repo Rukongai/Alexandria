@@ -1683,6 +1683,7 @@ Apply metadata operations to multiple models at once.
   "modelIds": ["uuid-1", "uuid-2", "uuid-3"],
   "operations": [
     { "fieldSlug": "artist", "action": "set", "value": "New Maker" },
+    { "fieldSlug": "tags", "action": "add", "value": ["tabletop", "terrain"] },
     { "fieldSlug": "nsfw", "action": "remove" }
   ]
 }
@@ -1698,8 +1699,8 @@ Each `BulkMetadataOperation`:
 | Field | Type | Constraints |
 |-------|------|-------------|
 | `fieldSlug` | string | Required |
-| `action` | `set` \| `remove` | Required |
-| `value` | string \| string[] \| number \| boolean (optional) | Required when `action` is `set` |
+| `action` | `set` \| `add` \| `remove` | Required; `add` appends tags without replacing existing tags |
+| `value` | string \| string[] \| number \| boolean (optional) | Required when `action` is `set` or `add` |
 
 **Response (200):**
 
@@ -1715,7 +1716,7 @@ Each `BulkMetadataOperation`:
 
 ### POST /bulk/collection
 
-Add or remove multiple models from a collection in a single request.
+Add, remove, or move multiple models to a collection in a single request. Moving replaces all existing collection memberships for the selected models with the destination collection.
 
 **Auth required:** Yes
 
@@ -1732,7 +1733,7 @@ Add or remove multiple models from a collection in a single request.
 | Field | Type | Constraints |
 |-------|------|-------------|
 | `modelIds` | UUID[] | Required; at least one |
-| `action` | `add` \| `remove` | Required |
+| `action` | `add` \| `remove` \| `move` | Required |
 | `collectionId` | UUID string | Required |
 
 **Response (200):**

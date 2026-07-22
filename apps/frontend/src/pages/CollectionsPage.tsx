@@ -25,7 +25,7 @@ export function CollectionsPage() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['collections'],
-    queryFn: () => getCollections().then((res) => res.data),
+    queryFn: () => getCollections().then((response) => response.data),
   });
 
   const collections: CollectionDetail[] = data ?? [];

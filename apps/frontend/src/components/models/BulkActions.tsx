@@ -1,119 +1,63 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Trash2, FolderPlus, Tag, X } from 'lucide-react';
-import type { CollectionDetail } from '@alexandria/shared';
+import { Trash2, FolderInput, Tag, X } from 'lucide-react';
+import type { CollectionDetail, MetadataFieldValue } from '@alexandria/shared';
 import { bulkDelete, bulkCollection, bulkMetadata } from '../../api/bulk';
 import { getCollections } from '../../api/collections';
-import { getFields } from '../../api/metadata';
+import { getFieldValues } from '../../api/metadata';
 import { useToast } from '../../hooks/use-toast';
 import { Button } from '../ui/button';
-import { AlertDialog } from '../ui/alert-dialog';
 import { Input } from '../ui/input';
+import { AlertDialog } from '../ui/alert-dialog';
 
 interface BulkActionsProps {
   selectedIds: Set<string>;
   onClear: () => void;
-  onDeleted: () => void;
+  onComplete: () => void;
 }
 
-// --- Tag popover (simple inline panel) ---
-interface TagPopoverProps {
+interface MovePickerProps {
   selectedIds: string[];
   onClose: () => void;
   onDone: () => void;
 }
 
-function TagPanel({ selectedIds, onClose, onDone }: TagPopoverProps) {
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [tagValue, setTagValue] = useState('');
-
-  const addMutation = useMutation({
-    mutationFn: () =>
-      bulkMetadata({
-        modelIds: selectedIds,
-        operations: [{ fieldSlug: 'tags', action: 'set', value: tagValue.trim() }],
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['models'] });
-      toast({ title: `Tag "${tagValue.trim()}" added to ${selectedIds.length} models` });
-      onDone();
-    },
-    onError: () => {
-      toast({ title: 'Failed to apply tags', variant: 'destructive' });
-    },
-  });
-
-  return (
-    <div className="bg-popover text-popover-foreground border rounded-lg shadow-lg p-4 w-72 flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">Add Tag</span>
-        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-      <div className="flex gap-2">
-        <Input
-          value={tagValue}
-          onChange={(e) => setTagValue(e.target.value)}
-          placeholder="Tag name"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && tagValue.trim()) addMutation.mutate();
-          }}
-          autoFocus
-        />
-        <Button
-          size="sm"
-          onClick={() => addMutation.mutate()}
-          disabled={!tagValue.trim() || addMutation.isPending}
-        >
-          Add
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// --- Collection picker ---
-interface CollectionPickerProps {
-  selectedIds: string[];
-  onClose: () => void;
-  onDone: () => void;
-}
-
-function CollectionPicker({ selectedIds, onClose, onDone }: CollectionPickerProps) {
+function MovePicker({ selectedIds, onClose, onDone }: MovePickerProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   const { data } = useQuery({
     queryKey: ['collections'],
-    queryFn: () => getCollections().then((res) => res.data),
+    queryFn: () => getCollections().then((response) => response.data),
   });
 
   const collections: CollectionDetail[] = data ?? [];
 
-  const addMutation = useMutation({
+  const moveMutation = useMutation({
     mutationFn: (collectionId: string) =>
-      bulkCollection({ modelIds: selectedIds, action: 'add', collectionId }),
+      bulkCollection({ modelIds: selectedIds, action: 'move', collectionId }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['collections'] });
       queryClient.invalidateQueries({ queryKey: ['models'] });
-      toast({ title: `Added ${selectedIds.length} models to collection` });
+      toast({ title: `Moved ${selectedIds.length} model${selectedIds.length === 1 ? '' : 's'}` });
       onDone();
     },
     onError: () => {
-      toast({ title: 'Failed to add to collection', variant: 'destructive' });
+      toast({ title: 'Failed to move models', variant: 'destructive' });
     },
   });
 
   return (
     <div className="bg-popover text-popover-foreground border rounded-lg shadow-lg p-4 w-64 flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">Add to Collection</span>
-        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
+        <span className="text-sm font-medium">Move to collection</span>
+        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close collection picker">
           <X className="h-4 w-4" />
         </button>
       </div>
+      <p className="text-xs text-muted-foreground">
+        Existing collection memberships will be replaced.
+      </p>
       {collections.length === 0 ? (
         <p className="text-sm text-muted-foreground">No collections found.</p>
       ) : (
@@ -123,8 +67,8 @@ function CollectionPicker({ selectedIds, onClose, onDone }: CollectionPickerProp
               <button
                 type="button"
                 className="w-full text-left rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors"
-                onClick={() => addMutation.mutate(col.id)}
-                disabled={addMutation.isPending}
+                onClick={() => moveMutation.mutate(col.id)}
+                disabled={moveMutation.isPending}
               >
                 {col.name}
                 <span className="text-muted-foreground ml-1 text-xs">({col.modelCount})</span>
@@ -137,22 +81,162 @@ function CollectionPicker({ selectedIds, onClose, onDone }: CollectionPickerProp
   );
 }
 
+interface TagPickerProps {
+  selectedIds: string[];
+  onClose: () => void;
+  onDone: () => void;
+}
+
+function TagPicker({ selectedIds, onClose, onDone }: TagPickerProps) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [input, setInput] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+
+  const { data } = useQuery({
+    queryKey: ['field-values', 'tags'],
+    queryFn: () => getFieldValues('tags'),
+  });
+
+  const existingTags: MetadataFieldValue[] = data ?? [];
+  const selectedKeys = new Set(selectedTags.map((tag) => tag.toLowerCase()));
+  const trimmedInput = input.trim();
+  const normalizedInput = trimmedInput.toLowerCase();
+  const tagsToApply =
+    trimmedInput && !selectedKeys.has(normalizedInput)
+      ? [...selectedTags, trimmedInput]
+      : selectedTags;
+  const suggestions = existingTags
+    .filter((tag) => !selectedKeys.has(tag.value.toLowerCase()))
+    .filter((tag) => !normalizedInput || tag.value.toLowerCase().includes(normalizedInput))
+    .slice(0, 6);
+
+  const addTag = (rawTag: string) => {
+    const tag = rawTag.trim();
+    if (!tag || selectedKeys.has(tag.toLowerCase())) return;
+    setSelectedTags((current) => [...current, tag]);
+    setInput('');
+  };
+
+  const tagMutation = useMutation({
+    mutationFn: (tags: string[]) =>
+      bulkMetadata({
+        modelIds: selectedIds,
+        operations: [{ fieldSlug: 'tags', action: 'add', value: tags }],
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['models'] });
+      queryClient.invalidateQueries({ queryKey: ['field-values', 'tags'] });
+      toast({
+        title: `Tagged ${selectedIds.length} model${selectedIds.length === 1 ? '' : 's'}`,
+      });
+      onDone();
+    },
+    onError: () => {
+      toast({ title: 'Failed to tag models', variant: 'destructive' });
+    },
+  });
+
+  return (
+    <div className="bg-popover text-popover-foreground border rounded-lg shadow-lg p-4 w-72 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium">Add tags</span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-muted-foreground hover:text-foreground"
+          aria-label="Close tag picker"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <p className="text-xs text-muted-foreground">Existing tags will be kept.</p>
+
+      {selectedTags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {selectedTags.map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex h-6 items-center gap-1 rounded-md bg-accent px-2 text-xs"
+            >
+              {tag}
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedTags((current) => current.filter((item) => item !== tag))
+                }
+                aria-label={`Remove tag ${tag}`}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <Input
+        value={input}
+        onChange={(event) => setInput(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ',') {
+            event.preventDefault();
+            addTag(input);
+          }
+        }}
+        placeholder="Add or create tags"
+        aria-label="Tag name"
+        autoFocus
+      />
+
+      {suggestions.length > 0 && (
+        <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+          {suggestions.map((tag) => (
+            <li key={tag.value}>
+              <button
+                type="button"
+                onClick={() => addTag(tag.value)}
+                className="flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+              >
+                <span className="truncate">{tag.value}</span>
+                <span className="text-xs text-muted-foreground tabular-nums">{tag.modelCount}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Button
+        size="sm"
+        onClick={() => tagMutation.mutate(tagsToApply)}
+        disabled={tagsToApply.length === 0 || tagMutation.isPending}
+      >
+        {tagsToApply.length === 0
+          ? 'Add tags'
+          : `Add ${tagsToApply.length} tag${tagsToApply.length === 1 ? '' : 's'}`}
+      </Button>
+    </div>
+  );
+}
+
 // --- Main BulkActions bar ---
-export function BulkActions({ selectedIds, onClear, onDeleted }: BulkActionsProps) {
+export function BulkActions({ selectedIds, onClear, onComplete }: BulkActionsProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const count = selectedIds.size;
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [activePanel, setActivePanel] = useState<'tag' | 'collection' | null>(null);
+  const [showMovePicker, setShowMovePicker] = useState(false);
+  const [showTagPicker, setShowTagPicker] = useState(false);
 
   const deleteMutation = useMutation({
     mutationFn: () => bulkDelete({ modelIds: Array.from(selectedIds) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['models'] });
+      queryClient.invalidateQueries({ queryKey: ['collections'] });
       toast({ title: `${count} model${count !== 1 ? 's' : ''} deleted` });
       setShowDeleteConfirm(false);
-      onDeleted();
+      onComplete();
     },
     onError: () => {
       toast({ title: 'Failed to delete models', variant: 'destructive' });
@@ -163,13 +247,41 @@ export function BulkActions({ selectedIds, onClear, onDeleted }: BulkActionsProp
 
   return (
     <>
-      {/* Floating bar */}
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-foreground text-background rounded-full px-5 py-3 shadow-xl">
+      <div
+        className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-foreground text-background rounded-lg px-5 py-3 shadow-xl"
+        role="toolbar"
+        aria-label="Bulk model actions"
+      >
         <span className="text-sm font-medium tabular-nums">
           {count} {count === 1 ? 'model' : 'models'} selected
         </span>
 
         <div className="h-4 w-px bg-background/20" />
+
+        {/* Move button */}
+        <div className="relative">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-background hover:text-background hover:bg-black/10 dark:hover:bg-white/10"
+            onClick={() => {
+              setShowTagPicker(false);
+              setShowMovePicker((open) => !open);
+            }}
+          >
+            <FolderInput className="h-4 w-4 mr-1.5" />
+            Move
+          </Button>
+          {showMovePicker && (
+            <div className="absolute bottom-full left-0 mb-2">
+              <MovePicker
+                selectedIds={Array.from(selectedIds)}
+                onClose={() => setShowMovePicker(false)}
+                onDone={onComplete}
+              />
+            </div>
+          )}
+        </div>
 
         {/* Tag button */}
         <div className="relative">
@@ -177,39 +289,20 @@ export function BulkActions({ selectedIds, onClear, onDeleted }: BulkActionsProp
             size="sm"
             variant="ghost"
             className="text-background hover:text-background hover:bg-black/10 dark:hover:bg-white/10"
-            onClick={() => setActivePanel(activePanel === 'tag' ? null : 'tag')}
+            onClick={() => {
+              setShowMovePicker(false);
+              setShowTagPicker((open) => !open);
+            }}
           >
             <Tag className="h-4 w-4 mr-1.5" />
             Tag
           </Button>
-          {activePanel === 'tag' && (
+          {showTagPicker && (
             <div className="absolute bottom-full left-0 mb-2">
-              <TagPanel
+              <TagPicker
                 selectedIds={Array.from(selectedIds)}
-                onClose={() => setActivePanel(null)}
-                onDone={() => setActivePanel(null)}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Collection button */}
-        <div className="relative">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-background hover:text-background hover:bg-black/10 dark:hover:bg-white/10"
-            onClick={() => setActivePanel(activePanel === 'collection' ? null : 'collection')}
-          >
-            <FolderPlus className="h-4 w-4 mr-1.5" />
-            Collect
-          </Button>
-          {activePanel === 'collection' && (
-            <div className="absolute bottom-full left-0 mb-2">
-              <CollectionPicker
-                selectedIds={Array.from(selectedIds)}
-                onClose={() => setActivePanel(null)}
-                onDone={() => setActivePanel(null)}
+                onClose={() => setShowTagPicker(false)}
+                onDone={onComplete}
               />
             </div>
           )}

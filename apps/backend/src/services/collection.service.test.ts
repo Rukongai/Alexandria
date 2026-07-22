@@ -1041,6 +1041,50 @@ describe('CollectionService – bulkCollectionOperation() with action=remove', (
   });
 });
 
+describe('CollectionService – bulkCollectionOperation() with action=move', () => {
+  it('replaces memberships for selected models and leaves other models unchanged', async () => {
+    const sourceA = await collectionService.createCollection(
+      { name: 'Bulk Move Source A' },
+      testUserId,
+      testLibraryId,
+    );
+    const sourceB = await collectionService.createCollection(
+      { name: 'Bulk Move Source B' },
+      testUserId,
+      testLibraryId,
+    );
+    const target = await collectionService.createCollection(
+      { name: 'Bulk Move Target' },
+      testUserId,
+      testLibraryId,
+    );
+
+    await collectionService.addModelsToCollection(sourceA.id, [testModelId1, testModelId2, testModelId3]);
+    await collectionService.addModelsToCollection(sourceB.id, [testModelId1]);
+
+    await collectionService.bulkCollectionOperation({
+      action: 'move',
+      collectionId: target.id,
+      modelIds: [testModelId1, testModelId2],
+    });
+
+    const movedRows = await db
+      .select()
+      .from(collectionModels)
+      .where(inArray(collectionModels.modelId, [testModelId1, testModelId2]));
+    expect(movedRows).toHaveLength(2);
+    expect(movedRows.every((row) => row.collectionId === target.id)).toBe(true);
+
+    const untouchedRows = await db
+      .select()
+      .from(collectionModels)
+      .where(eq(collectionModels.modelId, testModelId3));
+    expect(untouchedRows).toEqual([
+      { collectionId: sourceA.id, modelId: testModelId3 },
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // findOrCreateByName() — Phase 4 compatibility
 // ---------------------------------------------------------------------------

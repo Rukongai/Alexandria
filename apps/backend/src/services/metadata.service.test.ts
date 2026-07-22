@@ -940,7 +940,7 @@ describe('MetadataService – bulkSetMetadata()', () => {
     }
   });
 
-  it('should apply tag operations across multiple models', async () => {
+  it('should add tags across multiple models without replacing existing tags', async () => {
     const [secondModel] = await db
       .insert(models)
       .values({
@@ -954,29 +954,38 @@ describe('MetadataService – bulkSetMetadata()', () => {
       .returning();
 
     try {
+      await metadataService.setModelMetadata(secondModel.id, {
+        [DEFAULT_SLUG_TAGS]: ['existing-tag'],
+      });
+
       await metadataService.bulkSetMetadata(
         [testModelId, secondModel.id],
         [
           {
             fieldSlug: DEFAULT_SLUG_TAGS,
-            action: 'set',
-            value: ['bulk-applied-tag'],
+            action: 'add',
+            value: ['bulk-applied-tag', 'bulk-applied-tag'],
           },
         ],
       );
 
       const modelOneTagRows = await db
-        .select()
+        .select({ name: tags.name })
         .from(modelTags)
+        .innerJoin(tags, eq(modelTags.tagId, tags.id))
         .where(eq(modelTags.modelId, testModelId));
 
       const modelTwoTagRows = await db
-        .select()
+        .select({ name: tags.name })
         .from(modelTags)
+        .innerJoin(tags, eq(modelTags.tagId, tags.id))
         .where(eq(modelTags.modelId, secondModel.id));
 
-      expect(modelOneTagRows.length).toBe(1);
-      expect(modelTwoTagRows.length).toBe(1);
+      expect(modelOneTagRows.map((row) => row.name)).toEqual(['bulk-applied-tag']);
+      expect(modelTwoTagRows.map((row) => row.name).sort()).toEqual([
+        'bulk-applied-tag',
+        'existing-tag',
+      ]);
     } finally {
       await db.delete(modelTags).where(eq(modelTags.modelId, secondModel.id));
       await db.delete(models).where(eq(models.id, secondModel.id));

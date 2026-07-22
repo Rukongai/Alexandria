@@ -42,7 +42,7 @@ export function BatchMetadataForm({ sessionId, detected, onCommitted }: BatchMet
 
   const { data: collections } = useQuery({
     queryKey: ['collections', { depth: 1 }],
-    queryFn: () => getCollections({ depth: 1 }).then((res) => res.data),
+    queryFn: () => getCollections({ depth: 1 }).then((response) => response.data),
     staleTime: 30_000,
   });
   const availableCollections = collections ?? [];
