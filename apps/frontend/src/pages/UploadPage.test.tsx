@@ -5,6 +5,17 @@ import { MemoryRouter } from 'react-router-dom';
 import type { ImportSession } from '@alexandria/shared';
 import { UploadPage } from './UploadPage';
 
+const libraryState = vi.hoisted(() => ({ currentLibraryId: null as string | null }));
+
+vi.mock('../hooks/use-libraries', () => ({
+  useCurrentLibraryId: () => libraryState.currentLibraryId,
+  useLibraryPath: () => (path: string) => (
+    libraryState.currentLibraryId
+      ? `/lib/${libraryState.currentLibraryId}${path}`
+      : path
+  ),
+}));
+
 vi.mock('../api/models', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/models')>();
   return {
@@ -69,6 +80,7 @@ const readySession: ImportSession = {
 describe('UploadPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    libraryState.currentLibraryId = null;
     vi.mocked(getImportSession).mockImplementation(async (id) => ({
       ...readySession,
       id,
@@ -284,7 +296,8 @@ describe('UploadPage', () => {
     });
   });
 
-  it('retains a committing session through list removal and shows its ready model', async () => {
+  it('retains a completed import until switching to another library', async () => {
+    libraryState.currentLibraryId = 'library-a';
     const committingSession: ImportSession = {
       ...readySession,
       id: '55555555-5555-4555-8555-555555555555',
@@ -331,7 +344,7 @@ describe('UploadPage', () => {
       defaultOptions: { queries: { retry: false } },
     });
 
-    render(
+    const view = render(
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <UploadPage />
@@ -353,6 +366,22 @@ describe('UploadPage', () => {
     expect(screen.getByText('Model is ready.')).toBeVisible();
     expect(screen.getByRole('link', { name: 'View model' })).toBeVisible();
     expect(screen.getByText('No imports yet. Drop an archive to start.')).toBeVisible();
+
+    const detailRequestCount = vi.mocked(getImportSession).mock.calls.length;
+    libraryState.currentLibraryId = 'library-b';
+    view.rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <UploadPage />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    await act(async () => Promise.resolve());
+
+    expect(screen.queryByRole('heading', { name: 'Imported!' })).toBeNull();
+    expect(screen.queryByText('Model is ready.')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'View model' })).toBeNull();
+    expect(getImportSession).toHaveBeenCalledTimes(detailRequestCount);
   });
 
   it('selects another actionable session when the committing session leaves the queue', async () => {

@@ -117,6 +117,15 @@ export function useLibraries(): LibrariesContextValue {
 }
 
 /**
+ * Returns the route-scoped library id without requiring a provider in isolated
+ * component tests. Components that retain local library-scoped state use this
+ * to guard that state across route transitions.
+ */
+export function useCurrentLibraryId(): string | null {
+  return useContext(LibrariesContext)?.currentLibraryId ?? null;
+}
+
+/**
  * Returns a `libPath` function that prefixes an app path with the active
  * `/lib/:id` segment, so internal links stay scoped to the current library.
  * Falls back to the bare path when no library is active (the home page) or when
