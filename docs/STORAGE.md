@@ -64,7 +64,9 @@ AWS_SECRET_ACCESS_KEY=your-s4-secret-key
 
 Endpoint availability can change; select the closest current endpoint from MEGA's [official S4 endpoint list](https://help.mega.io/megas4/setup-guides/mega-s4-endpoint-urls) or from the S4 settings in the MEGA web client. The example is illustrative and is not an Alexandria default.
 
-MEGA S4 rejects several optional headers commonly accepted by AWS S3. Alexandria configures the AWS SDK's request and response checksum modes as `WHEN_REQUIRED` and does not send server-side-encryption, ACL, or non-standard storage-class headers. Keep provider-side policy and encryption settings on the bucket rather than adding those headers to Alexandria uploads.
+MEGA S4 rejects several optional headers commonly accepted by AWS S3. Alexandria configures the AWS SDK's request and response checksum modes as `WHEN_REQUIRED` and does not send server-side-encryption, ACL, or non-standard storage-class headers. Configure access controls and any supported provider-side data protections outside Alexandria rather than adding those headers to uploads.
+
+Alexandria does not currently add client-side object encryption. Any encryption beyond TLS in transit and the storage provider's defaults must be handled outside this adapter.
 
 ## Migrate local storage to S3
 
