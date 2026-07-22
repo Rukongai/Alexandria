@@ -6,7 +6,7 @@ This document describes every HTTP endpoint exposed by the Alexandria backend. I
 
 ## Known Deviations
 
-**`GET /models/:id/status` omits `startedAt` and `completedAt`.** The `JobStatus` type in TYPES.md includes these fields, but the route response only includes `modelId`, `status`, `progress`, and `error`. Job IDs are not stored on the model record, so detailed job timing is unavailable from this endpoint. This may be addressed in a future phase.
+**`GET /models/:id/status` omits `startedAt` and `completedAt`.** The `JobStatus` type in TYPES.md includes these fields, but the route response only includes `modelId`, `status`, `progress`, and `error`. Job IDs are not stored on the model record, so detailed job timing is unavailable from this endpoint. Structured progress for a staged import commit is instead available as `ImportSession.commitProgress` from the existing import-session list and detail polling endpoints.
 
 ---
 
@@ -938,6 +938,7 @@ List the authenticated user's active import sessions for the current library. Ac
         ]
       },
       "modelId": null,
+      "commitProgress": null,
       "error": null,
       "createdAt": "2026-05-30T10:00:00.000Z"
     }
@@ -947,7 +948,7 @@ List the authenticated user's active import sessions for the current library. Ac
 }
 ```
 
-`data` is an array of `ImportSession`. The `detected` field is `null` while the session is still scanning. Session TTL is 24 hours — sessions not committed within that window may be reaped.
+`data` is an array of `ImportSession`. The `detected` field is `null` while the session is still scanning. `commitProgress` is `null` unless the session is `committing`; see the progress contract below. Session TTL is 24 hours — sessions not committed within that window may be reaped.
 
 ---
 
@@ -976,6 +977,7 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
       "folderStructure": [...]
     },
     "modelId": null,
+    "commitProgress": null,
     "error": null,
     "createdAt": "2026-05-30T10:00:00.000Z"
   },
@@ -984,7 +986,33 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
 }
 ```
 
-`data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on success, or `scanning` → `error` on failure. Poll until status leaves `scanning`.
+`data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on scan success, `ready_for_review` → `committing` → `committed` after commit, or an active phase → `error` on failure. Polling this endpoint after commit returns the same `commitProgress` contract as the list endpoint.
+
+While `status` is `committing`, `commitProgress` has this shape:
+
+```json
+{
+  "phase": "storing_files",
+  "percent": 42,
+  "completedFiles": 6,
+  "totalFiles": 14,
+  "completedBytes": 3523215,
+  "totalBytes": 8388608,
+  "currentFilename": "dragon-body.stl"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `phase` | `queued`, `storing_files`, `saving_records`, `generating_thumbnails`, `applying_metadata`, or `complete` |
+| `percent` | Integer overall pipeline percentage from 0 through 100 |
+| `completedFiles` / `totalFiles` | Completed and total files for transfer into managed storage |
+| `completedBytes` / `totalBytes` | Bytes transferred into managed storage, including bytes from the current file |
+| `currentFilename` | File currently being stored; `null` when queued and during post-storage phases |
+
+Managed-storage transfer occupies 0–80% of the overall percentage. The fixed post-storage milestones are `saving_records` at 85%, `generating_thumbnails` at 90%, `applying_metadata` at 95%, and `complete` at 100%. File and byte counters remain at their totals after storage finishes.
+
+For `scanning`, `ready_for_review`, `committed`, and `error` sessions, `commitProgress` is `null`. A `committing` session normally returns a progress object; before the worker publishes one, or if queue progress is unavailable or invalid, the API returns a safe `queued`/0% object with zero completed counters. Its totals come from detected metadata when available and otherwise are zero. Progress lookup failure does not fail the session response.
 
 ---
 
@@ -1042,7 +1070,9 @@ Commit a reviewed import session, creating a model and enqueuing the full ingest
 }
 ```
 
-Poll `GET /models/:id/status` with the returned `modelId` to track ingestion progress.
+Continue polling `GET /models/import-sessions/:id` (or the active-session list) to track the structured commit phases. The commit job is keyed internally by the import session ID, so this uses the existing session polling flow and requires no job-status endpoint. `GET /models/:id/status` remains available for the model's coarse `processing` / `ready` / `error` state, but its `progress` field remains `null` while processing.
+
+The frontend polls active import sessions every two seconds. Its import queue and review pane show the phase, percentage, managed-storage byte/file counters, and current filename; if progress is absent, they render an indeterminate storage state. The review pane also polls model status every two seconds and does not show the model as complete while a non-`complete` session commit phase remains active, even though the model record becomes `ready` before the non-fatal metadata phase runs.
 
 ---
 

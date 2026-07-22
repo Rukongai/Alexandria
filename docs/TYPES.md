@@ -661,6 +661,7 @@ interface ImportSession {
   status: ImportSessionStatus;
   detected: DetectedImportMetadata | null; // null until scan completes
   modelId: string | null;       // set once commit begins
+  commitProgress: ImportCommitProgress | null; // non-null only while committing
   error: string | null;
   createdAt: string;
 }
@@ -671,6 +672,24 @@ type ImportSessionStatus =
   | 'committing'
   | 'committed'
   | 'error';
+
+type ImportCommitPhase =
+  | 'queued'
+  | 'storing_files'
+  | 'saving_records'
+  | 'generating_thumbnails'
+  | 'applying_metadata'
+  | 'complete';
+
+interface ImportCommitProgress {
+  phase: ImportCommitPhase;
+  percent: number;               // integer 0–100; overall pipeline progress
+  completedFiles: number;        // files fully transferred to managed storage
+  totalFiles: number;
+  completedBytes: number;        // bytes transferred to managed storage, including current file
+  totalBytes: number;
+  currentFilename: string | null; // current storage-transfer file; null outside file transfer
+}
 
 // Optional per-import options sent in the commit request body
 interface UploadOptions {
@@ -689,6 +708,10 @@ interface BatchUploadMetadata {
   options?: UploadOptions;
 }
 ```
+
+The file and byte counters in `ImportCommitProgress` describe transfer into managed storage, while `percent` describes the whole commit pipeline. Storage occupies 0–80%; later phases report 85% (`saving_records`), 90% (`generating_thumbnails`), 95% (`applying_metadata`), and 100% (`complete`). After storage finishes, the counters remain at their totals while the later phases run.
+
+Import-session list and detail reads expose `commitProgress` only while `status` is `committing`; every other status returns `null`. Before BullMQ publishes structured progress, or if progress cannot be read or validated, a committing response uses `queued`, 0%, zero completed counters, and totals from `detected` when available (otherwise zero). `currentFilename` is nullable because no individual file is active while queued or during post-storage phases.
 
 In `split` mode, ZIP sets use the classic `.z01` … terminal `.zip` scheme or numbered `.zip.001` … scheme. Modern RAR sets use contiguous `<base>.partN.rar` members starting at part 1, with one case-insensitive safe base name and consistent part-number padding. The service colocates normalized members temporarily, extracts RAR sets from part 1, and derives the stable logical filename `<base>.rar` independently of upload-ID order.
 
