@@ -55,6 +55,8 @@ For single-request uploads (`POST /models/upload`), archive files are capped at 
 
 Both upload paths now use the staged ingestion workflow. They return a `sessionId` (not a `modelId`) — the model is created only after the session is committed. See the Import Sessions section below for the full scan → review → commit protocol.
 
+To create one model from several archives, use the multipart protocol. Initiate each member through `POST /models/upload/multipart/init`, upload its chunks through the existing chunk endpoint, then submit all upload IDs together to `POST /models/upload/multipart/complete`. Multipart `combine` mode accepts independent supported archives; `split` mode accepts one complete `.z01` … `.zip` or `.zip.001` … split-ZIP set. A multipart group creates one import session and therefore one model.
+
 ---
 
 ## Error Format
@@ -368,6 +370,16 @@ The session expires after 2 hours. All chunks must be uploaded and the upload co
 
 ---
 
+### POST /models/upload/multipart/init
+
+Initiate one chunked member of an explicit multipart archive group. The request and response match `POST /models/upload/init`, but filename validation also accepts split-ZIP member names (`.z01` through `.z99`, and `.zip.001` through `.zip.999`). Standard archive names are accepted for `combine` mode.
+
+**Auth required:** Yes
+
+After initiation, upload the returned ID's chunks through `PUT /models/upload/:uploadId/chunk/:index`. Do not call the single-upload complete endpoint; once every member is uploaded, pass all member IDs to `POST /models/upload/multipart/complete`.
+
+---
+
 ### PUT /models/upload/:uploadId/chunk/:index
 
 Upload a single chunk of a file. The request body must be the raw binary chunk data with `Content-Type: application/octet-stream`. Chunks are idempotent — re-uploading the same index overwrites the previous data, enabling per-chunk retry.
@@ -417,6 +429,46 @@ Assemble all uploaded chunks and begin the staged ingestion workflow. All chunks
 ```
 
 Same staged contract as `POST /models/upload`. Poll `GET /models/import-sessions/:id` with the returned `sessionId` to track scan progress, then commit via `POST /models/import-sessions/:id/commit`.
+
+---
+
+### POST /models/upload/multipart/complete
+
+Assemble two to 100 previously uploaded multipart members and begin one staged scan session.
+
+**Auth required:** Yes
+
+**Library scope:** The single resulting import session is created in the active library.
+
+**Request body:**
+
+```json
+{
+  "uploadIds": ["uuid-1", "uuid-2"],
+  "mode": "combine"
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `uploadIds` | UUID string[] | 2–100 unique upload IDs, all owned by the authenticated user |
+| `mode` | `combine` \| `split` | `combine` extracts independent archives into archive-named folders; `split` validates and extracts one complete split-ZIP set |
+
+`split` accepts either a classic set with numbered `.z01` … parts and one terminal `.zip`, or a numbered set beginning at `.zip.001`. Missing, duplicate, mixed, or unrelated parts return `VALIDATION_ERROR`. All members must be present before extraction begins.
+
+**Response (202):**
+
+```json
+{
+  "data": {
+    "sessionId": "uuid"
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+The response follows the same scan → review → commit workflow as a standard upload.
 
 ---
 
