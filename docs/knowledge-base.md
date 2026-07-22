@@ -34,7 +34,7 @@ The backend is organized around focused services. Each service owns a coherent s
 
 - **IngestionService** — orchestrates the upload and import pipelines; creates model records and enqueues processing jobs
 - **FileProcessingService** — extracts archives and supported split archives, temporarily colocates split members and starts extraction from the set's entry member, rejects unsafe paths and link-like entries before 7-Zip extraction, combines explicitly grouped complete archives under collision-safe folders, walks import directories, classifies files by type, and computes SHA-256 hashes
-- **StorageService** — manages file storage; the local filesystem is the current implementation, with an S3-compatible implementation planned
+- **StorageService** — manages backend-independent logical keys through local-filesystem or S3-compatible providers
 - **ThumbnailService** — generates WebP thumbnails at grid and detail sizes using sharp
 - **UploadService** — manages chunked upload sessions in memory, bounds accepted chunk bytes to the declared file size, supports explicit abort and cleanup, and assembles single files or multipart groups for ingestion
 - **ImportSessionService** — owns staged scan, review, and commit sessions
@@ -62,7 +62,7 @@ The API uses a consistent `{ data, meta, errors }` envelope on every response wi
 
 Alexandria runs as four Docker Compose services: Postgres 16, Redis 7, the backend (Fastify on port 3001), and the frontend (Nginx on port 80). The backend and frontend are built from source in multi-stage Dockerfiles. All services have healthchecks. The backend waits for Postgres and Redis to be healthy before starting. SQL migration files are copied into the backend image at build time so the runtime container does not need access to source directories.
 
-Storage is a named Docker volume mounted at `/data/storage` inside the backend container. Postgres data and Redis data are also named volumes, surviving container restarts.
+Managed storage defaults to a named Docker volume mounted at `/data/storage` inside the backend container. It can instead use a private S3-compatible bucket, including MEGA S4; the local volume remains mounted for migration and rollback. Postgres data and Redis data are also named volumes, surviving container restarts.
 
 Default credentials (`admin@alexandria.local` / `changeme`) are applied by the auto-seed on first startup. Override them with the `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables before first run.
 
@@ -70,4 +70,4 @@ Default credentials (`admin@alexandria.local` / `changeme`) are applied by the a
 
 Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, and the React frontend — is implemented and reviewed. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent complete archives or uploading one complete supported split archive, including a modern `<base>.partN.rar` set, into a single review session and model.
 
-Planned but not yet implemented: 3D model viewer (in-browser STL/3MF rendering), multi-user support, S3-compatible storage backend, and print job tracking.
+Planned but not yet implemented: 3D model viewer (in-browser STL/3MF rendering), multi-user support, and print job tracking.

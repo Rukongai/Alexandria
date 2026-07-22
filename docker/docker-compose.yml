@@ -34,7 +34,16 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-alexandria}:${POSTGRES_PASSWORD:-alexandria}@postgres:5432/${POSTGRES_DB:-alexandria}
       REDIS_URL: redis://redis:6379
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       STORAGE_PATH: /data/storage
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_PREFIX: ${S3_PREFIX:-}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me}
       AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:?Set AI_ENCRYPTION_KEY to a long random secret}
       AI_ALLOW_PRIVATE_PROVIDER_URLS: ${AI_ALLOW_PRIVATE_PROVIDER_URLS:-false}
@@ -42,6 +51,7 @@ services:
       HOST: "0.0.0.0"
       NODE_ENV: production
     volumes:
+      # Retained for local storage, local-to-S3 migration, and rollback.
       - storagedata:/data/storage
     depends_on:
       postgres:

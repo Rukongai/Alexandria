@@ -98,7 +98,7 @@ interface ModelFile {
   fileType: FileType;
   mimeType: string;
   sizeBytes: number;
-  storagePath: string;
+  storagePath: string; // backend-independent logical key, never a public URL
   hash: string;
   createdAt: string;
 }
@@ -112,7 +112,7 @@ type FileType = 'stl' | 'image' | 'document' | 'other';
 interface Thumbnail {
   id: string;
   sourceFileId: string;
-  storagePath: string; // suffix _grid.webp or _detail.webp identifies size variant
+  storagePath: string; // logical key; suffix _grid.webp or _detail.webp identifies size variant
   width: number;       // actual output dimensions, not target size (sharp fit:inside never upscales)
   height: number;      // actual output dimensions, not target size
   format: string;      // default: 'webp'
@@ -556,11 +556,14 @@ interface JobStatus {
 interface ImportConfig {
   sourcePath: string;
   pattern: string; // e.g., '{Collection}/{metadata.Artist}/{model}'
-  strategy: ImportStrategy;
-  deleteAfterUpload?: boolean; // S3 only
+  strategy: ImportStrategy; // local transfer strategy; retained for API compatibility with S3
+  deleteAfterUpload?: boolean; // S3 only; delete sources after every upload is verified
 }
 
 type ImportStrategy = 'hardlink' | 'copy' | 'move';
+
+// With S3 storage, files are always uploaded. If deleteAfterUpload is omitted,
+// it defaults to true only when strategy is 'move'.
 
 // Parsed representation of a hierarchy pattern (internal to FileProcessingService)
 interface ParsedPatternSegment {
@@ -582,6 +585,8 @@ interface ImportJob {
 
 type ImportPhase = 'scanning' | 'importing' | 'processing' | 'complete' | 'error';
 ```
+
+With local storage, `strategy` selects hardlink, copy, or move behavior and `deleteAfterUpload` is ignored. With S3-compatible storage, every source is uploaded and verified by byte size and SHA-256 before it is eligible for deletion. Source deletion is deferred until all models in the job have uploaded successfully.
 
 ### Staged Upload Types
 

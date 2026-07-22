@@ -16,6 +16,8 @@ export interface FolderImportJobPayload {
   sourcePath: string;
   pattern: string;
   strategy: ImportStrategy;
+  /** Remote storage only: remove sources after every uploaded object is verified. */
+  deleteAfterUpload: boolean;
   userId: string;
   /** Library to create models/collections in. Captured at import-request time from request.libraryId. */
   libraryId: string;

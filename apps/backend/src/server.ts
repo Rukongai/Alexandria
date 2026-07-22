@@ -3,9 +3,25 @@ import { buildApp } from './app.js';
 import { config } from './config/index.js';
 import { db, pool } from './db/index.js';
 import { runSeed } from './db/seed.js';
+import { validateStorageBackend } from './services/storage.service.js';
 
 async function main(): Promise<void> {
   const app = await buildApp();
+
+  try {
+    await validateStorageBackend();
+    app.log.info(
+      { service: 'Server', backend: config.storageBackend },
+      'Storage backend validation complete',
+    );
+  } catch (err) {
+    app.log.error(
+      { service: 'Server', backend: config.storageBackend, err },
+      'Storage backend validation failed',
+    );
+    await pool.end();
+    process.exit(1);
+  }
 
   // Run database migrations before accepting traffic
   try {

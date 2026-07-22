@@ -14,6 +14,7 @@ A self-hosted personal library for managing 3D printing model collections. Think
 - Chunked uploads up to 5 GB per file with 10 MB chunks and automatic retry
 - Async processing pipeline with thumbnail generation (WebP at multiple sizes)
 - Import existing library folders with pattern-based hierarchy parsing (e.g. `{artist}/{year}/{name}`) using hardlink, copy, or move strategies
+- Store managed files on the local filesystem or in a private S3-compatible bucket, including MEGA S4
 
 **Organization**
 - Flexible metadata system with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL) and user-defined custom fields
@@ -49,7 +50,7 @@ A self-hosted personal library for managing 3D printing model collections. Think
 | Backend | Fastify 5 + TypeScript |
 | Database | PostgreSQL 16, Drizzle ORM |
 | Job Queue | BullMQ + Redis |
-| Storage | Local filesystem |
+| Storage | Local filesystem or S3-compatible object storage |
 | Auth | Session cookie with argon2 password hashing |
 | Deployment | Docker Compose |
 | Monorepo | npm workspaces + Turborepo |
@@ -167,7 +168,13 @@ All backend variables have development defaults and can be set in the environmen
 |---|---|---|
 | `DATABASE_URL` | `postgresql://alexandria:alexandria@localhost:5432/alexandria` | Postgres connection string |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection string |
-| `STORAGE_PATH` | `./data/storage` | Root path for managed file storage |
+| `STORAGE_BACKEND` | `local` | Managed storage provider: `local` or `s3` |
+| `STORAGE_PATH` | `./data/storage` | Local managed-storage root; also the migration source when using S3 |
+| `S3_ENDPOINT` | AWS SDK default | Custom S3-compatible endpoint URL; omit for AWS S3 |
+| `S3_REGION` | `us-east-1` | S3 signing region |
+| `S3_BUCKET` | — | Bucket name; required when `STORAGE_BACKEND=s3` |
+| `S3_PREFIX` | empty | Optional object-key prefix, without a leading slash |
+| `S3_FORCE_PATH_STYLE` | `false` | Use path-style instead of virtual-hosted-style bucket URLs |
 | `SESSION_SECRET` | `dev-secret-change-in-production` | Secret for signing session cookies |
 | `AI_ENCRYPTION_KEY` | _(required in production)_ | Stable secret used to encrypt provider API keys; production rejects values under 32 characters, `SESSION_SECRET`, and checked placeholders |
 | `AI_ALLOW_PRIVATE_PROVIDER_URLS` | `true` in development; `false` in production | Allow trusted loopback/LAN AI providers; link-local, cloud-metadata, and reserved targets remain blocked |
@@ -184,6 +191,10 @@ Seed variables (read on every startup and by `npm run db:seed`):
 | `SEED_ADMIN_EMAIL` | `admin@alexandria.local` | Admin account email |
 | `SEED_ADMIN_PASSWORD` | `changeme` | Admin account password |
 | `SEED_ADMIN_DISPLAY_NAME` | `Admin` | Admin display name |
+
+S3 credentials are resolved through the AWS SDK default credential chain. For a simple deployment, set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and, for temporary credentials, `AWS_SESSION_TOKEN`. Workload roles, shared AWS configuration, and the other standard providers are also supported. The backend validates S3 bucket access before migrations or HTTP startup and exits if validation fails.
+
+See [`docs/STORAGE.md`](docs/STORAGE.md) for provider configuration, MEGA S4 compatibility, private-object delivery, and local-to-S3 migration.
 
 ---
 
@@ -209,6 +220,7 @@ AI_ENCRYPTION_KEY=test-only-not-for-production docker compose -f docker/docker-c
 - `docs/API.md` — full API reference (64 endpoints)
 - `docs/TYPES.md` — canonical type definitions
 - `docs/CONVENTIONS.md` — naming, patterns, and coding standards
+- `docs/STORAGE.md` — local and S3-compatible storage configuration and migration
 - `docs/PROJECT-BRIEF.md` — project overview and rationale
 
 ---
@@ -219,5 +231,4 @@ The following are planned but not yet implemented:
 
 - **3D model viewer** — in-browser STL/3MF rendering
 - **Multi-user support** — roles, per-user collections, shared libraries
-- **S3-compatible storage** — swap local filesystem for object storage
 - **Print job tracking** — link models to print history and notes

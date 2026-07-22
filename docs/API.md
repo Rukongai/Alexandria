@@ -887,8 +887,8 @@ Start a folder import. Discovers models by walking a directory on the server's f
 |-------|------|-------------|
 | `sourcePath` | string | Required. Absolute path on the server filesystem |
 | `pattern` | string | Required. Hierarchy pattern; must end with `{model}`. Segments may be `{Collection}` or `{metadata.<fieldSlug>}` |
-| `strategy` | `hardlink` \| `copy` \| `move` | Required. File handling strategy |
-| `deleteAfterUpload` | boolean (optional) | Not applicable to local strategies; reserved for future S3 use |
+| `strategy` | `hardlink` \| `copy` \| `move` | Required. With local storage, selects the file handling strategy. With S3 storage, retained for compatibility; files are always uploaded. |
+| `deleteAfterUpload` | boolean (optional) | S3 only. Delete source files after all uploads in the job pass size and SHA-256 verification. Defaults to `true` when `strategy` is `move`, otherwise `false`. |
 
 **Response (202):**
 
@@ -903,6 +903,8 @@ Start a folder import. Discovers models by walking a directory on the server's f
 ```
 
 Unlike archive upload, this response does not include a `modelId` because the import may create multiple models.
+
+For an S3-compatible backend, Alexandria uploads each file and reads it back to verify both byte size and SHA-256. Source deletion is a separate pass and occurs only when `deleteAfterUpload` is enabled and every discovered model completed successfully. Each source is hashed again immediately before deletion; changed files and individual deletion failures are retained and logged without retrying the completed import. A failed upload or verification leaves all sources in place. With local storage, `deleteAfterUpload` is ignored because `strategy` already determines whether the source is retained.
 
 ---
 
@@ -2076,7 +2078,7 @@ List distinct values recorded for a metadata field across models in the authenti
 
 ## Files
 
-These endpoints serve binary file content directly. Responses are not enveloped — they return the raw file bytes with appropriate `Content-Type` headers.
+These authenticated endpoints proxy binary content from the configured storage backend. S3 objects remain private: clients never receive bucket credentials or direct object URLs. Responses are not enveloped — they return the raw file bytes with appropriate `Content-Type` headers.
 
 File URLs are embedded in model payloads by `PresenterService` and should not be constructed manually.
 
@@ -2088,7 +2090,7 @@ Serve a WebP thumbnail by its ID. The `:id` segment is the thumbnail UUID; the `
 
 **Path parameter:** `id.webp` — thumbnail UUID followed by `.webp` (e.g., `a1b2c3d4-....webp`)
 
-**Response (200):** Raw WebP image bytes. `Content-Type: image/webp`. `Cache-Control: public, max-age=86400` (1 day).
+**Response (200):** Raw WebP image bytes. `Content-Type: image/webp`. `Cache-Control: private, max-age=86400` (1 day).
 
 ---
 
@@ -2102,7 +2104,9 @@ Serve a model file by its relative path within the model. The `*` wildcard captu
 
 **Example:** `GET /files/models/abc123/parts/body.stl`
 
-**Response (200):** Raw file bytes. `Content-Type` is set from the stored MIME type, or inferred from the file extension. `Cache-Control: public, max-age=86400` (1 day).
+Pass `download=1` or `download=true` to request an attachment response with `Content-Disposition` set to the stored filename.
+
+**Response (200):** Raw file bytes. `Content-Type` is set from the stored MIME type, or inferred from the file extension. `Cache-Control: private, max-age=86400` (1 day).
 
 Supported extension-to-MIME mappings: `.webp`, `.jpg`/`.jpeg`, `.png`, `.gif`, `.tif`/`.tiff`, `.stl`, `.obj`, `.pdf`, `.txt`, `.md`. Files with unrecognized extensions return `application/octet-stream`.
 

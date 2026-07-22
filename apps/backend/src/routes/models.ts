@@ -717,7 +717,6 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const archive = createModelArchive(files);
 
       archive.on('warning', (error) => request.log.warn({ error, modelId: id }, 'Archive warning'));
-      void archive.finalize();
 
       return reply
         .header('Content-Type', 'application/zip')

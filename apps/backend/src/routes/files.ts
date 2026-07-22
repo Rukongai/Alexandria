@@ -52,11 +52,11 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
         throw notFound(`Thumbnail not found: ${thumbnailId}`);
       }
 
-      const stream = storageService.retrieveStream(thumb.storagePath);
+      const stream = await storageService.retrieveStream(thumb.storagePath);
 
       return reply
         .header('Content-Type', 'image/webp')
-        .header('Cache-Control', `public, max-age=${CACHE_MAX_AGE}`)
+        .header('Cache-Control', `private, max-age=${CACHE_MAX_AGE}`)
         .send(stream);
     },
   );
@@ -93,12 +93,12 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
         throw notFound(`File not found: ${relativePath}`);
       }
 
-      const stream = storageService.retrieveStream(file.storagePath);
+      const stream = await storageService.retrieveStream(file.storagePath);
       const contentType = file.mimeType || getMimeType(file.filename);
 
       const response = reply
         .header('Content-Type', contentType)
-        .header('Cache-Control', `public, max-age=${CACHE_MAX_AGE}`);
+        .header('Cache-Control', `private, max-age=${CACHE_MAX_AGE}`);
 
       if (download === '1' || download === 'true') {
         response.header(
