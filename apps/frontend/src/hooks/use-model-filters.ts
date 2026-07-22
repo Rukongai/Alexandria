@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import type { ModelSearchParams } from '@alexandria/shared';
+import { useLibraryPath } from './use-libraries';
 
 export interface ModelFilters {
   q: string;
@@ -46,10 +47,12 @@ export function useModelFilters() {
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const libPath = useLibraryPath();
+  const browsePath = libPath('/');
 
   const updateSearchParams = useCallback(
     (update: (params: URLSearchParams) => URLSearchParams | void) => {
-      if (location.pathname === '/') {
+      if (location.pathname === browsePath) {
         setSearchParams((prev) => {
           const next = new URLSearchParams(prev);
           return update(next) ?? next;
@@ -60,9 +63,9 @@ export function useModelFilters() {
       const next = new URLSearchParams(searchParams);
       const updated = update(next) ?? next;
       const query = updated.toString();
-      navigate({ pathname: '/', search: query ? `?${query}` : '' });
+      navigate({ pathname: browsePath, search: query ? `?${query}` : '' });
     },
-    [location.pathname, navigate, searchParams, setSearchParams]
+    [browsePath, location.pathname, navigate, searchParams, setSearchParams]
   );
 
   const filters: ModelFilters = {
