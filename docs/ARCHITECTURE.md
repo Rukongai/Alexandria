@@ -22,11 +22,12 @@ The system follows a monorepo structure with a React frontend, a Fastify backend
 
 ## Startup Sequence
 
-When the backend process starts (`server.ts`), it runs three steps before accepting traffic:
+When the backend process starts (`server.ts`), it runs four steps before accepting traffic:
 
-1. **Migrations** — Drizzle applies any pending SQL migrations from `apps/backend/src/db/migrations/`. If migration fails, the process exits with a non-zero code.
-2. **Seed** — `runSeed()` inserts the default admin user and default metadata field definitions using `ON CONFLICT DO NOTHING`, then calls `LibraryService.resolveDefaultLibraryId` for the admin user to ensure the admin's default library exists. This is idempotent and safe to run on every startup. If the seed fails (e.g., a constraint violation on a partially seeded DB), it logs a warning and continues rather than crashing. Seed credentials are controlled by `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables.
-3. **Listen** — Fastify binds to the configured `HOST:PORT` and begins accepting requests.
+1. **Storage validation** — local storage requires no remote check. For S3-compatible storage, `HeadBucket` verifies that the configured bucket is reachable with the resolved credentials. A failure exits the process before database migrations or HTTP traffic.
+2. **Migrations** — Drizzle applies any pending SQL migrations from `apps/backend/src/db/migrations/`. If migration fails, the process exits with a non-zero code.
+3. **Seed** — `runSeed()` inserts the default admin user and default metadata field definitions using `ON CONFLICT DO NOTHING`, then calls `LibraryService.resolveDefaultLibraryId` for the admin user to ensure the admin's default library exists. This is idempotent and safe to run on every startup. If the seed fails (e.g., a constraint violation on a partially seeded DB), it logs a warning and continues rather than crashing. Seed credentials are controlled by `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables.
+4. **Listen** — Fastify binds to the configured `HOST:PORT` and begins accepting requests.
 
 In Docker Compose, the `backend` service declares `depends_on` with `condition: service_healthy` for both Postgres and Redis, so both infrastructure services are ready before the backend starts.
 
@@ -194,7 +195,7 @@ Three entry paths:
 
 - **Staged upload (commit phase):** `handleCommit` validates the session is `ready_for_review`, creates a Model record in `processing` state, transitions the session to `committing`, and enqueues a commit job on the `import-commit` BullMQ queue. The worker's `processCommitJob` copies staged files to managed storage, runs the thumbnail pipeline, and applies any `BatchUploadMetadata` supplied at commit time.
 
-- **Folder import:** `handleFolderImport` receives an `ImportConfig` (source path, pattern, strategy). Uses PatternParser to validate and parse the hierarchy pattern, FileProcessingService to walk the directory, and the selected ImportStrategy to move files into managed storage. Folder import retains its existing immediate behavior — it does not use the staged session model.
+- **Folder import:** `handleFolderImport` receives an `ImportConfig` (source path, pattern, strategy, and optional remote-source deletion). It uses PatternParser to validate and parse the hierarchy pattern and FileProcessingService to walk the directory. Local storage applies the selected hardlink, copy, or move strategy. Remote storage uploads each file, reads it back to verify byte size and SHA-256, and optionally deletes sources in a separate pass only after the entire job succeeds. Folder import retains its existing immediate behavior — it does not use the staged session model.
 
 ### ImportSessionService
 
@@ -220,13 +221,19 @@ Uses the **PatternParser** utility (located in `utils/pattern-parser.ts`) — a 
 
 **Does not own:** Any knowledge of domain entities. It stores and retrieves bytes at paths.
 
-**Interface:** Designed for swappable implementations. The local filesystem implementation is the default. An S3-compatible implementation is planned for Phase 2. All other services interact with StorageService through the interface — never directly with the filesystem or S3 SDK.
+**Interface:** `IStorageService` exposes store, buffered and streaming retrieval, copy, delete, and existence checks over backend-independent logical keys. `LocalStorageService` is the default. `S3StorageService` is selected with `STORAGE_BACKEND=s3` and applies the optional `S3_PREFIX` when translating a logical key to an object key. All other services interact with this interface and do not construct filesystem paths, S3 requests, or public object URLs.
 
-**Import strategies** are implementations of an ImportStrategy interface used during folder import:
+The S3 client accepts a custom endpoint, region, bucket, prefix, and path-style setting. Credentials come from the AWS SDK default credential chain rather than Alexandria-specific credential fields. Request checksum calculation and response checksum validation are both limited to `WHEN_REQUIRED`; uploads do not send server-side-encryption, ACL, or storage-class headers. This minimal request surface supports S3-compatible providers such as MEGA S4 as well as AWS S3.
+
+S3 buckets remain private. `GET /files/thumbnails/:id.webp` and `GET /files/models/:modelId/*` authenticate the request, resolve the logical storage key from the database, and stream the object through Fastify. Alexandria does not expose presigned or provider-native URLs.
+
+On startup, S3 mode performs `HeadBucket` validation before database migration and listening. Local-to-S3 migration is available through `npm run storage:migrate -w @alexandria/backend`; it walks `STORAGE_PATH`, copies objects to the configured S3 backend, and verifies size plus SHA-256. It is restartable because already matching objects are skipped, and local files are retained for rollback. See `docs/STORAGE.md` for operations.
+
+**Folder import storage behavior** depends on the configured backend:
 - `HardlinkStrategy` — validates same-filesystem requirement, creates hardlinks into managed storage. Falls back to copy with a warning if hardlinking fails.
 - `CopyStrategy` — copies files into managed storage. Safe default.
 - `MoveStrategy` — moves files into managed storage. Destructive to originals.
-- `S3UploadStrategy` (Phase 2) — uploads to S3 with SHA-256 verification. Optional verified deletion of originals after all uploads succeed. Deletion is a separate pass, never inline with uploads.
+- **Remote upload path** — when the configured storage backend is S3, uploads each source and verifies size plus SHA-256. Optional source deletion occurs after all models in the import succeed, never inline with uploads.
 
 ### ThumbnailService
 
@@ -552,7 +559,7 @@ All smart-collection by-id routes enforce ownership via `requireOwnedSmartCollec
 | GET | /auth/me | Current user | AuthService |
 | PATCH | /auth/me | Update profile | AuthService |
 
-**Files (Static Serving)**
+**Files (Authenticated Proxy)**
 | Method | Route | Purpose | Service Chain |
 |--------|-------|---------|---------------|
 | GET | /files/thumbnails/:id.webp | Serve thumbnail | StorageService |
@@ -580,7 +587,7 @@ Decisions recorded here are intentional and should not be reversed without expli
 A staged upload session creates exactly one Model. Standard archive upload keeps the original one-archive/one-model behavior. An explicitly selected multipart session may contain several independent complete archives (`combine`) or all parts of one supported split ZIP or modern split RAR set (`split`), but it still produces one review session and one Model. Alexandria never auto-splits archive contents into multiple models. Making grouping explicit avoids accidentally merging files merely because a user selected several archives in the ordinary upload picker.
 
 ### D2: Managed storage only
-After import/upload, all files live in Alexandria's managed storage. No runtime references to external file locations. Import strategies (hardlink, copy, move) determine how files enter managed storage, but once imported, StorageService is the sole authority.
+After import/upload, all files live in Alexandria-managed local or S3-compatible storage. Database records retain backend-independent logical keys rather than filesystem paths or public object URLs. No runtime references to import source locations remain. Import strategies determine how files enter managed storage, but once imported, StorageService is the sole authority.
 
 ### D3: Metadata unification with specialized storage
 All model attributes are metadata conceptually and in the API. Tags and potentially other high-query fields have dedicated backing tables for performance. MetadataService abstracts this — consumers see a uniform metadata API. This prevents the proliferation of per-attribute-type entities and APIs.
@@ -604,7 +611,7 @@ Collections are organizational structures (where you put a model), not descripti
 The file tree for a model's files is assembled by PresenterService from flat relative paths into a nested tree structure. The frontend receives a ready-to-render tree.
 
 ### D10: Import strategies for folder import
-Folder import supports three local strategies (hardlink, copy, move) and one remote strategy (S3 upload with verified delete). Hardlink is validated for same-filesystem constraint. Move is flagged as destructive. S3 delete is a separate pass after all uploads succeed. Strategy selection is per-import, not a global setting.
+Folder import supports three local strategies (hardlink, copy, move) and a backend-selected remote path (S3 upload with verified delete). Hardlink is validated for same-filesystem constraint. Move is flagged as destructive. Remote uploads are verified by byte size and SHA-256, and source deletion is a separate pass after the complete job succeeds. Local strategy selection is per import; storage backend selection is process-wide.
 
 ### D11: Envelope on every response
 All API responses use `{ data, meta, errors }`. No raw arrays, no inconsistent shapes. This is non-negotiable for API consistency.
