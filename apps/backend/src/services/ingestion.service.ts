@@ -1129,6 +1129,7 @@ export class IngestionService {
       sourceType: 'folder_import',
       status: 'processing',
     });
+    const storedPaths: string[] = [];
 
     try {
       // Scan files in the model's source directory
@@ -1138,35 +1139,25 @@ export class IngestionService {
       );
       const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
 
-      const storedPaths: string[] = [];
       const sourcePaths: string[] = [];
-      try {
-        for (const entry of entries) {
-          const sourceFilePath = path.join(discovered.sourcePath, entry.relativePath);
-          const storagePath = `models/${modelId}/${entry.relativePath}`;
+      for (const entry of entries) {
+        const sourceFilePath = path.join(discovered.sourcePath, entry.relativePath);
+        const storagePath = `models/${modelId}/${entry.relativePath}`;
 
-          if (isLocalStorageService(storageService)) {
-            if (!importStrategy) {
-              throw storageError('Local folder import strategy is unavailable');
-            }
-            await importStrategy.execute(
-              sourceFilePath,
-              storageService.resolveStoragePath(storagePath),
-            );
-          } else {
-            await storageService.store(storagePath, fs.createReadStream(sourceFilePath));
-            storedPaths.push(storagePath);
-            await this.verifyStoredFile(storagePath, entry.hash, entry.sizeBytes);
-            sourcePaths.push(sourceFilePath);
+        if (isLocalStorageService(storageService)) {
+          if (!importStrategy) {
+            throw storageError('Local folder import strategy is unavailable');
           }
-        }
-      } catch (error) {
-        if (storageService.kind === 's3') {
-          await Promise.all(
-            storedPaths.map((storedPath) => storageService.delete(storedPath).catch(() => {})),
+          await importStrategy.execute(
+            sourceFilePath,
+            storageService.resolveStoragePath(storagePath),
           );
+        } else {
+          await storageService.store(storagePath, fs.createReadStream(sourceFilePath));
+          storedPaths.push(storagePath);
+          await this.verifyStoredFile(storagePath, entry.hash, entry.sizeBytes);
+          sourcePaths.push(sourceFilePath);
         }
-        throw error;
       }
 
       // Create model file records
@@ -1215,6 +1206,11 @@ export class IngestionService {
       logger.info({ modelId, name: discovered.name }, 'Model imported successfully');
       return sourcePaths;
     } catch (err) {
+      if (storageService.kind === 's3') {
+        await Promise.all(
+          storedPaths.map((storedPath) => storageService.delete(storedPath).catch(() => {})),
+        );
+      }
       await modelService.updateModelStatus(modelId, 'error');
       throw err;
     }

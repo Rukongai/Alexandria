@@ -727,6 +727,28 @@ describe('IngestionService – remote folder import', () => {
     expect(modelService.updateModelStatus).toHaveBeenCalledWith('model-1', 'error');
   });
 
+  it('cleans up verified objects when a later persistence step fails', async () => {
+    vi.mocked(storageService.retrieveStream).mockResolvedValue(Readable.from(contents));
+    vi.mocked(modelService.createModelFiles).mockRejectedValue(new Error('database unavailable'));
+
+    await service.processFolderImportJob({
+      id: 'job-1',
+      data: {
+        sourcePath: '/imports',
+        pattern: '{model}',
+        strategy: 'move',
+        deleteAfterUpload: true,
+        userId: 'user-1',
+        libraryId: 'library-1',
+      },
+      updateProgress: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    expect(storageService.delete).toHaveBeenCalledWith('models/model-1/model.stl');
+    expect(fsPromises.unlink).not.toHaveBeenCalled();
+    expect(modelService.updateModelStatus).toHaveBeenCalledWith('model-1', 'error');
+  });
+
   it('maps move requests to verified source deletion', async () => {
     vi.mocked(jobService.enqueueFolderImportJob).mockResolvedValue('job-1');
 
