@@ -10,7 +10,7 @@ import {
   SettingsIcon,
   GroupViewIcon,
 } from '../icons';
-import type { StlFileRef } from '../../lib/model-files';
+import type { StlFileRef, TextFileRef } from '../../lib/model-files';
 
 type PanelTabValue = 'info' | 'collections' | 'files';
 
@@ -18,6 +18,7 @@ interface ModelDetailPanelProps {
   model: ModelDetail;
   fileTree: FileTreeNode[];
   onOpenStl: (stl: StlFileRef) => void;
+  onOpenText: (file: TextFileRef) => void;
   selectedImageFileId: string | null;
   onSelectImageFile: (fileId: string) => void;
   fileActionsDisabled?: boolean;
@@ -40,6 +41,7 @@ export function ModelDetailPanel({
   model,
   fileTree,
   onOpenStl,
+  onOpenText,
   selectedImageFileId,
   onSelectImageFile,
   fileActionsDisabled,
@@ -84,6 +86,7 @@ export function ModelDetailPanel({
           tree={fileTree}
           modelId={model.id}
           onOpenStl={onOpenStl}
+          onOpenText={onOpenText}
           selectedImageFileId={selectedImageFileId}
           onSelectImageFile={onSelectImageFile}
           disabled={fileActionsDisabled}

@@ -40,6 +40,42 @@ describe('FileTree', () => {
     expect(screen.getAllByRole('button', { name: /in 3d/i })).toHaveLength(1);
   });
 
+  it('fires onOpenText with the reconstructed relative path for a text file', () => {
+    const onOpenText = vi.fn();
+    render(<FileTree tree={TREE} modelId="m1" onOpenText={onOpenText} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /preview readme\.txt/i }));
+
+    expect(onOpenText).toHaveBeenCalledWith({
+      name: 'readme.txt',
+      relativePath: 'readme.txt',
+      url: '/api/files/models/m1/readme.txt',
+      isMarkdown: false,
+      sizeBytes: 10,
+    });
+  });
+
+  it('marks markdown files for rendered preview', () => {
+    const onOpenText = vi.fn();
+    render(
+      <FileTree
+        tree={[{ name: 'docs', type: 'directory', children: [{ name: 'README.md', type: 'file', fileType: 'document', id: 'md1' }] }]}
+        modelId="m1"
+        onOpenText={onOpenText}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /preview readme\.md/i }));
+
+    expect(onOpenText).toHaveBeenCalledWith({
+      name: 'README.md',
+      relativePath: 'docs/README.md',
+      url: '/api/files/models/m1/docs/README.md',
+      isMarkdown: true,
+      sizeBytes: undefined,
+    });
+  });
+
   it('selects image files and reveals the active image in nested folders', async () => {
     const onSelectImageFile = vi.fn();
     const imageTree: FileTreeNode[] = [

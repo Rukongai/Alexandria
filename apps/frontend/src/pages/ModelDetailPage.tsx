@@ -19,8 +19,9 @@ import { ModelHero } from '../components/models/ModelHero';
 import { ModelDetailPanel } from '../components/models/ModelDetailPanel';
 import { ModelBreadcrumb } from '../components/models/ModelBreadcrumb';
 import { ModelViewer3DModal } from '../components/models/ModelViewer3DModal';
+import { TextFilePreviewModal } from '../components/models/TextFilePreviewModal';
 import { ModelDetailSkeleton } from '../components/models/ModelDetailSkeleton';
-import { collectStlFiles, type StlFileRef } from '../lib/model-files';
+import { collectStlFiles, type StlFileRef, type TextFileRef } from '../lib/model-files';
 import { useLibraryPath } from '../hooks/use-libraries';
 import { Button, buttonVariants } from '../components/ui/button';
 import {
@@ -70,6 +71,8 @@ export function ModelDetailPage() {
 
   const [viewerOpen, setViewerOpen] = React.useState(false);
   const [activeStl, setActiveStl] = React.useState<StlFileRef | null>(null);
+  const [textPreviewOpen, setTextPreviewOpen] = React.useState(false);
+  const [activeTextFile, setActiveTextFile] = React.useState<TextFileRef | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = React.useState(false);
   const [mergeDialogOpen, setMergeDialogOpen] = React.useState(false);
   const [selectedImageFileId, setSelectedImageFileId] = React.useState<string | null>(null);
@@ -141,6 +144,11 @@ export function ModelDetailPage() {
   function openViewer(stl: StlFileRef) {
     setActiveStl(stl);
     setViewerOpen(true);
+  }
+
+  function openTextPreview(file: TextFileRef) {
+    setActiveTextFile(file);
+    setTextPreviewOpen(true);
   }
 
   React.useEffect(() => {
@@ -255,6 +263,7 @@ export function ModelDetailPage() {
               model={model}
               fileTree={fileTree}
               onOpenStl={openViewer}
+              onOpenText={openTextPreview}
               selectedImageFileId={selectedImageFileId}
               onSelectImageFile={setSelectedImageFileId}
               fileActionsDisabled={fileMutation.isPending}
@@ -277,6 +286,11 @@ export function ModelDetailPage() {
         onOpenChange={setViewerOpen}
         stlFiles={stlFiles}
         initialStl={activeStl}
+      />
+      <TextFilePreviewModal
+        open={textPreviewOpen}
+        onOpenChange={setTextPreviewOpen}
+        file={activeTextFile}
       />
 
       {model && (

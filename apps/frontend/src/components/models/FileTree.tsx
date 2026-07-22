@@ -7,6 +7,7 @@ import {
   FileText,
   File,
   Download,
+  Eye,
   FolderInput,
   FolderPlus,
   MoreHorizontal,
@@ -18,7 +19,13 @@ import type { FileTreeNode, FileType } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
 import { Model3DIcon } from '../icons';
-import { makeStlRef, type StlFileRef } from '../../lib/model-files';
+import {
+  isTextPreviewFileName,
+  makeStlRef,
+  makeTextFileRef,
+  type StlFileRef,
+  type TextFileRef,
+} from '../../lib/model-files';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,6 +48,7 @@ interface FileNodeProps {
   pathPrefix: string[];
   modelId: string;
   onOpenStl?: (stl: StlFileRef) => void;
+  onOpenText?: (file: TextFileRef) => void;
   selectedImageFileId?: string | null;
   onSelectImageFile?: (fileId: string) => void;
   defaultExpanded?: boolean;
@@ -283,6 +291,7 @@ function FileNode({
   pathPrefix,
   modelId,
   onOpenStl,
+  onOpenText,
   selectedImageFileId,
   onSelectImageFile,
   defaultExpanded = false,
@@ -400,6 +409,7 @@ function FileNode({
                 pathPrefix={[...pathPrefix, node.name]}
                 modelId={modelId}
                 onOpenStl={onOpenStl}
+                onOpenText={onOpenText}
                 selectedImageFileId={selectedImageFileId}
                 onSelectImageFile={onSelectImageFile}
                 disabled={disabled}
@@ -424,11 +434,12 @@ function FileNode({
 
   const isStl = node.fileType === 'stl';
   const canView3D = isStl && Boolean(onOpenStl);
+  const parentPath = joinPath(pathPrefix);
+  const fileSegments = [...pathPrefix, node.name];
+  const canPreviewText = !selectionMode && Boolean(onOpenText) && isTextPreviewFileName(node.name);
   const isImage = node.fileType === 'image' && Boolean(node.id);
   const isSelectedImage = isImage && node.id === selectedImageFileId;
   const canSelectImage = !selectionMode && isImage && Boolean(onSelectImageFile);
-  const parentPath = joinPath(pathPrefix);
-  const fileSegments = [...pathPrefix, node.name];
   const isSelectedFile = Boolean(node.id && selectedFileIds.has(node.id));
 
   function selectImage() {
@@ -506,6 +517,20 @@ function FileNode({
           3D
         </button>
       )}
+      {canPreviewText && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenText!(makeTextFileRef(modelId, fileSegments, node.sizeBytes));
+          }}
+          className="flex flex-shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-primary opacity-0 transition-all hover:bg-primary/10 focus:opacity-100 group-hover:opacity-100"
+          aria-label={`Preview ${node.name}`}
+        >
+          <Eye className="h-3.5 w-3.5" />
+          Preview
+        </button>
+      )}
       {node.sizeBytes !== undefined && (
         <span className="text-xs text-muted-foreground flex-shrink-0 ml-2">
           {formatFileSize(node.sizeBytes)}
@@ -526,6 +551,16 @@ function FileNode({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-36">
+            {canPreviewText && (
+              <DropdownMenuItem
+                onClick={() => {
+                  onOpenText!(makeTextFileRef(modelId, fileSegments, node.sizeBytes));
+                }}
+              >
+                <Eye className="mr-2 h-3.5 w-3.5" />
+                Preview
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onClick={() => {
                 downloadFiles(modelId, [{ id: node.id!, name: node.name, segments: fileSegments }]);
@@ -590,6 +625,8 @@ interface FileTreeProps {
   modelId: string;
   /** When provided, STL rows show a "view in 3D" affordance. */
   onOpenStl?: (stl: StlFileRef) => void;
+  /** When provided, text-like rows show a preview affordance. */
+  onOpenText?: (file: TextFileRef) => void;
   selectedImageFileId?: string | null;
   onSelectImageFile?: (fileId: string) => void;
   disabled?: boolean;
@@ -608,6 +645,7 @@ export function FileTree({
   tree,
   modelId,
   onOpenStl,
+  onOpenText,
   selectedImageFileId,
   onSelectImageFile,
   disabled = false,
@@ -872,6 +910,7 @@ export function FileTree({
               pathPrefix={[]}
               modelId={modelId}
               onOpenStl={onOpenStl}
+              onOpenText={onOpenText}
               selectedImageFileId={selectedImageFileId}
               onSelectImageFile={onSelectImageFile}
               defaultExpanded={true}
