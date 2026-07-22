@@ -6,6 +6,7 @@ import type {
   BulkCollectionRequest,
 } from '@alexandria/shared';
 import { db } from '../db/index.js';
+import type { DatabaseExecutor } from '../db/index.js';
 import { collections, collectionModels } from '../db/schema/index.js';
 import type { Collection as CollectionRow } from '../db/schema/collection.js';
 import { createLogger } from '../utils/logger.js';
@@ -97,8 +98,9 @@ export class CollectionService {
     collectionId: string,
     userId: string,
     libraryId: string,
+    executor: DatabaseExecutor = db,
   ): Promise<void> {
-    const [row] = await db
+    const [row] = await executor
       .select({ id: collections.id })
       .from(collections)
       .where(
@@ -183,8 +185,11 @@ export class CollectionService {
   /**
    * Fetch a collection by ID or throw NOT_FOUND.
    */
-  async getCollectionById(id: string): Promise<Collection> {
-    const row = await this._requireCollection(id);
+  async getCollectionById(
+    id: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<Collection> {
+    const row = await this._requireCollection(id, executor);
     return toCollection(row);
   }
 
@@ -341,14 +346,18 @@ export class CollectionService {
   /**
    * Add multiple models to a collection. Idempotent — ignores duplicates.
    */
-  async addModelsToCollection(collectionId: string, modelIds: string[]): Promise<void> {
-    await this._requireCollection(collectionId);
+  async addModelsToCollection(
+    collectionId: string,
+    modelIds: string[],
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
+    await this._requireCollection(collectionId, executor);
 
     if (modelIds.length === 0) {
       return;
     }
 
-    await db
+    await executor
       .insert(collectionModels)
       .values(modelIds.map((modelId) => ({ collectionId, modelId })))
       .onConflictDoNothing();
@@ -362,10 +371,14 @@ export class CollectionService {
   /**
    * Remove a single model from a collection.
    */
-  async removeModelFromCollection(collectionId: string, modelId: string): Promise<void> {
-    await this._requireCollection(collectionId);
+  async removeModelFromCollection(
+    collectionId: string,
+    modelId: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
+    await this._requireCollection(collectionId, executor);
 
-    await db
+    await executor
       .delete(collectionModels)
       .where(
         and(
@@ -434,8 +447,11 @@ export class CollectionService {
   /**
    * Fetch a collection row by ID or throw NOT_FOUND.
    */
-  private async _requireCollection(id: string): Promise<CollectionRow> {
-    const [row] = await db
+  private async _requireCollection(
+    id: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<CollectionRow> {
+    const [row] = await executor
       .select()
       .from(collections)
       .where(eq(collections.id, id))

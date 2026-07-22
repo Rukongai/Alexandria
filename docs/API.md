@@ -231,6 +231,356 @@ Update the current user's profile. All fields are optional. To change the passwo
 
 ---
 
+## AI Assistant
+
+The assistant uses user-configured, OpenAI-compatible providers. Every endpoint in this section requires authentication. Provider configuration is scoped to the authenticated user and does not use library scope. Chat and proposal application also use `requireLibrary`: send `X-Library-Id` to select an owned library, or omit it to use the user's default library.
+
+Provider API keys are encrypted at rest and are never returned by the API. Public provider objects expose only `hasApiKey` and an identification hint containing at most the final four characters. The backend sends provider requests to `<baseUrl>/models` and `<baseUrl>/chat/completions`, with the stored key as a bearer token when one is configured. Configure only trusted endpoints because these connections originate from the backend.
+
+### AI encryption configuration
+
+`AI_ENCRYPTION_KEY` provides the key material for encrypting stored provider API keys. Production startup fails when it is absent, shorter than 32 characters, equal to `SESSION_SECRET`, or a checked example placeholder. Keep it separate and stable; changing the value makes existing encrypted credentials unreadable. In development only, an unset value falls back to `SESSION_SECRET`. The Docker Compose configuration requires `AI_ENCRYPTION_KEY` and passes it to the backend.
+
+`AI_ALLOW_PRIVATE_PROVIDER_URLS` controls whether a provider may resolve to a loopback, RFC1918, or IPv6 unique-local address. It defaults to `false` in production and `true` outside production; only the literal value `true` enables it when explicitly set. Docker Compose passes it with a default of `false`. Enable it in production only when Alexandria must connect to a trusted same-host or LAN provider. Link-local addresses, known cloud-metadata hosts/addresses, multicast, and reserved targets remain blocked regardless of this setting.
+
+### GET /ai/providers
+
+List the authenticated user's AI providers. API keys are not included.
+
+**Auth required:** Yes
+
+**Library scope:** None. `X-Library-Id` does not affect the result.
+
+**Response (200):**
+
+```json
+{
+  "data": [
+    {
+      "id": "20c1f03d-4e5f-4e42-b5a0-a85672dc486d",
+      "name": "Hosted provider",
+      "baseUrl": "https://api.openai.com/v1",
+      "model": "provider-model-id",
+      "isDefault": true,
+      "hasApiKey": true,
+      "apiKeyHint": "••••7xQ2",
+      "createdAt": "2026-07-21T18:20:00.000Z",
+      "updatedAt": "2026-07-21T18:20:00.000Z"
+    }
+  ],
+  "meta": {
+    "total": 1,
+    "cursor": null,
+    "pageSize": 1
+  },
+  "errors": null
+}
+```
+
+This list is not cursor-paginated; `meta` describes the complete result.
+
+---
+
+### POST /ai/providers
+
+Create an OpenAI-compatible provider. The first provider created for a user becomes the default even when `isDefault` is omitted or `false`. Creating another provider with `isDefault: true` demotes the prior default. Default-selection writes are serialized per user, so concurrent provider requests preserve one deterministic default.
+
+**Auth required:** Yes
+
+**Library scope:** None.
+
+**Request body:**
+
+```json
+{
+  "name": "Hosted provider",
+  "baseUrl": "https://api.openai.com/v1/",
+  "apiKey": "secret-token",
+  "model": "provider-model-id",
+  "isDefault": true
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `name` | string | Required; trimmed; 1–255 characters |
+| `baseUrl` | string | Required; maximum 2,048 characters; host must resolve within 3 seconds; no embedded username/password; public targets require HTTPS; HTTP is allowed only when all resolved addresses are private/loopback and private providers are enabled |
+| `apiKey` | string | Optional; maximum 4,096 characters; an empty string is stored as no key |
+| `model` | string | Required; trimmed; 1–255 characters |
+| `isDefault` | boolean | Optional; defaults to `false`, except that the user's first provider is always made default |
+
+The server removes the base URL query, fragment, and trailing slashes before storing it. Preserve any path prefix required by the provider, such as `/v1`.
+
+**Response (201):** Returns the created `AiProvider` in the same public shape as an item from `GET /ai/providers`.
+
+---
+
+### PATCH /ai/providers/:id
+
+Update an owned provider. Omitted fields retain their current values.
+
+**Auth required:** Yes
+
+**Library scope:** None.
+
+**Path parameter:** `id` — provider UUID. A missing or other user's provider returns `404 NOT_FOUND`.
+
+**Request body:**
+
+```json
+{
+  "model": "new-provider-model-id",
+  "apiKey": null,
+  "isDefault": true
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `name` | string | Optional; trimmed; 1–255 characters |
+| `baseUrl` | string | Optional; maximum 2,048 characters; host must resolve within 3 seconds; no embedded username/password; public targets require HTTPS; HTTP is allowed only when all resolved addresses are private/loopback and private providers are enabled |
+| `apiKey` | string or `null` | Optional; maximum 4,096 characters; `null` or an empty string clears the stored key; omission retains it |
+| `model` | string | Optional; trimmed; 1–255 characters |
+| `isDefault` | boolean | Optional; `true` promotes this provider and demotes the prior default |
+
+At least one field is required. If the current default is set to `false`, the oldest remaining provider becomes default. A user's only provider cannot be left non-default: it remains default.
+
+**Response (200):** Returns the updated public `AiProvider`.
+
+---
+
+### DELETE /ai/providers/:id
+
+Delete an owned provider and its encrypted credential. If it was the default, the oldest remaining provider becomes default.
+
+**Auth required:** Yes
+
+**Library scope:** None.
+
+**Path parameter:** `id` — provider UUID. A missing or other user's provider returns `404 NOT_FOUND`.
+
+**Response (200):**
+
+```json
+{
+  "data": null,
+  "meta": null,
+  "errors": null
+}
+```
+
+---
+
+### POST /ai/providers/:id/test
+
+Test an owned provider by requesting its OpenAI-compatible `GET /models` endpoint. A successful result confirms that the request completed and the response contained a `data` array; it does not send a chat completion.
+
+**Auth required:** Yes
+
+**Library scope:** None.
+
+**Path parameter:** `id` — provider UUID.
+
+**Request body:** None
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "ok": true,
+    "modelCount": 12
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+Provider HTTP errors, timeouts, oversized responses, invalid JSON, or an invalid models response return `422 PROCESSING_FAILED`. DNS lookup is capped at 3 seconds. Every resolved address is classified before each request hop, and the complete deduplicated vetted address set is pinned for socket connection and failover without re-resolution while the original hostname remains in HTTP Host and TLS SNI. IPv4-mapped addresses are classified by their embedded IPv4 target; IPv4 translation/transition ranges including NAT64, 6to4, Teredo, IPv4-compatible, and ISATAP addresses are blocked. Each short-lived pinned dispatcher is closed after its response is consumed or cancelled. Each provider operation has one 10-second deadline shared by validation, all redirect hops, failover attempts, and response reading; its response body is capped at 2 MiB. Alexandria does not include the upstream response body in the client-facing error.
+
+Every outbound request re-resolves and checks its target against the provider-network policy. Redirects are followed manually for at most three hops, must remain on the original origin, and are revalidated before each hop. A cross-origin, blocked, missing-location, or excessive redirect returns `422 PROCESSING_FAILED`.
+
+---
+
+### GET /ai/providers/:id/models
+
+Discover models from an owned provider's OpenAI-compatible `GET /models` endpoint. Entries without a string `id` are omitted and the remaining entries are sorted by `id`.
+
+**Auth required:** Yes
+
+**Library scope:** None.
+
+**Path parameter:** `id` — provider UUID.
+
+**Response (200):**
+
+```json
+{
+  "data": [
+    {
+      "id": "provider-model-id",
+      "ownedBy": "provider"
+    },
+    {
+      "id": "provider-model-id-larger",
+      "ownedBy": null
+    }
+  ],
+  "meta": {
+    "total": 2,
+    "cursor": null,
+    "pageSize": 2
+  },
+  "errors": null
+}
+```
+
+The upstream `owned_by` field is exposed as `ownedBy`; missing or non-string values become `null`. This result is not cursor-paginated. Provider failures use the same `422 PROCESSING_FAILED` behavior as the test endpoint.
+
+---
+
+### POST /ai/chat
+
+Send one assistant turn through the selected provider. The assistant can search and inspect models only in the active library. It may also use public lookup tools and can create one reviewable change proposal, but it cannot mutate library data during chat.
+
+**Auth required:** Yes
+
+**Library scope:** Required. `X-Library-Id` selects the active owned library; an absent header selects the default. An unknown or un-owned library returns `404 NOT_FOUND`.
+
+**Request body:**
+
+```json
+{
+  "message": "Find the artist for this model and propose adding it.",
+  "history": [
+    {
+      "role": "user",
+      "content": "Help me clean up this model."
+    },
+    {
+      "role": "assistant",
+      "content": "What would you like me to research?"
+    }
+  ],
+  "providerId": "20c1f03d-4e5f-4e42-b5a0-a85672dc486d",
+  "context": {
+    "modelId": "11de19f0-3164-4f86-8741-b876777f7d17"
+  }
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `message` | string | Required; trimmed; 1–4,000 characters |
+| `history` | array | Optional; at most 20 messages; `message` plus all history content is limited to 32,000 characters total |
+| `history[].role` | `user` \| `assistant` | Required for each history item |
+| `history[].content` | string | Required; 1–8,000 characters |
+| `providerId` | UUID string | Optional; must identify the user's provider; omission uses the user's default provider |
+| `context.modelId` | UUID string | Optional; must identify a model owned by the user in the active library |
+
+The backend does not persist chat transcripts. It sends the supplied message and history to the selected external provider. When `context.modelId` is present, it verifies ownership and active-library membership before also sending the assembled model detail as an explicitly untrusted user-role payload, not as a privileged system instruction. Tool results needed for the turn—including library search/model content and public search results—are also sent to that provider and are labeled as untrusted data.
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "message": "I found a likely artist and prepared a metadata update for review.",
+    "sources": [
+      {
+        "title": "Dragon Bust by Example Studio",
+        "url": "https://example.org/dragon-bust",
+        "snippet": "A printable dragon bust by Example Studio."
+      },
+      {
+        "title": "Dragon bust reference.jpg",
+        "url": "https://commons.wikimedia.org/wiki/File:Dragon_bust_reference.jpg",
+        "imageUrl": "https://upload.wikimedia.org/example/500px-Dragon_bust_reference.jpg"
+      }
+    ],
+    "proposal": {
+      "proposalId": "93b39b94-bad1-4cdd-a5d8-c36d03935225",
+      "summary": "Set the Artist metadata field on Dragon Bust",
+      "changes": [
+        {
+          "type": "set_metadata",
+          "modelId": "11de19f0-3164-4f86-8741-b876777f7d17",
+          "modelName": "Dragon Bust",
+          "values": {
+            "artist": "Example Studio"
+          }
+        }
+      ],
+      "expiresAt": "2026-07-21T18:35:00.000Z",
+      "display": {
+        "collections": {},
+        "images": {}
+      }
+    }
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`sources` contains unique source URLs gathered during this turn, up to 24. `snippet` and `imageUrl` are optional. `proposal` is `null` when the provider did not request a valid preview. When a proposal exists, `display.collections` maps referenced collection UUIDs to server-resolved names and `display.images` maps referenced model-file UUIDs to `{ filename, thumbnailUrl }`. These presentation maps let the review UI show human-readable targets while `changes` remains the exact immutable payload. The shared field is optional for compatibility; newly created previews populate it, using empty maps when no collection or image IDs need resolution.
+
+Public text lookup uses DuckDuckGo's Instant Answer API and returns at most eight abstract/related-topic sources; it is not a general crawl of arbitrary pages. Image lookup uses Wikimedia Commons and returns at most eight file-page and thumbnail candidates. Both services are keyless, use a 7-second timeout and 1 MiB response-body limit, and fail safely as an unavailable tool result so the assistant may still answer. Returned image URLs are research candidates only: the backend does not import them into managed storage, although the frontend may load a returned thumbnail to display its source card. An AI cover change can reference only an image file already belonging to the target model.
+
+The complete chat operation has a 45-second deadline; provider and public-search calls receive the remaining time, bounded further by their own 10-second and 7-second limits. If the client disconnects while chat is running, the cancellation signal is propagated to active provider and public-search fetches. Provider resolution, model-context reads, library/model tools, and proposal creation are raced against the same cancellation/deadline boundary. Because PostgreSQL queries are not cancelled by that JavaScript race, the shared pool additionally enforces a 5-second connection-acquisition timeout, 45-second server statement timeout, and 50-second client query timeout so abandoned work cannot remain unbounded. Preview validation and insertion use one transaction with the operation deadline applied locally and cancellation/deadline checks around the insert, so an abandoned mutating tool cannot commit a late proposal. Each user may start at most 10 chats per rolling minute and run at most two chats concurrently; exceeding either limit returns `429 PROCESSING_FAILED`. The limiter is process-local, bounded to 10,000 tracked users, and resets when the backend restarts, which is appropriate for the current single-instance deployment but must be replaced by shared state before horizontally scaling the backend. The provider tool loop accepts at most one proposal per response and applies these resource limits: six provider turns, eight tool calls per turn, 12 tool calls total, 20,000 argument characters per call, 40,000 argument characters total, 12,000 result characters per tool, 48,000 result characters total, and 64,000 serialized provider-context characters. The returned assistant message is capped at 16,000 characters. Provider failures, invalid/empty responses, or exceeding a deadline, turn, tool, argument, result, or context budget return `422 PROCESSING_FAILED`; an overlong final message is truncated. Expected tool errors sent back through the provider loop are length-bounded, while unexpected internal and database errors are replaced with `Tool call failed` rather than exposing their messages to the provider.
+
+#### Proposal validation
+
+There is intentionally no client-facing endpoint for creating a proposal. The provider's only change-capable tool is the internal `preview_changes` tool. Before storing a preview, the server validates a non-empty summary of at most 1,000 characters and 1–25 changes. Each model must belong to the authenticated user and active library, and `modelName` must exactly match its current name.
+
+The supported changes are:
+
+- `update_model`: a non-empty patch containing only `name` (1–255 characters), `description` (string up to 20,000 characters or `null`), or `previewImageFileId` (UUID or `null`). A non-null preview file must be an image belonging to that model. Crop changes are not supported by AI proposals.
+- `set_metadata`: a non-empty object keyed by existing metadata-field slug. `null` clears a value; numbers must be finite, booleans must be booleans, `multi_enum` values must be string arrays, and other field types require strings.
+- `update_collections`: `addCollectionIds` and `removeCollectionIds` are arrays of at most 50 UUIDs each. At least one ID is required, an ID cannot appear in both arrays, and every collection must belong to the user and active library.
+
+The resulting proposal is immutable, server-owned, scoped to the user and active library, and expires 15 minutes after creation.
+
+---
+
+### POST /ai/proposals/:id/apply
+
+Apply the exact stored changes from a prior assistant preview. The request accepts a proposal ID only—there is no request body and no way for the client to replace or amend the proposed changes. This preview-before-apply separation is a server-enforced invariant, not only a frontend confirmation step.
+
+**Auth required:** Yes
+
+**Library scope:** Required. The active library must match the proposal's stored library. A proposal belonging to another user or library returns `404 NOT_FOUND`.
+
+**Path parameter:** `id` — proposal UUID returned in `AiChangePreview`.
+
+**Request body:** None
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "proposalId": "93b39b94-bad1-4cdd-a5d8-c36d03935225",
+    "status": "applied",
+    "changedModelIds": [
+      "11de19f0-3164-4f86-8741-b876777f7d17"
+    ]
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+Immediately before applying, the server reloads the stored payload and enters the mutation transaction. It locks every referenced model row `FOR UPDATE` in deterministic model-ID order, then revalidates model names, ownership, active-library scope, metadata fields, image files, and collections through that same transaction executor. Only after revalidation does it conditionally change the proposal from `pending` to `applying`; this atomic claim prevents concurrent requests from applying it twice, while the model locks prevent two independently previewed stale-name proposals from both overwriting the same model. Apply-time expiry checks use the database clock.
+
+A proposal can be applied once successfully and only while its 15-minute review window is open. Expired proposals and non-pending proposals return `409 CONFLICT` and cannot be replayed. Expiry is enforced when applying; this endpoint does not expose or renew expired proposals.
+
+The conditional claim, all proposed model/metadata/collection writes, and the final `applied` status run in one database transaction. If any operation fails or the process exits before commit, every domain change and the claim are rolled back together. The proposal remains `pending` and may be retried while unexpired and still valid; there is no committed `applying` state to strand.
+
+An invalid proposal UUID returns `400 VALIDATION_ERROR`; a missing, un-owned, or wrong-library proposal returns `404 NOT_FOUND`. A stale live reference can return `404 NOT_FOUND` or `400 VALIDATION_ERROR` during revalidation. An invalid stored payload, expiry, prior use, or a concurrent claim returns `409 CONFLICT`.
+
+---
+
 ## Models
 
 ### GET /models

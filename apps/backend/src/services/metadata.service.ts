@@ -11,6 +11,7 @@ import type {
   BulkMetadataOperation,
 } from '@alexandria/shared';
 import { db } from '../db/index.js';
+import type { DatabaseExecutor } from '../db/index.js';
 import { models, metadataFieldDefinitions, modelMetadata } from '../db/schema/index.js';
 import { tags, modelTags } from '../db/schema/index.js';
 import type { MetadataFieldDefinition as MetadataFieldDefinitionRow } from '../db/schema/metadata.js';
@@ -71,8 +72,11 @@ export class MetadataService {
     return rows.map(toFieldDetail);
   }
 
-  async getFieldBySlug(slug: string): Promise<MetadataFieldDefinitionRow> {
-    const [row] = await db
+  async getFieldBySlug(
+    slug: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<MetadataFieldDefinitionRow> {
+    const [row] = await executor
       .select()
       .from(metadataFieldDefinitions)
       .where(eq(metadataFieldDefinitions.slug, slug))
@@ -246,9 +250,10 @@ export class MetadataService {
   async setModelMetadata(
     modelId: string,
     data: SetModelMetadataRequest,
+    executor: DatabaseExecutor = db,
   ): Promise<void> {
     // Verify the model exists before writing metadata
-    const [model] = await db
+    const [model] = await executor
       .select({ id: models.id })
       .from(models)
       .where(eq(models.id, modelId))
@@ -264,18 +269,18 @@ export class MetadataService {
     );
 
     for (const [fieldSlug, rawValue] of Object.entries(data)) {
-      const field = await this.getFieldBySlug(fieldSlug);
+      const field = await this.getFieldBySlug(fieldSlug, executor);
 
       if (rawValue === null) {
         // Remove metadata for this field
         if (this.isTagField(field)) {
-          await db.delete(modelTags).where(eq(modelTags.modelId, modelId));
+          await executor.delete(modelTags).where(eq(modelTags.modelId, modelId));
           logger.debug(
             { service: 'MetadataService', modelId, fieldSlug },
             'Removed all model tags',
           );
         } else {
-          await db
+          await executor
             .delete(modelMetadata)
             .where(
               and(
@@ -303,7 +308,7 @@ export class MetadataService {
           const trimmedName = tagName.trim();
           if (!trimmedName) continue;
 
-          const [existingTag] = await db
+          const [existingTag] = await executor
             .select({ id: tags.id })
             .from(tags)
             .where(sql`lower(${tags.name}) = lower(${trimmedName})`)
@@ -313,7 +318,7 @@ export class MetadataService {
             tagIds.push(existingTag.id);
           } else {
             const tagSlug = generateSlug(trimmedName);
-            const [newTag] = await db
+            const [newTag] = await executor
               .insert(tags)
               .values({ name: trimmedName, slug: tagSlug })
               .returning({ id: tags.id });
@@ -326,10 +331,10 @@ export class MetadataService {
         }
 
         // Replace all existing model_tags for this model
-        await db.delete(modelTags).where(eq(modelTags.modelId, modelId));
+        await executor.delete(modelTags).where(eq(modelTags.modelId, modelId));
 
         if (tagIds.length > 0) {
-          await db.insert(modelTags).values(
+          await executor.insert(modelTags).values(
             tagIds.map((tagId) => ({ modelId, tagId })),
           );
         }
@@ -344,7 +349,7 @@ export class MetadataService {
           rawValue as string | string[] | number | boolean,
         );
 
-        await db
+        await executor
           .insert(modelMetadata)
           .values({
             modelId,

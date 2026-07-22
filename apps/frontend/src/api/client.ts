@@ -70,10 +70,15 @@ export async function get<T>(path: string): Promise<ApiResponse<T>> {
   return request<T>(path, { method: 'GET' });
 }
 
-export async function post<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
+export async function post<T>(
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<ApiResponse<T>> {
   return request<T>(path, {
     method: 'POST',
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   });
 }
 
