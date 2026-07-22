@@ -20,6 +20,8 @@ interface FileNodeProps {
   pathPrefix: string[];
   modelId: string;
   onOpenStl?: (stl: StlFileRef) => void;
+  selectedImageFileId?: string | null;
+  onSelectImageFile?: (fileId: string) => void;
   defaultExpanded?: boolean;
 }
 
@@ -36,16 +38,36 @@ function FileIcon({ fileType }: { fileType?: FileType }) {
   }
 }
 
+function containsFileId(nodes: FileTreeNode[] | undefined, fileId: string): boolean {
+  if (!nodes) return false;
+  for (const node of nodes) {
+    if (node.type === 'file' && node.id === fileId) return true;
+    if (node.type === 'directory' && containsFileId(node.children, fileId)) return true;
+  }
+  return false;
+}
+
 function FileNode({
   node,
   depth,
   pathPrefix,
   modelId,
   onOpenStl,
+  selectedImageFileId,
+  onSelectImageFile,
   defaultExpanded = false,
 }: FileNodeProps) {
+  const containsSelectedImage = selectedImageFileId
+    ? containsFileId(node.children, selectedImageFileId)
+    : false;
   const [expanded, setExpanded] = React.useState(defaultExpanded);
   const paddingLeft = depth * 16;
+
+  React.useEffect(() => {
+    if (containsSelectedImage) {
+      setExpanded(true);
+    }
+  }, [containsSelectedImage]);
 
   if (node.type === 'directory') {
     return (
@@ -77,6 +99,8 @@ function FileNode({
                 pathPrefix={[...pathPrefix, node.name]}
                 modelId={modelId}
                 onOpenStl={onOpenStl}
+                selectedImageFileId={selectedImageFileId}
+                onSelectImageFile={onSelectImageFile}
               />
             ))}
           </div>
@@ -87,18 +111,53 @@ function FileNode({
 
   const isStl = node.fileType === 'stl';
   const canView3D = isStl && Boolean(onOpenStl);
+  const isImage = node.fileType === 'image' && Boolean(node.id);
+  const isSelectedImage = isImage && node.id === selectedImageFileId;
+  const canSelectImage = isImage && Boolean(onSelectImageFile);
+
+  function selectImage() {
+    if (canSelectImage && node.id) {
+      onSelectImageFile!(node.id);
+    }
+  }
 
   return (
     <div
-      className="flex items-center gap-1.5 py-1 px-2 rounded hover:bg-muted/40 text-sm group"
+      role={canSelectImage ? 'button' : undefined}
+      tabIndex={canSelectImage ? 0 : undefined}
+      onClick={selectImage}
+      onKeyDown={(event) => {
+        if (!canSelectImage) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectImage();
+        }
+      }}
+      className={cn(
+        'flex items-center gap-1.5 py-1 px-2 rounded text-sm group focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        canSelectImage ? 'cursor-pointer hover:bg-muted/60' : 'hover:bg-muted/40',
+        isSelectedImage && 'bg-primary/10 text-primary hover:bg-primary/15',
+      )}
       style={{ paddingLeft: `${paddingLeft + 8}px` }}
+      aria-label={canSelectImage ? `Select image ${node.name}` : undefined}
+      aria-current={isSelectedImage ? 'true' : undefined}
     >
       <FileIcon fileType={node.fileType} />
-      <span className="truncate text-foreground flex-1 min-w-0">{node.name}</span>
+      <span
+        className={cn(
+          'truncate flex-1 min-w-0',
+          isSelectedImage ? 'text-primary font-medium' : 'text-foreground',
+        )}
+      >
+        {node.name}
+      </span>
       {canView3D && (
         <button
           type="button"
-          onClick={() => onOpenStl!(makeStlRef(modelId, [...pathPrefix, node.name]))}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenStl!(makeStlRef(modelId, [...pathPrefix, node.name]));
+          }}
           className="flex items-center gap-1 flex-shrink-0 rounded-full px-2 py-0.5 text-xs font-medium text-primary opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-primary/10 transition-all"
           aria-label={`View ${node.name} in 3D`}
         >
@@ -132,9 +191,17 @@ interface FileTreeProps {
   modelId: string;
   /** When provided, STL rows show a "view in 3D" affordance. */
   onOpenStl?: (stl: StlFileRef) => void;
+  selectedImageFileId?: string | null;
+  onSelectImageFile?: (fileId: string) => void;
 }
 
-export function FileTree({ tree, modelId, onOpenStl }: FileTreeProps) {
+export function FileTree({
+  tree,
+  modelId,
+  onOpenStl,
+  selectedImageFileId,
+  onSelectImageFile,
+}: FileTreeProps) {
   const totalFiles = countFiles(tree);
 
   return (
@@ -155,6 +222,8 @@ export function FileTree({ tree, modelId, onOpenStl }: FileTreeProps) {
               pathPrefix={[]}
               modelId={modelId}
               onOpenStl={onOpenStl}
+              selectedImageFileId={selectedImageFileId}
+              onSelectImageFile={onSelectImageFile}
               defaultExpanded={true}
             />
           ))

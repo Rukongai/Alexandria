@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import type { Job } from 'bullmq';
@@ -22,7 +23,7 @@ import { collectionService } from './collection.service.js';
 import { storageService } from './storage.service.js';
 import { createImportStrategy } from './import-strategy.service.js';
 import { parsePattern } from '../utils/pattern-parser.js';
-import { stripArchiveExtension } from '../utils/archive.js';
+import { detectArchiveExtension, stripArchiveExtension } from '../utils/archive.js';
 import { generateSlug } from '../utils/slug.js';
 import { createLogger } from '../utils/logger.js';
 import { AppError, validationError } from '../utils/errors.js';
@@ -260,6 +261,78 @@ export class IngestionService {
         await fsPromises.rm(stagingPath, { recursive: true, force: true }).catch(() => {});
       }
     }
+  }
+
+  async appendUploadToModel(
+    file: { tempFilePath: string; originalFilename: string },
+    modelId: string,
+    userId: string,
+    libraryId: string,
+  ): Promise<{ modelId: string; addedFileCount: number }> {
+    await modelService.requireOwnedModel(modelId, userId, libraryId);
+
+    const extractDir = `${file.tempFilePath}_extracted`;
+    try {
+      const archiveExtension = detectArchiveExtension(file.originalFilename);
+      const manifest = archiveExtension
+        ? await fileProcessingService.processArchive(file.tempFilePath, extractDir)
+        : await this.stageSingleFileUpload(file.tempFilePath, file.originalFilename, extractDir);
+
+      if (manifest.entries.length === 0) {
+        throw validationError('Upload did not contain any supported files');
+      }
+
+      const requestedInputs = manifest.entries.map((entry) => ({
+        filename: entry.filename,
+        relativePath: entry.relativePath,
+        fileType: entry.fileType,
+        mimeType: entry.mimeType,
+        sizeBytes: entry.sizeBytes,
+        storagePath: '',
+        hash: entry.hash,
+      }));
+      const modelFileInputs = await modelService.buildAdditionalFileInputs(modelId, requestedInputs);
+      const storedPaths: string[] = [];
+
+      try {
+        for (let i = 0; i < modelFileInputs.length; i++) {
+          const sourcePath = path.join(extractDir, manifest.entries[i].relativePath);
+          const readStream = fs.createReadStream(sourcePath);
+          await storageService.store(modelFileInputs[i].storagePath, readStream);
+          storedPaths.push(modelFileInputs[i].storagePath);
+        }
+
+        const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
+        await this.generateAndStoreThumbnails(modelId, manifest.entries, createdFiles, extractDir);
+        await modelService.recalculateModelStats(modelId);
+      } catch (err) {
+        await Promise.all(storedPaths.map((storedPath) => storageService.delete(storedPath).catch(() => {})));
+        throw err;
+      }
+
+      logger.info(
+        { service: 'IngestionService', modelId, fileCount: manifest.entries.length },
+        'Additional archive files appended to model',
+      );
+
+      return { modelId, addedFileCount: manifest.entries.length };
+    } finally {
+      await fsPromises.rm(file.tempFilePath, { force: true }).catch(() => {});
+      await fsPromises.rm(extractDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  private async stageSingleFileUpload(
+    tempFilePath: string,
+    originalFilename: string,
+    extractDir: string,
+  ): Promise<FileManifest> {
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    const filename = path.basename(originalFilename).replace(/[/\\]/g, '_');
+    await fsPromises.copyFile(tempFilePath, path.join(extractDir, filename));
+    const entries = await fileProcessingService.scanDirectory(extractDir, extractDir);
+    const totalSizeBytes = entries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
+    return { entries, totalSizeBytes };
   }
 
   /** Discard a session that has not been committed, removing staged files. */

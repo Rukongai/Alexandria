@@ -107,6 +107,16 @@ export interface UpdateModelRequest {
   previewCropScale?: number | null;
 }
 
+export interface MergeModelsRequest {
+  sourceModelIds: string[];
+}
+
+export interface MergeModelsResponse {
+  targetModelId: string;
+  mergedModelIds: string[];
+  movedFileCount: number;
+}
+
 export interface JobStatus {
   modelId: string;
   status: ModelStatus;

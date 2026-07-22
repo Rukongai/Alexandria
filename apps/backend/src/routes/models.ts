@@ -10,10 +10,12 @@ import type {
   ModelSearchParams,
   UpdateModelRequest,
   BatchUploadMetadata,
+  MergeModelsRequest,
 } from '@alexandria/shared';
 import {
   importConfigSchema,
   modelSearchParamsSchema,
+  mergeModelsSchema,
   updateModelSchema,
   uploadInitSchema,
   chunkIndexParamsSchema,
@@ -334,6 +336,54 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /:id/files/upload — append uploaded files or archive contents to an existing model
+  app.post(
+    '/:id/files/upload',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
+
+      const uploads: Array<{ tempFilePath: string; originalFilename: string }> = [];
+      for await (const data of request.files()) {
+        const originalFilename = data.filename;
+        const tempDir = os.tmpdir();
+        const tempFilePath = path.join(
+          tempDir,
+          `append_${crypto.randomUUID()}_${path.basename(originalFilename)}`,
+        );
+        const writeStream = fs.createWriteStream(tempFilePath);
+        await pipeline(data.file, writeStream);
+
+        if (data.file.truncated) {
+          fs.unlinkSync(tempFilePath);
+          await Promise.all(
+            uploads.map((upload) => fs.promises.rm(upload.tempFilePath, { force: true }).catch(() => {})),
+          );
+          throw validationError('File exceeds the maximum allowed size (100MB)');
+        }
+
+        uploads.push({ tempFilePath, originalFilename });
+      }
+
+      if (uploads.length === 0) {
+        throw validationError('No file provided');
+      }
+
+      for (const upload of uploads) {
+        await ingestionService.appendUploadToModel(
+          upload,
+          id,
+          request.user!.id,
+          request.libraryId!,
+        );
+      }
+
+      const detail = await presenterService.buildModelDetail(id);
+      return reply.status(200).send({ data: detail, meta: null, errors: null });
+    },
+  );
+
   // GET /:id/files — file tree for a model
   app.get(
     '/:id/files',
@@ -345,6 +395,33 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const tree = presenterService.buildFileTree(files);
 
       return reply.status(200).send({ data: tree, meta: null, errors: null });
+    },
+  );
+
+  // POST /:id/merge — merge one or more models into the target model
+  app.post(
+    '/:id/merge',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const parseResult = mergeModelsSchema.safeParse(request.body ?? {});
+      if (!parseResult.success) {
+        const firstIssue = parseResult.error.issues[0];
+        throw validationError(
+          firstIssue?.message ?? 'Validation failed',
+          firstIssue?.path.join('.') ?? undefined,
+        );
+      }
+
+      const body = parseResult.data as MergeModelsRequest;
+      const result = await modelService.mergeModels(
+        id,
+        body.sourceModelIds,
+        request.user!.id,
+        request.libraryId!,
+      );
+
+      return reply.status(200).send({ data: result, meta: null, errors: null });
     },
   );
 

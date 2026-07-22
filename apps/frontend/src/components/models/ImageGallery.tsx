@@ -12,6 +12,8 @@ interface ImageGalleryProps {
   previewCropY: number | null;
   previewCropScale: number | null;
   modelId: string;
+  selectedImageFileId: string | null;
+  onSelectImage: (imageFileId: string) => void;
 }
 
 export function ImageGallery({
@@ -21,11 +23,24 @@ export function ImageGallery({
   previewCropY,
   previewCropScale,
   modelId,
+  selectedImageFileId,
+  onSelectImage,
 }: ImageGalleryProps) {
-  const [selectedIndex, setSelectedIndex] = React.useState(0);
   const [lightboxOpen, setLightboxOpen] = React.useState(false);
   const [cropModalImage, setCropModalImage] = React.useState<ImageFile | null>(null);
   const queryClient = useQueryClient();
+  const selectedIndex = Math.max(
+    0,
+    images.findIndex((image) => image.id === selectedImageFileId),
+  );
+
+  const selectByIndex = React.useCallback(
+    (index: number) => {
+      const image = images[index];
+      if (image) onSelectImage(image.id);
+    },
+    [images, onSelectImage],
+  );
 
   function handleOpenCropModal(image: ImageFile) {
     setCropModalImage(image);
@@ -43,15 +58,15 @@ export function ImageGallery({
       if (e.key === 'Escape') {
         setLightboxOpen(false);
       } else if (e.key === 'ArrowLeft') {
-        setSelectedIndex((i) => (i > 0 ? i - 1 : images.length - 1));
+        selectByIndex(selectedIndex > 0 ? selectedIndex - 1 : images.length - 1);
       } else if (e.key === 'ArrowRight') {
-        setSelectedIndex((i) => (i < images.length - 1 ? i + 1 : 0));
+        selectByIndex(selectedIndex < images.length - 1 ? selectedIndex + 1 : 0);
       }
     }
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [lightboxOpen, images.length]);
+  }, [lightboxOpen, images.length, selectedIndex, selectByIndex]);
 
   if (images.length === 0) {
     return (
@@ -101,14 +116,14 @@ export function ImageGallery({
         {images.length > 1 && (
           <>
             <button
-              onClick={() => setSelectedIndex((i) => (i > 0 ? i - 1 : images.length - 1))}
+              onClick={() => selectByIndex(selectedIndex > 0 ? selectedIndex - 1 : images.length - 1)}
               className="absolute left-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70 transition-colors"
               aria-label="Previous image"
             >
               <ChevronLeft className="h-5 w-5" />
             </button>
             <button
-              onClick={() => setSelectedIndex((i) => (i < images.length - 1 ? i + 1 : 0))}
+              onClick={() => selectByIndex(selectedIndex < images.length - 1 ? selectedIndex + 1 : 0)}
               className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70 transition-colors"
               aria-label="Next image"
             >
@@ -129,7 +144,7 @@ export function ImageGallery({
             return (
               <div key={image.id} className="relative flex-shrink-0 group">
                 <button
-                  onClick={() => setSelectedIndex(index)}
+                  onClick={() => selectByIndex(index)}
                   className={cn(
                     'w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors',
                     index === selectedIndex
@@ -192,14 +207,14 @@ export function ImageGallery({
             {images.length > 1 && (
               <>
                 <button
-                  onClick={() => setSelectedIndex((i) => (i > 0 ? i - 1 : images.length - 1))}
+                  onClick={() => selectByIndex(selectedIndex > 0 ? selectedIndex - 1 : images.length - 1)}
                   className="absolute left-2 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 transition-colors"
                   aria-label="Previous image"
                 >
                   <ChevronLeft className="h-6 w-6" />
                 </button>
                 <button
-                  onClick={() => setSelectedIndex((i) => (i < images.length - 1 ? i + 1 : 0))}
+                  onClick={() => selectByIndex(selectedIndex < images.length - 1 ? selectedIndex + 1 : 0)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 transition-colors"
                   aria-label="Next image"
                 >

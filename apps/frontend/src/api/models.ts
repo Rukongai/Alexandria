@@ -11,8 +11,9 @@ import type {
   BatchUploadMetadata,
   ScanUploadResponse,
   UploadInitResponse,
+  MergeModelsResponse,
 } from '@alexandria/shared';
-import { get, post, patch, del, putRaw } from './client';
+import { get, post, patch, del, putRaw, postForm } from './client';
 import { buildQueryString } from '../lib/query';
 
 export async function getModels(params: ModelSearchParams): Promise<ApiResponse<ModelCard[]>> {
@@ -46,6 +47,29 @@ export async function getModelStatus(id: string): Promise<JobStatus> {
 
 export async function updateModel(id: string, data: UpdateModelRequest): Promise<ModelDetail> {
   const response = await patch<ModelDetail>(`/models/${id}`, data);
+  return response.data;
+}
+
+export async function uploadModelFiles(
+  id: string,
+  files: File[],
+  onProgress?: (pct: number) => void
+): Promise<ModelDetail> {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', file);
+  }
+  const response = await postForm<ModelDetail>(`/models/${id}/files/upload`, formData, onProgress);
+  return response.data;
+}
+
+export async function mergeModels(
+  targetModelId: string,
+  sourceModelIds: string[]
+): Promise<MergeModelsResponse> {
+  const response = await post<MergeModelsResponse>(`/models/${targetModelId}/merge`, {
+    sourceModelIds,
+  });
   return response.data;
 }
 

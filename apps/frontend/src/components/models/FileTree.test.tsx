@@ -39,4 +39,44 @@ describe('FileTree', () => {
     // readme.txt is a document — no 3D button for it
     expect(screen.getAllByRole('button', { name: /in 3d/i })).toHaveLength(1);
   });
+
+  it('selects image files and reveals the active image in nested folders', async () => {
+    const onSelectImageFile = vi.fn();
+    const imageTree: FileTreeNode[] = [
+      {
+        name: 'renders',
+        type: 'directory',
+        children: [
+          {
+            name: 'painted',
+            type: 'directory',
+            children: [
+              {
+                name: 'cover.png',
+                type: 'file',
+                fileType: 'image',
+                sizeBytes: 42,
+                id: 'img-1',
+              },
+            ],
+          },
+        ],
+      },
+    ];
+
+    render(
+      <FileTree
+        tree={imageTree}
+        modelId="m1"
+        selectedImageFileId="img-1"
+        onSelectImageFile={onSelectImageFile}
+      />,
+    );
+
+    const imageRow = await screen.findByRole('button', { name: /select image cover\.png/i });
+    expect(imageRow).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.click(imageRow);
+    expect(onSelectImageFile).toHaveBeenCalledWith('img-1');
+  });
 });

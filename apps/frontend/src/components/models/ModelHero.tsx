@@ -7,6 +7,8 @@ interface ModelHeroProps {
   model: ModelDetail;
   stlFiles: StlFileRef[];
   onOpenViewer: (stl: StlFileRef) => void;
+  selectedImageFileId: string | null;
+  onSelectImage: (imageFileId: string) => void;
 }
 
 /**
@@ -14,7 +16,13 @@ interface ModelHeroProps {
  * prominent "View in 3D" action. The action is hidden entirely when the model
  * has no STL files.
  */
-export function ModelHero({ model, stlFiles, onOpenViewer }: ModelHeroProps) {
+export function ModelHero({
+  model,
+  stlFiles,
+  onOpenViewer,
+  selectedImageFileId,
+  onSelectImage,
+}: ModelHeroProps) {
   const primaryStl = getPrimaryStl(stlFiles);
 
   return (
@@ -26,6 +34,8 @@ export function ModelHero({ model, stlFiles, onOpenViewer }: ModelHeroProps) {
         previewCropY={model.previewCropY}
         previewCropScale={model.previewCropScale}
         modelId={model.id}
+        selectedImageFileId={selectedImageFileId}
+        onSelectImage={onSelectImage}
       />
 
       {primaryStl && (

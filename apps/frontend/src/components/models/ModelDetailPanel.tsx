@@ -18,6 +18,8 @@ interface ModelDetailPanelProps {
   model: ModelDetail;
   fileTree: FileTreeNode[];
   onOpenStl: (stl: StlFileRef) => void;
+  selectedImageFileId: string | null;
+  onSelectImageFile: (fileId: string) => void;
 }
 
 /**
@@ -28,6 +30,8 @@ export function ModelDetailPanel({
   model,
   fileTree,
   onOpenStl,
+  selectedImageFileId,
+  onSelectImageFile,
 }: ModelDetailPanelProps) {
   const [tab, setTab] = React.useState<PanelTabValue>('info');
 
@@ -56,7 +60,13 @@ export function ModelDetailPanel({
       {tab === 'collections' && <CollectionsList collections={model.collections} />}
 
       {tab === 'files' && (
-        <FileTree tree={fileTree} modelId={model.id} onOpenStl={onOpenStl} />
+        <FileTree
+          tree={fileTree}
+          modelId={model.id}
+          onOpenStl={onOpenStl}
+          selectedImageFileId={selectedImageFileId}
+          onSelectImageFile={onSelectImageFile}
+        />
       )}
     </div>
   );

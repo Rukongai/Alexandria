@@ -39,7 +39,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   await app.register(fastifyMultipart, {
     limits: {
       fileSize: 100 * 1024 * 1024, // 100MB
-      files: 1,
+      files: 100,
     },
   });
 

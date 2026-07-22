@@ -1,10 +1,25 @@
-import { eq, asc, and } from 'drizzle-orm';
-import type { ModelSourceType, ModelStatus, FileType, UpdateModelRequest } from '@alexandria/shared';
+import path from 'node:path';
+import { eq, asc, and, inArray, sql } from 'drizzle-orm';
+import type {
+  ModelSourceType,
+  ModelStatus,
+  FileType,
+  UpdateModelRequest,
+  MergeModelsResponse,
+} from '@alexandria/shared';
 import { db } from '../db/index.js';
-import { models, modelFiles, thumbnails } from '../db/schema/index.js';
+import {
+  models,
+  modelFiles,
+  thumbnails,
+  collectionModels,
+  modelMetadata,
+  modelTags,
+} from '../db/schema/index.js';
 import { notFound, validationError } from '../utils/errors.js';
 import type { Model } from '../db/schema/model.js';
 import { libraryService } from './library.service.js';
+import { storageService } from './storage.service.js';
 
 export interface CreateModelData {
   name: string;
@@ -43,6 +58,29 @@ export interface UpdateModelStatusData {
 }
 
 export class ModelService {
+  private uniqueRelativePath(requestedPath: string, usedPaths: Set<string>): string {
+    const normalized = requestedPath.replace(/\\/g, '/');
+    if (!usedPaths.has(normalized)) {
+      usedPaths.add(normalized);
+      return normalized;
+    }
+
+    const dir = path.posix.dirname(normalized);
+    const ext = path.posix.extname(normalized);
+    const basename = path.posix.basename(normalized, ext);
+    const prefix = dir === '.' ? '' : `${dir}/`;
+
+    let index = 2;
+    while (true) {
+      const candidate = `${prefix}${basename}-${index}${ext}`;
+      if (!usedPaths.has(candidate)) {
+        usedPaths.add(candidate);
+        return candidate;
+      }
+      index += 1;
+    }
+  }
+
   async createModel(data: CreateModelData): Promise<{ id: string }> {
     // Every model is scoped to a library (library_id NOT NULL since 0007).
     // Resolve the owner's default library when not explicitly provided.
@@ -88,6 +126,23 @@ export class ModelService {
     return rows;
   }
 
+  async buildAdditionalFileInputs(
+    modelId: string,
+    files: CreateModelFileData[],
+  ): Promise<CreateModelFileData[]> {
+    const existingFiles = await this.getModelFiles(modelId);
+    const usedPaths = new Set(existingFiles.map((file) => file.relativePath));
+
+    return files.map((file) => {
+      const relativePath = this.uniqueRelativePath(file.relativePath, usedPaths);
+      return {
+        ...file,
+        relativePath,
+        storagePath: `models/${modelId}/${relativePath}`,
+      };
+    });
+  }
+
   async createThumbnails(thumbnailData: CreateThumbnailData[]): Promise<void> {
     if (thumbnailData.length === 0) return;
 
@@ -119,6 +174,25 @@ export class ModelService {
       .where(eq(models.id, modelId));
   }
 
+  async recalculateModelStats(modelId: string): Promise<void> {
+    const [stats] = await db
+      .select({
+        fileCount: sql<number>`cast(count(${modelFiles.id}) as int)`,
+        totalSizeBytes: sql<number>`cast(coalesce(sum(${modelFiles.sizeBytes}), 0) as bigint)`,
+      })
+      .from(modelFiles)
+      .where(eq(modelFiles.modelId, modelId));
+
+    await db
+      .update(models)
+      .set({
+        fileCount: Number(stats?.fileCount ?? 0),
+        totalSizeBytes: Number(stats?.totalSizeBytes ?? 0),
+        updatedAt: new Date(),
+      })
+      .where(eq(models.id, modelId));
+  }
+
   async getModelById(id: string): Promise<Model> {
     const [row] = await db.select().from(models).where(eq(models.id, id)).limit(1);
 
@@ -140,6 +214,20 @@ export class ModelService {
       throw notFound(`Model not found: ${id}`);
     }
     return model;
+  }
+
+  async requireOwnedModel(id: string, userId: string, libraryId?: string): Promise<Model> {
+    const whereClause = libraryId
+      ? and(eq(models.id, id), eq(models.userId, userId), eq(models.libraryId, libraryId))
+      : and(eq(models.id, id), eq(models.userId, userId));
+
+    const [row] = await db.select().from(models).where(whereClause).limit(1);
+
+    if (!row) {
+      throw notFound(`Model not found: ${id}`);
+    }
+
+    return row;
   }
 
   async updateModel(id: string, data: UpdateModelRequest): Promise<Model> {
@@ -198,6 +286,168 @@ export class ModelService {
       .from(modelFiles)
       .where(eq(modelFiles.modelId, modelId))
       .orderBy(asc(modelFiles.relativePath));
+  }
+
+  async mergeModels(
+    targetModelId: string,
+    sourceModelIds: string[],
+    userId: string,
+    libraryId: string,
+  ): Promise<MergeModelsResponse> {
+    const uniqueSourceIds = [...new Set(sourceModelIds)];
+    if (uniqueSourceIds.includes(targetModelId)) {
+      throw validationError('A model cannot be merged into itself', 'sourceModelIds');
+    }
+
+    const target = await this.requireOwnedModel(targetModelId, userId, libraryId);
+    if (target.status !== 'ready') {
+      throw validationError('Target model must be ready before merging', 'targetModelId');
+    }
+
+    if (uniqueSourceIds.length === 0) {
+      throw validationError('At least one source model is required', 'sourceModelIds');
+    }
+
+    const sourceRows = await db
+      .select()
+      .from(models)
+      .where(
+        and(
+          inArray(models.id, uniqueSourceIds),
+          eq(models.userId, userId),
+          eq(models.libraryId, libraryId),
+        ),
+      );
+
+    if (sourceRows.length !== uniqueSourceIds.length) {
+      throw notFound('One or more source models were not found');
+    }
+    if (sourceRows.some((source) => source.status !== 'ready')) {
+      throw validationError('Source models must be ready before merging', 'sourceModelIds');
+    }
+
+    const existingTargetFiles = await this.getModelFiles(targetModelId);
+    const usedPaths = new Set(existingTargetFiles.map((file) => file.relativePath));
+    const sourceFiles = await db
+      .select()
+      .from(modelFiles)
+      .where(inArray(modelFiles.modelId, uniqueSourceIds))
+      .orderBy(asc(modelFiles.relativePath));
+
+    let fallbackPreviewImageFileId: string | null = null;
+
+    for (const file of sourceFiles) {
+      const relativePath = this.uniqueRelativePath(file.relativePath, usedPaths);
+      const storagePath = `models/${targetModelId}/${relativePath}`;
+
+      await storageService.store(storagePath, storageService.retrieveStream(file.storagePath));
+      try {
+        await db
+          .update(modelFiles)
+          .set({
+            modelId: targetModelId,
+            relativePath,
+            storagePath,
+          })
+          .where(eq(modelFiles.id, file.id));
+      } catch (err) {
+        await storageService.delete(storagePath).catch(() => {});
+        throw err;
+      }
+
+      await storageService.delete(file.storagePath).catch(() => {});
+
+      if (
+        fallbackPreviewImageFileId === null &&
+        file.fileType === 'image' &&
+        sourceRows.some((source) => source.previewImageFileId === file.id)
+      ) {
+        fallbackPreviewImageFileId = file.id;
+      }
+    }
+
+    await db.transaction(async (tx) => {
+      const sourceCollections = await tx
+        .select({ collectionId: collectionModels.collectionId })
+        .from(collectionModels)
+        .where(inArray(collectionModels.modelId, uniqueSourceIds));
+
+      if (sourceCollections.length > 0) {
+        await tx
+          .insert(collectionModels)
+          .values(
+            sourceCollections.map((row) => ({
+              collectionId: row.collectionId,
+              modelId: targetModelId,
+            })),
+          )
+          .onConflictDoNothing();
+      }
+
+      const targetMetadataRows = await tx
+        .select({ fieldDefinitionId: modelMetadata.fieldDefinitionId })
+        .from(modelMetadata)
+        .where(eq(modelMetadata.modelId, targetModelId));
+      const targetMetadataFieldIds = new Set(
+        targetMetadataRows.map((row) => row.fieldDefinitionId),
+      );
+
+      const sourceMetadataRows = await tx
+        .select({
+          fieldDefinitionId: modelMetadata.fieldDefinitionId,
+          value: modelMetadata.value,
+        })
+        .from(modelMetadata)
+        .where(inArray(modelMetadata.modelId, uniqueSourceIds));
+
+      const metadataToCopy = sourceMetadataRows.filter((row) => {
+        if (targetMetadataFieldIds.has(row.fieldDefinitionId)) return false;
+        targetMetadataFieldIds.add(row.fieldDefinitionId);
+        return true;
+      });
+
+      if (metadataToCopy.length > 0) {
+        await tx.insert(modelMetadata).values(
+          metadataToCopy.map((row) => ({
+            modelId: targetModelId,
+            fieldDefinitionId: row.fieldDefinitionId,
+            value: row.value,
+          })),
+        );
+      }
+
+      const sourceTags = await tx
+        .select({ tagId: modelTags.tagId })
+        .from(modelTags)
+        .where(inArray(modelTags.modelId, uniqueSourceIds));
+
+      if (sourceTags.length > 0) {
+        await tx
+          .insert(modelTags)
+          .values(sourceTags.map((row) => ({ modelId: targetModelId, tagId: row.tagId })))
+          .onConflictDoNothing();
+      }
+
+      if (!target.previewImageFileId && fallbackPreviewImageFileId) {
+        await tx
+          .update(models)
+          .set({
+            previewImageFileId: fallbackPreviewImageFileId,
+            updatedAt: new Date(),
+          })
+          .where(eq(models.id, targetModelId));
+      }
+
+      await tx.delete(models).where(inArray(models.id, uniqueSourceIds));
+    });
+
+    await this.recalculateModelStats(targetModelId);
+
+    return {
+      targetModelId,
+      mergedModelIds: uniqueSourceIds,
+      movedFileCount: sourceFiles.length,
+    };
   }
 
   async deleteModel(id: string): Promise<void> {

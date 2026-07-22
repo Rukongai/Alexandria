@@ -12,3 +12,7 @@ export const updateModelSchema = z.object({
 export const bulkDeleteSchema = z.object({
   modelIds: z.array(z.string().uuid()).min(1),
 });
+
+export const mergeModelsSchema = z.object({
+  sourceModelIds: z.array(z.string().uuid()).min(1).max(100),
+});
