@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import type { ImportCommitPhase, ImportCommitProgress } from '@alexandria/shared';
 import { UploadProgress, commitPhaseLabel } from './UploadProgress';
 
@@ -15,9 +16,11 @@ function renderProgress(commitProgress: ImportCommitProgress | null) {
     defaultOptions: { queries: { retry: false } },
   });
   return render(
-    <QueryClientProvider client={client}>
-      <UploadProgress modelId="model-1" commitProgress={commitProgress} />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <UploadProgress modelId="model-1" commitProgress={commitProgress} />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -97,5 +100,32 @@ describe('UploadProgress', () => {
 
     expect(await screen.findByText('Applying details…')).toBeVisible();
     expect(screen.queryByText('Model is ready.')).toBeNull();
+  });
+
+  it('should show the ready state when both model processing and commit progress are complete', async () => {
+    vi.mocked(getModelStatus).mockResolvedValue({
+      modelId: 'model-1',
+      status: 'ready',
+      progress: null,
+      error: null,
+      startedAt: '',
+      completedAt: '',
+    });
+    renderProgress({
+      phase: 'complete',
+      percent: 100,
+      completedFiles: 8,
+      totalFiles: 8,
+      completedBytes: 8192,
+      totalBytes: 8192,
+      currentFilename: null,
+    });
+
+    expect(await screen.findByText('Model is ready.')).toBeVisible();
+    expect(screen.getByRole('link', { name: /view model/i })).toHaveAttribute(
+      'href',
+      '/models/model-1',
+    );
+    expect(screen.queryByRole('progressbar', { name: 'Import progress' })).toBeNull();
   });
 });
