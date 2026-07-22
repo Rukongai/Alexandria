@@ -13,6 +13,7 @@ import type { IStorageService, StorageData } from './storage.service.js';
 import { normalizeStoragePrefix, validateStorageKey } from './storage-key.js';
 
 export const S3_MULTIPART_PART_SIZE = 8 * 1024 * 1024;
+export const S3_SINGLE_COPY_MAX_SIZE = 5 * 1024 * 1024 * 1024;
 
 export interface S3StorageServiceOptions {
   client: S3Client;
@@ -96,6 +97,17 @@ export class S3StorageService implements IStorageService {
     const destinationKey = this.objectKey(destinationPath);
 
     try {
+      const source = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: sourceKey }),
+      );
+      if (
+        source.ContentLength === undefined ||
+        source.ContentLength > S3_SINGLE_COPY_MAX_SIZE
+      ) {
+        await this.store(destinationPath, await this.retrieveStream(sourcePath));
+        return;
+      }
+
       await this.client.send(
         new CopyObjectCommand({
           Bucket: this.bucket,

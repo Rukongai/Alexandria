@@ -56,7 +56,7 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
 
       return reply
         .header('Content-Type', 'image/webp')
-        .header('Cache-Control', `public, max-age=${CACHE_MAX_AGE}`)
+        .header('Cache-Control', `private, max-age=${CACHE_MAX_AGE}`)
         .send(stream);
     },
   );
@@ -98,7 +98,7 @@ export async function fileRoutes(app: FastifyInstance): Promise<void> {
 
       const response = reply
         .header('Content-Type', contentType)
-        .header('Cache-Control', `public, max-age=${CACHE_MAX_AGE}`);
+        .header('Cache-Control', `private, max-age=${CACHE_MAX_AGE}`);
 
       if (download === '1' || download === 'true') {
         response.header(

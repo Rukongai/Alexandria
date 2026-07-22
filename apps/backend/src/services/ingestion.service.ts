@@ -36,6 +36,12 @@ import { AppError, storageError, validationError } from '../utils/errors.js';
 
 const logger = createLogger('IngestionService');
 
+interface VerifiedImportSource {
+  filePath: string;
+  hash: string;
+  sizeBytes: number;
+}
+
 /** File extensions treated as 3D model files when counting sub-models. */
 const MODEL_FILE_EXTENSIONS = new Set(['stl', 'obj', '3mf', 'step', 'stp', 'ply']);
 /** Path tokens too generic to ever be a useful auto-tag. */
@@ -1008,18 +1014,18 @@ export class IngestionService {
       // Step 2: Process each discovered model
       let processed = 0;
       let failed = 0;
-      const verifiedSourcePaths = new Set<string>();
+      const verifiedSources = new Map<string, VerifiedImportSource>();
 
       for (const model of discovered) {
         try {
-          const sourcePaths = await this.processDiscoveredModel(
+          const sources = await this.processDiscoveredModel(
             model,
             importStrategy,
             userId,
             libraryId,
           );
-          for (const sourceFilePath of sourcePaths) {
-            verifiedSourcePaths.add(sourceFilePath);
+          for (const source of sources) {
+            verifiedSources.set(source.filePath, source);
           }
           processed++;
         } catch (err) {
@@ -1037,17 +1043,26 @@ export class IngestionService {
 
       if (storageService.kind === 's3' && deleteAfterUpload && failed === 0) {
         const deletionResults = await Promise.allSettled(
-          [...verifiedSourcePaths].map((sourceFilePath) => fsPromises.unlink(sourceFilePath)),
+          [...verifiedSources.values()].map((source) => this.deleteVerifiedSource(source)),
         );
         const deletionFailures = deletionResults.filter((result) => result.status === 'rejected');
         if (deletionFailures.length > 0) {
-          throw storageError(
-            `Remote import was verified, but ${deletionFailures.length} source file(s) could not be deleted`,
+          logger.error(
+            {
+              jobId: job.id,
+              failedSourceDeletions: deletionFailures.length,
+              errors: deletionFailures.map((result) => String(result.reason)),
+            },
+            'Remote import completed, but some verified sources were retained',
           );
         }
         logger.info(
-          { jobId: job.id, deletedSourceFiles: verifiedSourcePaths.size },
-          'Verified remote import sources deleted',
+          {
+            jobId: job.id,
+            deletedSourceFiles: deletionResults.length - deletionFailures.length,
+            retainedSourceFiles: deletionFailures.length,
+          },
+          'Remote import source deletion pass complete',
         );
       }
 
@@ -1116,7 +1131,7 @@ export class IngestionService {
     importStrategy: import('./import-strategy.service.js').IImportStrategy | null,
     userId: string,
     libraryId: string,
-  ): Promise<string[]> {
+  ): Promise<VerifiedImportSource[]> {
     const slug = generateSlug(discovered.name);
 
     // Create model record in processing state. libraryId comes from the job
@@ -1130,6 +1145,7 @@ export class IngestionService {
       status: 'processing',
     });
     const storedPaths: string[] = [];
+    let filesPersisted = false;
 
     try {
       // Scan files in the model's source directory
@@ -1139,7 +1155,7 @@ export class IngestionService {
       );
       const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
 
-      const sourcePaths: string[] = [];
+      const verifiedSources: VerifiedImportSource[] = [];
       for (const entry of entries) {
         const sourceFilePath = path.join(discovered.sourcePath, entry.relativePath);
         const storagePath = `models/${modelId}/${entry.relativePath}`;
@@ -1156,7 +1172,11 @@ export class IngestionService {
           await storageService.store(storagePath, fs.createReadStream(sourceFilePath));
           storedPaths.push(storagePath);
           await this.verifyStoredFile(storagePath, entry.hash, entry.sizeBytes);
-          sourcePaths.push(sourceFilePath);
+          verifiedSources.push({
+            filePath: sourceFilePath,
+            hash: entry.hash,
+            sizeBytes: entry.sizeBytes,
+          });
         }
       }
 
@@ -1172,6 +1192,7 @@ export class IngestionService {
       }));
 
       const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
+      filesPersisted = true;
 
       // Generate thumbnails for image files
       await this.generateAndStoreThumbnails(
@@ -1204,9 +1225,9 @@ export class IngestionService {
       });
 
       logger.info({ modelId, name: discovered.name }, 'Model imported successfully');
-      return sourcePaths;
+      return verifiedSources;
     } catch (err) {
-      if (storageService.kind === 's3') {
+      if (storageService.kind === 's3' && !filesPersisted) {
         await Promise.all(
           storedPaths.map((storedPath) => storageService.delete(storedPath).catch(() => {})),
         );
@@ -1221,18 +1242,32 @@ export class IngestionService {
     expectedHash: string,
     expectedSize: number,
   ): Promise<void> {
+    const digest = await this.digestStream(await storageService.retrieveStream(storagePath));
+
+    if (digest.sizeBytes !== expectedSize || digest.hash !== expectedHash) {
+      throw storageError(`Stored object failed SHA-256 verification: ${storagePath}`);
+    }
+  }
+
+  private async deleteVerifiedSource(source: VerifiedImportSource): Promise<void> {
+    const digest = await this.digestStream(fs.createReadStream(source.filePath));
+    if (digest.sizeBytes !== source.sizeBytes || digest.hash !== source.hash) {
+      throw storageError(`Source changed after remote verification: ${source.filePath}`);
+    }
+    await fsPromises.unlink(source.filePath);
+  }
+
+  private async digestStream(
+    stream: NodeJS.ReadableStream,
+  ): Promise<{ hash: string; sizeBytes: number }> {
     const hash = createHash('sha256');
-    let size = 0;
-    const stream = await storageService.retrieveStream(storagePath);
+    let sizeBytes = 0;
     for await (const chunk of stream) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       hash.update(buffer);
-      size += buffer.length;
+      sizeBytes += buffer.length;
     }
-
-    if (size !== expectedSize || hash.digest('hex') !== expectedHash) {
-      throw storageError(`Stored object failed SHA-256 verification: ${storagePath}`);
-    }
+    return { hash: hash.digest('hex'), sizeBytes };
   }
 }
 

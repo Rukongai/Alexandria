@@ -13,6 +13,7 @@ import type { AppConfig } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
 import {
   S3_MULTIPART_PART_SIZE,
+  S3_SINGLE_COPY_MAX_SIZE,
   S3StorageService,
 } from './s3-storage.service.js';
 import { describeStorageServiceContract } from './storage-service.contract.js';
@@ -60,8 +61,9 @@ class InMemoryS3Client {
       return { Body: Readable.from([content]) };
     }
     if (command instanceof HeadObjectCommand) {
-      if (!this.objects.has(command.input.Key!)) throw notFoundError();
-      return {};
+      const content = this.objects.get(command.input.Key!);
+      if (!content) throw notFoundError();
+      return { ContentLength: content.length };
     }
     if (command instanceof DeleteObjectCommand) {
       this.objects.delete(command.input.Key!);
@@ -156,13 +158,36 @@ describe('S3StorageService', () => {
 
     await service.copy('models/source file.stl', 'models/copied file.stl');
 
-    const command = client.send.mock.calls[0]?.[0];
+    const command = client.send.mock.calls.find(
+      ([candidate]) => candidate instanceof CopyObjectCommand,
+    )?.[0];
     expect(command).toBeInstanceOf(CopyObjectCommand);
     expect((command as CopyObjectCommand).input).toEqual({
       Bucket: 'model-library',
       Key: 'alexandria/models/copied file.stl',
       CopySource: encodeURIComponent('model-library/alexandria/models/source file.stl'),
     });
+  });
+
+  it('streams objects that exceed the single-request copy limit', async () => {
+    client.objects.set('alexandria/models/large.stl', Buffer.from('source'));
+    client.send.mockResolvedValueOnce({ ContentLength: S3_SINGLE_COPY_MAX_SIZE + 1 });
+
+    await service.copy('models/large.stl', 'models/copied-large.stl');
+
+    expect(client.send.mock.calls.some(([command]) => command instanceof GetObjectCommand)).toBe(
+      true,
+    );
+    expect(client.send.mock.calls.some(([command]) => command instanceof CopyObjectCommand)).toBe(
+      false,
+    );
+    expect(uploadMocks.construct).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          Key: 'alexandria/models/copied-large.stl',
+        }),
+      }),
+    );
   });
 
   it('should send delete for an absent key without first checking existence', async () => {

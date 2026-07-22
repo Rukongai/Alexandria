@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 
+const fsMocks = vi.hoisted(() => ({
+  createReadStream: vi.fn<() => NodeJS.ReadableStream>(
+    () => ({ pipe: vi.fn() }) as unknown as NodeJS.ReadableStream,
+  ),
+}));
+
 // ---------------------------------------------------------------------------
 // Mock all collaborating services before the IngestionService module is
 // imported, so the singletons exported from those modules are replaced with
@@ -92,7 +98,7 @@ vi.mock('./storage.service.js', () => ({
 // node:fs is used for createReadStream inside processIngestionJob
 vi.mock('node:fs', () => ({
   default: {
-    createReadStream: vi.fn().mockReturnValue({ pipe: vi.fn() }),
+    createReadStream: fsMocks.createReadStream,
     createWriteStream: vi.fn().mockReturnValue(new Writable({
       write(_chunk, _encoding, callback) {
         callback();
@@ -122,6 +128,7 @@ import { jobService } from './job.service.js';
 import { fileProcessingService } from './file-processing.service.js';
 import { storageService } from './storage.service.js';
 import { importSessionService } from './import-session.service.js';
+import { metadataService } from './metadata.service.js';
 import fsPromises from 'node:fs/promises';
 import { validationError } from '../utils/errors.js';
 
@@ -670,6 +677,7 @@ describe('IngestionService – remote folder import', () => {
     vi.mocked(modelService.updateModelStatus).mockResolvedValue(undefined);
     vi.mocked(storageService.store).mockResolvedValue(undefined);
     vi.mocked(storageService.delete).mockResolvedValue(undefined);
+    fsMocks.createReadStream.mockImplementation(() => Readable.from(contents));
   });
 
   afterEach(() => {
@@ -747,6 +755,81 @@ describe('IngestionService – remote folder import', () => {
     expect(storageService.delete).toHaveBeenCalledWith('models/model-1/model.stl');
     expect(fsPromises.unlink).not.toHaveBeenCalled();
     expect(modelService.updateModelStatus).toHaveBeenCalledWith('model-1', 'error');
+  });
+
+  it('retains managed objects after file rows have been persisted', async () => {
+    vi.mocked(storageService.retrieveStream).mockResolvedValue(Readable.from(contents));
+    vi.mocked(fileProcessingService.walkDirectoryForImport).mockResolvedValueOnce([
+      {
+        name: 'Model One',
+        sourcePath: '/imports/model-one',
+        collectionName: null,
+        metadata: { artist: 'Artist' },
+      },
+    ]);
+    vi.mocked(metadataService.setModelMetadata).mockRejectedValue(
+      new Error('metadata persistence failed'),
+    );
+
+    await service.processFolderImportJob({
+      id: 'job-1',
+      data: {
+        sourcePath: '/imports',
+        pattern: '{model}',
+        strategy: 'move',
+        deleteAfterUpload: true,
+        userId: 'user-1',
+        libraryId: 'library-1',
+      },
+      updateProgress: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    expect(storageService.delete).not.toHaveBeenCalled();
+    expect(fsPromises.unlink).not.toHaveBeenCalled();
+    expect(modelService.updateModelStatus).toHaveBeenCalledWith('model-1', 'error');
+  });
+
+  it('retains a source that changes after its remote object was verified', async () => {
+    vi.mocked(storageService.retrieveStream).mockResolvedValue(Readable.from(contents));
+    fsMocks.createReadStream
+      .mockReturnValueOnce(Readable.from(contents))
+      .mockReturnValueOnce(Readable.from(Buffer.from('changed source')));
+
+    await service.processFolderImportJob({
+      id: 'job-1',
+      data: {
+        sourcePath: '/imports',
+        pattern: '{model}',
+        strategy: 'move',
+        deleteAfterUpload: true,
+        userId: 'user-1',
+        libraryId: 'library-1',
+      },
+      updateProgress: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    expect(fsPromises.unlink).not.toHaveBeenCalled();
+    expect(modelService.createModel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry the completed import when source deletion fails', async () => {
+    vi.mocked(storageService.retrieveStream).mockResolvedValue(Readable.from(contents));
+    vi.mocked(fsPromises.unlink).mockRejectedValue(new Error('source is read-only'));
+
+    await expect(service.processFolderImportJob({
+      id: 'job-1',
+      data: {
+        sourcePath: '/imports',
+        pattern: '{model}',
+        strategy: 'move',
+        deleteAfterUpload: true,
+        userId: 'user-1',
+        libraryId: 'library-1',
+      },
+      updateProgress: vi.fn().mockResolvedValue(undefined),
+    } as never)).resolves.toBeUndefined();
+
+    expect(modelService.createModel).toHaveBeenCalledTimes(1);
   });
 
   it('maps move requests to verified source deletion', async () => {
