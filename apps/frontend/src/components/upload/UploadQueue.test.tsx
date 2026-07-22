@@ -56,6 +56,7 @@ describe('UploadQueue commit progress', () => {
       'aria-valuetext',
       'Saving files to library storage. 40%. 1.0 KB of 4.0 KB. 1 of 4 files. Current file: parts/dragon-body.stl',
     );
+    expect(progressbar.closest('button')).toBeNull();
   });
 
   it('should show an honest indeterminate label when commit progress is unavailable', () => {

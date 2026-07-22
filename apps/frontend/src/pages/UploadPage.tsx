@@ -3,6 +3,7 @@ import { Files, FolderOpen } from 'lucide-react';
 import {
   useAddSessionFiles,
   useDiscardSession,
+  useImportSession,
   useImportSessions,
 } from '../hooks/use-import-sessions';
 import { useToast } from '../hooks/use-toast';
@@ -32,24 +33,23 @@ export function UploadPage() {
   const [tab, setTab] = useState<Tab>('queue');
   const [fileTargetId, setFileTargetId] = useState<string | null>(null);
   const [addFilesProgress, setAddFilesProgress] = useState(0);
+  const { data: selectedSession } = useImportSession(activeId);
 
-  // Auto-select the first actionable (non-committed) session when the list loads
+  // Prefer an actionable listed session, but retain a selected committing session
+  // after listActive drops it so the terminal success state remains reachable.
   useEffect(() => {
-    if (activeId) {
-      // Keep existing selection if it's still in the list
-      const stillExists = sessions.some((s) => s.id === activeId);
-      if (stillExists) return;
-    }
-    // Find first ready_for_review, then scanning, then any
+    if (activeId && sessions.some((session) => session.id === activeId)) return;
+
     const preferred =
       sessions.find((s) => s.status === 'ready_for_review') ??
       sessions.find((s) => s.status !== 'committed') ??
       sessions[0] ??
       null;
-    setActiveId(preferred?.id ?? null);
-  }, [sessions]);
+    if (preferred && preferred.id !== activeId) setActiveId(preferred.id);
+  }, [activeId, sessions]);
 
-  const activeSession = sessions.find((s) => s.id === activeId) ?? null;
+  const listedActiveSession = sessions.find((s) => s.id === activeId) ?? null;
+  const activeSession = listedActiveSession ?? (sessions.length === 0 ? selectedSession ?? null : null);
   const discardingId = discardSession.isPending ? (discardSession.variables ?? null) : null;
   const addingFilesId = addSessionFiles.isPending
     ? (addSessionFiles.variables?.id ?? null)

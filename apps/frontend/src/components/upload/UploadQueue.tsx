@@ -168,82 +168,84 @@ export function UploadQueue({
           return (
             <div
               key={session.id}
-              className="group flex items-start w-full rounded-lg mt-1 transition-colors"
+              className="group flex w-full flex-col rounded-lg mt-1 transition-colors"
               style={{
                 background: active ? 'var(--ax-rail-elev)' : 'transparent',
                 border: `1px solid ${active ? 'var(--ax-rail-border)' : 'transparent'}`,
                 color: 'inherit',
               }}
             >
-              <button
-                type="button"
-                onClick={() => onSelect(session.id)}
-                className="flex min-w-0 flex-1 flex-col gap-1.5 px-3 py-2.5 text-left"
-                style={{ color: 'inherit', fontFamily: 'inherit' }}
-              >
-                <div className="flex items-center gap-2">
-                  <StatusIcon status={session.status} />
-                  <div className="flex-1 min-w-0">
-                    <div
-                      className="ax-code text-[12px] font-medium truncate"
-                      style={{ color: 'var(--ax-rail-fg)' }}
-                    >
-                      {session.originalFilename}
-                    </div>
-                    {session.status !== 'committing' && (
+              <div className="flex w-full items-start">
+                <button
+                  type="button"
+                  onClick={() => onSelect(session.id)}
+                  className="flex min-w-0 flex-1 flex-col gap-1.5 px-3 py-2.5 text-left"
+                  style={{ color: 'inherit', fontFamily: 'inherit' }}
+                >
+                  <div className="flex items-center gap-2">
+                    <StatusIcon status={session.status} />
+                    <div className="flex-1 min-w-0">
                       <div
-                        className="ax-mono text-[11px]"
-                        style={{ color: 'var(--ax-rail-fg-muted)' }}
+                        className="ax-code text-[12px] font-medium truncate"
+                        style={{ color: 'var(--ax-rail-fg)' }}
                       >
-                        {session.detected
-                          ? `${formatFileSize(session.detected.totalSizeBytes)} · ${session.detected.fileCount} files`
-                          : statusLabel(session.status)}
+                        {session.originalFilename}
                       </div>
+                      {session.status !== 'committing' && (
+                        <div
+                          className="ax-mono text-[11px]"
+                          style={{ color: 'var(--ax-rail-fg-muted)' }}
+                        >
+                          {session.detected
+                            ? `${formatFileSize(session.detected.totalSizeBytes)} · ${session.detected.fileCount} files`
+                            : statusLabel(session.status)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {session.status === 'error' && session.error && (
+                    <div className="text-[10.5px] pl-[34px]" style={{ color: '#fca5a5' }}>
+                      {session.error}
+                    </div>
+                  )}
+                </button>
+                {canAddFiles && (
+                  <button
+                    type="button"
+                    onClick={() => onAddFiles(session.id)}
+                    disabled={addingFilesId !== null || discardingId !== null}
+                    className="my-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--ax-rail-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                    style={{ color: 'var(--ax-rail-fg-muted)' }}
+                    aria-label={`Add files to ${session.originalFilename}`}
+                    title={`Add files to ${session.originalFilename}`}
+                  >
+                    {isAddingFiles ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <FilePlus2 className="h-3.5 w-3.5" />
                     )}
-                  </div>
-                </div>
-                {session.status === 'committing' && (
-                  <CommitQueueProgress session={session} />
+                  </button>
                 )}
-                {session.status === 'error' && session.error && (
-                  <div className="text-[10.5px] pl-[34px]" style={{ color: '#fca5a5' }}>
-                    {session.error}
-                  </div>
+                {canDiscard && (
+                  <button
+                    type="button"
+                    onClick={() => onDiscard(session.id)}
+                    disabled={discardingId !== null}
+                    className="m-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--ax-rail-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                    style={{ color: 'var(--ax-rail-fg-muted)' }}
+                    aria-label={`Discard ${session.originalFilename}`}
+                    title={`Discard ${session.originalFilename}`}
+                  >
+                    {isDiscarding ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                  </button>
                 )}
-              </button>
-              {canAddFiles && (
-                <button
-                  type="button"
-                  onClick={() => onAddFiles(session.id)}
-                  disabled={addingFilesId !== null || discardingId !== null}
-                  className="my-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--ax-rail-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                  style={{ color: 'var(--ax-rail-fg-muted)' }}
-                  aria-label={`Add files to ${session.originalFilename}`}
-                  title={`Add files to ${session.originalFilename}`}
-                >
-                  {isAddingFiles ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <FilePlus2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              )}
-              {canDiscard && (
-                <button
-                  type="button"
-                  onClick={() => onDiscard(session.id)}
-                  disabled={discardingId !== null}
-                  className="m-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--ax-rail-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                  style={{ color: 'var(--ax-rail-fg-muted)' }}
-                  aria-label={`Discard ${session.originalFilename}`}
-                  title={`Discard ${session.originalFilename}`}
-                >
-                  {isDiscarding ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </button>
+              </div>
+              {session.status === 'committing' && (
+                <CommitQueueProgress session={session} />
               )}
             </div>
           );
@@ -273,7 +275,7 @@ function CommitQueueProgress({ session }: { session: ImportSession }) {
 
   if (!progress) {
     return (
-      <div className="space-y-1 pl-[34px]">
+      <div className="space-y-1 px-3 pb-2.5 pl-[46px]">
         <div
           className="text-[11px]"
           style={{ color: 'var(--ax-rail-fg-muted)' }}
@@ -300,7 +302,7 @@ function CommitQueueProgress({ session }: { session: ImportSession }) {
   }
 
   return (
-    <div className="space-y-1 pl-[34px]">
+    <div className="space-y-1 px-3 pb-2.5 pl-[46px]">
       <div className="flex items-center justify-between gap-2 text-[10.5px]">
         <span className="truncate" style={{ color: 'var(--ax-rail-fg-muted)' }}>
           {commitPhaseLabel(progress.phase)}
