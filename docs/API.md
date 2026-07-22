@@ -554,7 +554,7 @@ Start a folder import. Discovers models by walking a directory on the server's f
 
 Unlike archive upload, this response does not include a `modelId` because the import may create multiple models.
 
-For an S3-compatible backend, Alexandria uploads each file and reads it back to verify both byte size and SHA-256. Source deletion is a separate pass and occurs only when `deleteAfterUpload` is enabled and every discovered model completed successfully. A failed upload or verification leaves the sources in place. With local storage, `deleteAfterUpload` is ignored because `strategy` already determines whether the source is retained.
+For an S3-compatible backend, Alexandria uploads each file and reads it back to verify both byte size and SHA-256. Source deletion is a separate pass and occurs only when `deleteAfterUpload` is enabled and every discovered model completed successfully. Each source is hashed again immediately before deletion; changed files and individual deletion failures are retained and logged without retrying the completed import. A failed upload or verification leaves all sources in place. With local storage, `deleteAfterUpload` is ignored because `strategy` already determines whether the source is retained.
 
 ---
 
@@ -1740,7 +1740,7 @@ Serve a WebP thumbnail by its ID. The `:id` segment is the thumbnail UUID; the `
 
 **Path parameter:** `id.webp` — thumbnail UUID followed by `.webp` (e.g., `a1b2c3d4-....webp`)
 
-**Response (200):** Raw WebP image bytes. `Content-Type: image/webp`. `Cache-Control: public, max-age=86400` (1 day).
+**Response (200):** Raw WebP image bytes. `Content-Type: image/webp`. `Cache-Control: private, max-age=86400` (1 day).
 
 ---
 
@@ -1756,7 +1756,7 @@ Serve a model file by its relative path within the model. The `*` wildcard captu
 
 Pass `download=1` or `download=true` to request an attachment response with `Content-Disposition` set to the stored filename.
 
-**Response (200):** Raw file bytes. `Content-Type` is set from the stored MIME type, or inferred from the file extension. `Cache-Control: public, max-age=86400` (1 day).
+**Response (200):** Raw file bytes. `Content-Type` is set from the stored MIME type, or inferred from the file extension. `Cache-Control: private, max-age=86400` (1 day).
 
 Supported extension-to-MIME mappings: `.webp`, `.jpg`/`.jpeg`, `.png`, `.gif`, `.tif`/`.tiff`, `.stl`, `.obj`, `.pdf`, `.txt`, `.md`. Files with unrecognized extensions return `application/octet-stream`.
 

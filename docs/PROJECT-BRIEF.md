@@ -28,7 +28,7 @@ Alexandria fills this gap: a library manager that understands what a 3D printing
 
 - No 3D model viewer (planned for Phase 11)
 - No multi-user support or permissions (planned for Phase 12)
-- No S3/cloud storage (planned for Phase 9)
+- No client-side object encryption; managed storage supports local filesystems and private S3-compatible buckets
 - No print job tracking or slicer integration (planned for Phase 14)
 - No mobile-specific UI (general responsive design, but not mobile-optimized)
 
@@ -56,7 +56,7 @@ These decisions were made deliberately during the architecture phase and should 
 | Backend | Fastify + TypeScript |
 | Database | PostgreSQL (primary), Drizzle ORM |
 | Job Queue | BullMQ + Redis |
-| Storage | Local filesystem (S3-compatible planned) |
+| Storage | Local filesystem or private S3-compatible object storage |
 | Auth | Lucia or Auth.js (session-based) |
 | Deployment | Docker Compose |
 | Monorepo | Turborepo with shared types package |
@@ -67,7 +67,7 @@ The backend is organized around 11 services with clear ownership boundaries:
 
 - **IngestionService** — orchestrates upload and import pipelines
 - **FileProcessingService** — extracts zips, walks folders, classifies files
-- **StorageService** — manages blob storage (local filesystem, future S3)
+- **StorageService** — manages blob storage through local-filesystem or S3-compatible providers
 - **ThumbnailService** — generates webp thumbnails from images
 - **MetadataService** — manages field definitions and metadata values with hybrid storage
 - **ModelService** — CRUD for models and their files

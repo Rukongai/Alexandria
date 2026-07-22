@@ -73,8 +73,15 @@ Alexandria does not currently add client-side object encryption. Any encryption 
 Migration copies the existing `STORAGE_PATH` tree into the configured S3 bucket and prefix. It never deletes local source files.
 
 1. Stop the backend so no new local objects are written during the copy.
-2. Set `STORAGE_BACKEND=s3`, the `S3_*` variables, and credentials. Keep `STORAGE_PATH` pointed at the existing local data.
-3. From a source checkout, run:
+2. Set `STORAGE_BACKEND=s3`, the `S3_*` variables, and credentials. Keep `STORAGE_PATH` pointed at the existing local data. The migration script does not load the repository's `.env` automatically, so export those values into the shell first. For example, from the repository root:
+
+   ```bash
+   set -a
+   source .env
+   set +a
+   ```
+
+3. From the same shell in a source checkout, run:
 
    ```bash
    npm run storage:migrate -w @alexandria/backend
@@ -98,4 +105,4 @@ Do not remove the local volume until backup and rollback requirements have been 
 
 Server folder imports still read `sourcePath` from a filesystem visible to the backend worker. In S3 mode, Alexandria uploads each file and then reads it back to verify its byte size and SHA-256. The local hardlink/copy/move implementation is not used.
 
-Set `deleteAfterUpload: true` only when the import should remove its source files. Deletion runs after every discovered model completes successfully; any model failure leaves all sources in place. If `deleteAfterUpload` is omitted, it defaults to `true` when the request's legacy `strategy` is `move` and to `false` otherwise. For clarity in automation, set `deleteAfterUpload` explicitly.
+Set `deleteAfterUpload: true` only when the import should remove its source files. Deletion runs after every discovered model completes successfully; any model failure leaves all sources in place. Immediately before deletion, Alexandria hashes the source again and retains it if its size or SHA-256 changed since upload. Individual deletion failures are logged and retained without retrying the already-completed import, preventing duplicate models after a partial deletion pass. If `deleteAfterUpload` is omitted, it defaults to `true` when the request's legacy `strategy` is `move` and to `false` otherwise. For clarity in automation, set `deleteAfterUpload` explicitly.
