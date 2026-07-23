@@ -83,3 +83,24 @@ describe('ModelService – getModelById', () => {
     expect(result).toEqual(fakeModel);
   });
 });
+
+describe('ModelService – createModel', () => {
+  it('uses a supplied transaction executor for the insert', async () => {
+    const chain = { values: vi.fn(), returning: vi.fn() };
+    chain.values.mockReturnValue(chain);
+    chain.returning.mockResolvedValue([{ id: 'model-1' }]);
+    const executor = { insert: vi.fn().mockReturnValue(chain) };
+
+    await new ModelService().createModel({
+      name: 'Dragon',
+      slug: 'dragon',
+      userId: 'user-1',
+      libraryId: 'library-1',
+      sourceType: 'archive_upload',
+      status: 'processing',
+    }, executor as never);
+
+    expect(executor.insert).toHaveBeenCalledOnce();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+});

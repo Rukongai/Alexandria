@@ -14,6 +14,7 @@ import type {
   ImportCommitProgress,
   ImportSession,
   MultipartArchiveMode,
+  SetModelMetadataRequest,
 } from '@alexandria/shared';
 import {
   jobService,
@@ -34,6 +35,7 @@ import { detectArchiveExtension, stripArchiveExtension } from '../utils/archive.
 import { generateSlug } from '../utils/slug.js';
 import { createLogger } from '../utils/logger.js';
 import { AppError, storageError, validationError } from '../utils/errors.js';
+import { db } from '../db/index.js';
 
 const logger = createLogger('IngestionService');
 
@@ -468,39 +470,72 @@ export class IngestionService {
     userId: string,
     libraryId: string,
   ): Promise<{ modelId: string; jobId: string }> {
-    const session = await importSessionService.getOwnedRow(sessionId, userId);
-    if (session.status !== 'ready_for_review') {
-      throw validationError(`Import session is not ready to commit (status: ${session.status})`);
-    }
-    if (session.libraryId !== libraryId) {
-      throw validationError('Import session belongs to a different library');
-    }
+    const { modelId, effectiveBatchMetadata } = await db.transaction(async (tx) => {
+      // This is the same deterministic import-session row lock used by AI
+      // proposal apply. Only one transaction can observe ready_for_review and
+      // claim the session, so concurrent commits cannot create two models and
+      // an AI draft apply cannot race between the draft read and state change.
+      const [session] = await importSessionService.lockOwnedSessions(
+        [sessionId],
+        userId,
+        libraryId,
+        tx,
+      );
+      if (session.status !== 'ready_for_review') {
+        throw validationError(`Import session is not ready to commit (status: ${session.status})`);
+      }
 
-    // B1: validate collectionId ownership synchronously here, before enqueuing,
-    // so an unauthorized or non-existent collectionId returns a 4xx to the
-    // caller rather than silently failing inside the non-fatal worker catch.
-    if (batchMetadata?.collectionId) {
-      await collectionService.requireOwnedCollection(batchMetadata.collectionId, userId, libraryId);
-    }
+      // An explicit review form submission is authoritative. When omitted,
+      // resolve the persisted draft while its session row remains locked.
+      const resolvedBatchMetadata = batchMetadata
+        ?? (session.draftMetadata as BatchUploadMetadata | null)
+        ?? undefined;
 
-    const reviewedName = batchMetadata?.modelName?.trim();
-    const name = reviewedName || stripArchiveExtension(session.originalFilename);
-    const slug = generateSlug(name);
-    const { id: modelId } = await modelService.createModel({
-      name,
-      slug,
-      description: batchMetadata?.description ?? null,
-      userId,
-      libraryId,
-      sourceType: 'archive_upload',
-      status: 'processing',
-      originalFilename: session.originalFilename,
+      // Validate collection scope in the same transaction as the claim.
+      if (resolvedBatchMetadata?.collectionId) {
+        await collectionService.requireOwnedCollection(
+          resolvedBatchMetadata.collectionId,
+          userId,
+          libraryId,
+          tx,
+        );
+      }
+      const metadataValues = this.buildBatchMetadataValues(resolvedBatchMetadata);
+      for (const [fieldSlug, value] of Object.entries(metadataValues)) {
+        const field = await metadataService.getFieldBySlug(fieldSlug, tx);
+        metadataService.validateFieldValue(field, value);
+      }
+
+      const reviewedName = resolvedBatchMetadata?.modelName?.trim();
+      const name = reviewedName || stripArchiveExtension(session.originalFilename);
+      const slug = generateSlug(name);
+      const { id } = await modelService.createModel({
+        name,
+        slug,
+        description: resolvedBatchMetadata?.description ?? null,
+        userId,
+        libraryId,
+        sourceType: 'archive_upload',
+        status: 'processing',
+        originalFilename: session.originalFilename,
+      }, tx);
+      await importSessionService.update(
+        sessionId,
+        { status: 'committing', modelId: id },
+        tx,
+      );
+      return { modelId: id, effectiveBatchMetadata: resolvedBatchMetadata };
     });
-    await importSessionService.update(sessionId, { status: 'committing', modelId });
 
     let jobId: string;
     try {
-      jobId = await jobService.enqueueCommitJob({ sessionId, modelId, userId, libraryId, batchMetadata });
+      jobId = await jobService.enqueueCommitJob({
+        sessionId,
+        modelId,
+        userId,
+        libraryId,
+        batchMetadata: effectiveBatchMetadata,
+      });
     } catch (err) {
       logger.error({ sessionId, modelId, error: String(err) }, 'Failed to enqueue commit job');
       await modelService.updateModelStatus(modelId, 'error');
@@ -735,12 +770,7 @@ export class IngestionService {
   ): Promise<void> {
     if (!batchMetadata) return;
     try {
-      const metadata: Record<string, string | string[]> = {};
-      if (batchMetadata.artist) metadata.artist = batchMetadata.artist;
-      if (batchMetadata.tags && batchMetadata.tags.length > 0) metadata.tags = batchMetadata.tags;
-      const opts = batchMetadata.options;
-      if (opts?.markPreSupported) metadata['pre-supported'] = 'true';
-      if (opts?.markNsfw) metadata.nsfw = 'true';
+      const metadata = this.buildBatchMetadataValues(batchMetadata);
       if (Object.keys(metadata).length > 0) {
         await metadataService.setModelMetadata(modelId, metadata);
       }
@@ -761,6 +791,20 @@ export class IngestionService {
         'Failed to apply batch metadata (non-fatal) — model remains ready',
       );
     }
+  }
+
+  private buildBatchMetadataValues(
+    batchMetadata: BatchUploadMetadata | undefined,
+  ): SetModelMetadataRequest {
+    if (!batchMetadata) return {};
+    const metadata: SetModelMetadataRequest = { ...(batchMetadata.metadata ?? {}) };
+    // Dedicated review fields intentionally win over duplicate generic slugs.
+    if (batchMetadata.artist !== undefined) metadata.artist = batchMetadata.artist;
+    if (batchMetadata.tags !== undefined) metadata.tags = batchMetadata.tags;
+    const opts = batchMetadata.options;
+    if (opts?.markPreSupported) metadata['pre-supported'] = true;
+    if (opts?.markNsfw) metadata.nsfw = true;
+    return metadata;
   }
 
   // -------------------------------------------------------------------------

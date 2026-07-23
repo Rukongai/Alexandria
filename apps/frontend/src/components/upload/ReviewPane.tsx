@@ -261,6 +261,11 @@ export function ReviewPane({
         sessionId={session.id}
         originalFilename={session.originalFilename}
         detected={detected}
+        draftMetadata={session.draftMetadata}
+        resetKey={JSON.stringify([
+          session.id,
+          session.draftMetadata,
+        ])}
         onCommitted={onCommitted}
       />
     </div>

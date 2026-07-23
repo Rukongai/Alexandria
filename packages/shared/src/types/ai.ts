@@ -1,5 +1,6 @@
 import type { SetModelMetadataRequest } from './metadata.js';
 import type { UpdateModelRequest } from './model.js';
+import type { BatchUploadMetadata } from './upload.js';
 
 export interface AiProvider {
   id: string;
@@ -49,7 +50,12 @@ export interface AiChatRequest {
   history?: AiChatMessage[];
   providerId?: string;
   context?: {
+    /** Backward-compatible single-model target. */
     modelId?: string;
+    /** Current detail/selection/page model targets. */
+    modelIds?: string[];
+    /** Current staged-upload targets. */
+    importSessionIds?: string[];
   };
 }
 
@@ -82,10 +88,22 @@ export interface AiUpdateCollectionsChange {
   removeCollectionIds: string[];
 }
 
+export interface AiUpdateImportSessionChange {
+  type: 'update_import_session';
+  importSessionId: string;
+  /** Identity guard captured when the proposal is previewed. */
+  originalFilename: string;
+  /** Optimistic stale-state guard captured from the staged session. */
+  expectedUpdatedAt: string;
+  /** Non-empty draft patch. Nested metadata/options are merged on apply. */
+  patch: BatchUploadMetadata;
+}
+
 export type AiChange =
   | AiUpdateModelChange
   | AiSetMetadataChange
-  | AiUpdateCollectionsChange;
+  | AiUpdateCollectionsChange
+  | AiUpdateImportSessionChange;
 
 export interface AiChangePreviewDisplay {
   collections: Record<string, { name: string }>;
@@ -111,4 +129,5 @@ export interface AiApplyProposalResponse {
   proposalId: string;
   status: 'applied';
   changedModelIds: string[];
+  changedImportSessionIds: string[];
 }

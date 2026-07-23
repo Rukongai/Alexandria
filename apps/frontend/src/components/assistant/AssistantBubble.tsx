@@ -21,6 +21,7 @@ import { ScrollArea } from '../ui/scroll-area';
 import { Select } from '../ui/select';
 import { Textarea } from '../ui/textarea';
 import { ProposalPreviewCard } from './ProposalPreviewCard';
+import { useAssistantContext } from '../../hooks/use-assistant-context';
 
 interface ConversationMessage extends AiChatMessage {
   id: string;
@@ -31,8 +32,10 @@ interface ChatMutationVariables {
   message: string;
   history: AiChatMessage[];
   providerId?: string;
-  modelId?: string;
+  modelIds: string[];
+  importSessionIds: string[];
   libraryId: string | null;
+  targetFingerprint: string;
   conversationVersion: number;
   signal: AbortSignal;
 }
@@ -40,6 +43,7 @@ interface ChatMutationVariables {
 interface ApplyMutationVariables {
   proposalId: string;
   libraryId: string | null;
+  targetFingerprint: string;
   conversationVersion: number;
 }
 
@@ -55,7 +59,24 @@ const INVALIDATE_AFTER_APPLY = new Set([
   'collection-models',
   'smart-preview',
   'smart-collections',
+  'import-session',
+  'import-sessions',
 ]);
+
+const STARTER_TASKS = [
+  {
+    label: 'Fill metadata',
+    prompt: 'Fill out relevant metadata from the model file and filename.',
+  },
+  {
+    label: 'Suggest tags',
+    prompt: 'Suggest useful tags for the current models or uploads.',
+  },
+  {
+    label: 'Suggest a collection',
+    prompt: 'Suggest a collection for the current models or uploads.',
+  },
+] as const;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Something went wrong. Please try again.';
@@ -65,6 +86,13 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
+function createTargetFingerprint(modelIds: string[], importSessionIds: string[]): string {
+  return JSON.stringify({
+    modelIds: [...modelIds].sort(),
+    importSessionIds: [...importSessionIds].sort(),
+  });
+}
+
 export function AssistantBubble() {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
@@ -72,17 +100,21 @@ export function AssistantBubble() {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const libraryMatch = useMatch('/lib/:libraryId/*');
   const currentLibraryId = libraryMatch?.params.libraryId ?? null;
+  const { modelIds, importSessionIds } = useAssistantContext();
+  const currentTargetFingerprint = createTargetFingerprint(modelIds, importSessionIds);
+  const currentScopeFingerprint = `${currentLibraryId ?? ''}\0${currentTargetFingerprint}`;
   const [conversationLibraryId, setConversationLibraryId] = useState(currentLibraryId);
+  const [conversationTargetFingerprint, setConversationTargetFingerprint] = useState(currentTargetFingerprint);
   const [dismissedProposals, setDismissedProposals] = useState<Set<string>>(new Set());
   const [appliedProposals, setAppliedProposals] = useState<Set<string>>(new Set());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const currentLibraryIdRef = useRef(currentLibraryId);
-  const previousLibraryIdRef = useRef(currentLibraryId);
+  const currentTargetFingerprintRef = useRef(currentTargetFingerprint);
+  const previousScopeFingerprintRef = useRef(currentScopeFingerprint);
   const conversationVersionRef = useRef(0);
   const chatAbortControllerRef = useRef<AbortController | null>(null);
   const queryClient = useQueryClient();
-  const modelMatch = useMatch('/lib/:libraryId/models/:id');
   const libPath = useLibraryPath();
   const { toast } = useToast();
 
@@ -92,13 +124,15 @@ export function AssistantBubble() {
   });
   const providers = providersQuery.data ?? [];
   const activeProviderId = providerId || providers.find((provider) => provider.isDefault)?.id || providers[0]?.id || '';
-  const conversationIsCurrent = conversationLibraryId === currentLibraryId;
+  const conversationIsCurrent = conversationLibraryId === currentLibraryId
+    && conversationTargetFingerprint === currentTargetFingerprint;
   const visibleMessages = conversationIsCurrent ? messages : [];
 
   // Keep async completion guards synchronized during render. The visible
   // conversation is separately gated by conversationLibraryId, so content from
   // the previous library cannot flash during the route transition.
   currentLibraryIdRef.current = currentLibraryId;
+  currentTargetFingerprintRef.current = currentTargetFingerprint;
 
   useEffect(() => {
     if (!open) return;
@@ -126,13 +160,19 @@ export function AssistantBubble() {
         message: variables.message,
         history: variables.history,
         providerId: variables.providerId,
-        context: variables.modelId ? { modelId: variables.modelId } : undefined,
+        context: variables.modelIds.length > 0 || variables.importSessionIds.length > 0
+          ? {
+              modelIds: variables.modelIds,
+              importSessionIds: variables.importSessionIds,
+            }
+          : undefined,
       }, variables.signal).then((response) => response.data);
     },
     onSuccess: (response, variables) => {
       if (
         variables.conversationVersion !== conversationVersionRef.current
         || variables.libraryId !== currentLibraryIdRef.current
+        || variables.targetFingerprint !== currentTargetFingerprintRef.current
       ) return;
       setMessages((current) => [
         ...current,
@@ -158,6 +198,7 @@ export function AssistantBubble() {
       if (
         variables.conversationVersion !== conversationVersionRef.current
         || variables.libraryId !== currentLibraryIdRef.current
+        || variables.targetFingerprint !== currentTargetFingerprintRef.current
       ) return;
       setAppliedProposals((current) => new Set(current).add(result.proposalId));
       await queryClient.invalidateQueries({
@@ -165,32 +206,43 @@ export function AssistantBubble() {
       });
       toast({
         title: 'Changes applied',
-        description: `${result.changedModelIds.length} model${result.changedModelIds.length === 1 ? '' : 's'} updated.`,
+        description: (() => {
+          const updated: string[] = [];
+          if (result.changedModelIds.length > 0) {
+            updated.push(`${result.changedModelIds.length} model${result.changedModelIds.length === 1 ? '' : 's'}`);
+          }
+          if (result.changedImportSessionIds.length > 0) {
+            updated.push(`${result.changedImportSessionIds.length} upload${result.changedImportSessionIds.length === 1 ? '' : 's'}`);
+          }
+          return updated.length > 0 ? `${updated.join(' and ')} updated.` : 'Proposal applied.';
+        })(),
       });
     },
     onError: (error, variables) => {
       if (
         variables.conversationVersion !== conversationVersionRef.current
         || variables.libraryId !== currentLibraryIdRef.current
+        || variables.targetFingerprint !== currentTargetFingerprintRef.current
       ) return;
       toast({ title: 'Could not apply changes', description: errorMessage(error), variant: 'destructive' });
     },
   });
 
   useEffect(() => {
-    if (previousLibraryIdRef.current === currentLibraryId) return;
-    previousLibraryIdRef.current = currentLibraryId;
+    if (previousScopeFingerprintRef.current === currentScopeFingerprint) return;
+    previousScopeFingerprintRef.current = currentScopeFingerprint;
     conversationVersionRef.current += 1;
     chatAbortControllerRef.current?.abort();
     chatAbortControllerRef.current = null;
     setConversationLibraryId(currentLibraryId);
+    setConversationTargetFingerprint(currentTargetFingerprint);
     setMessages([]);
     setDraft('');
     setDismissedProposals(new Set());
     setAppliedProposals(new Set());
     chatMutation.reset();
     applyMutation.reset();
-  }, [currentLibraryId]);
+  }, [currentLibraryId, currentScopeFingerprint, currentTargetFingerprint]);
 
   useEffect(() => () => {
     chatAbortControllerRef.current?.abort();
@@ -211,8 +263,10 @@ export function AssistantBubble() {
       message,
       history: visibleMessages.map(({ role, content }) => ({ role, content })),
       providerId: activeProviderId || undefined,
-      modelId: modelMatch?.params.id,
+      modelIds,
+      importSessionIds,
       libraryId: currentLibraryId,
+      targetFingerprint: currentTargetFingerprint,
       conversationVersion: conversationVersionRef.current,
       signal: controller.signal,
     });
@@ -229,6 +283,24 @@ export function AssistantBubble() {
     chatMutation.reset();
     applyMutation.reset();
     textareaRef.current?.focus();
+  }
+
+  function contextSubtitle(): string {
+    if (modelIds.length > 0 && importSessionIds.length > 0) {
+      return `Using ${modelIds.length} model${modelIds.length === 1 ? '' : 's'} and ${importSessionIds.length} upload${importSessionIds.length === 1 ? '' : 's'}`;
+    }
+    if (modelIds.length > 0) {
+      return `Using ${modelIds.length} model${modelIds.length === 1 ? '' : 's'} as context`;
+    }
+    if (importSessionIds.length > 0) {
+      return `Using ${importSessionIds.length} upload${importSessionIds.length === 1 ? '' : 's'} as context`;
+    }
+    return 'Ask about your library';
+  }
+
+  function chooseStarterTask(prompt: string) {
+    setDraft(prompt);
+    window.setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
   return (
@@ -252,7 +324,7 @@ export function AssistantBubble() {
               <div className="min-w-0">
                 <h2 className="text-sm font-semibold text-foreground">Alexandria Assistant</h2>
                 <p className="truncate text-xs text-muted-foreground">
-                  {modelMatch?.params.id ? 'Using the current model as context' : 'Ask about your library'}
+                  {contextSubtitle()}
                 </p>
               </div>
             </div>
@@ -320,6 +392,20 @@ export function AssistantBubble() {
                   <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
                     Ask questions, find details, or preview changes to models and collections.
                   </p>
+                  <div className="mt-5 flex flex-wrap justify-center gap-2" aria-label="Starter tasks">
+                    {STARTER_TASKS.map((task) => (
+                      <Button
+                        key={task.label}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 rounded-full bg-background text-xs"
+                        onClick={() => chooseStarterTask(task.prompt)}
+                      >
+                        {task.label}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
               ) : (
                 visibleMessages.map((message) => (
@@ -368,6 +454,7 @@ export function AssistantBubble() {
                           onApply={() => applyMutation.mutate({
                             proposalId: message.response!.proposal!.proposalId,
                             libraryId: currentLibraryId,
+                            targetFingerprint: currentTargetFingerprint,
                             conversationVersion: conversationVersionRef.current,
                           })}
                           onDismiss={() => setDismissedProposals((current) => new Set(current).add(message.response!.proposal!.proposalId))}

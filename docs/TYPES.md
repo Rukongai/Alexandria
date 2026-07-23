@@ -149,7 +149,7 @@ type MetadataFieldType =
 
 interface MetadataFieldConfig {
   enumOptions?: string[];        // for enum and multi_enum types
-  validationPattern?: string;    // optional regex for text fields
+  validationPattern?: string;    // optional RE2-compatible regex, max 512 chars
   displayHint?: string;          // optional hint for frontend rendering
 }
 ```
@@ -309,7 +309,7 @@ interface SmartCollectionDetail {
 
 ### ImportSession
 
-A staged archive upload awaiting review and commit. Created by `POST /models/upload`, the single-file chunked complete endpoint, or multipart complete; destroyed by commit or discard. One session always creates one model, even when its scan input contains several independent archives or one supported split ZIP or modern split RAR set. The database schema is in `apps/backend/src/db/schema/import-session.ts` and migration `0008_add_import_sessions.sql`.
+A staged archive upload awaiting review and commit. Created by `POST /models/upload`, the single-file chunked complete endpoint, or multipart complete; destroyed by commit or discard. One session always creates one model, even when its scan input contains several independent archives or one supported split ZIP or modern split RAR set. The database schema is in `apps/backend/src/db/schema/import-session.ts`; migration `0008_add_import_sessions.sql` creates the table and `0013_add_import_session_draft_metadata.sql` adds the persisted review draft.
 
 ```typescript
 interface ImportSession {
@@ -319,6 +319,7 @@ interface ImportSession {
   originalFilename: string;
   status: ImportSessionStatus;
   detected: DetectedImportMetadata | null; // null while scanning
+  draftMetadata: BatchUploadMetadata | null; // reviewed values staged for explicit commit
   manifest: unknown | null;                // internal file manifest; not exposed in API responses
   stagingPath: string | null;              // server-side path to extracted files; not exposed in API responses
   modelId: string | null;                  // set during commit; FK → models (set null on model delete)
@@ -361,7 +362,14 @@ type AiChange =
       patch: Pick<UpdateModelRequest, 'name' | 'description' | 'previewImageFileId'>;
     }
   | { type: 'set_metadata'; modelId: string; modelName: string; values: SetModelMetadataRequest }
-  | { type: 'update_collections'; modelId: string; modelName: string; addCollectionIds: string[]; removeCollectionIds: string[] };
+  | { type: 'update_collections'; modelId: string; modelName: string; addCollectionIds: string[]; removeCollectionIds: string[] }
+  | {
+      type: 'update_import_session';
+      importSessionId: string;
+      originalFilename: string; // identity guard captured at preview time
+      expectedUpdatedAt: string; // optimistic stale-state guard from ImportSession.updatedAt
+      patch: BatchUploadMetadata; // non-empty; nested metadata/options merge on apply
+    };
 
 interface AiChangePreview {
   proposalId: string;
@@ -660,10 +668,12 @@ interface ImportSession {
   originalFilename: string;
   status: ImportSessionStatus;
   detected: DetectedImportMetadata | null; // null until scan completes
+  draftMetadata: BatchUploadMetadata | null; // staged review values; applying them does not commit
   modelId: string | null;       // set once commit begins
   commitProgress: ImportCommitProgress | null; // non-null only while committing
   error: string | null;
   createdAt: string;
+  updatedAt: string;             // changes whenever session state or draft metadata changes
 }
 
 type ImportSessionStatus =
@@ -696,18 +706,23 @@ interface UploadOptions {
   markPreSupported?: boolean;
   autoThumbnails?: boolean;     // informational; auto-thumbnails always run during ingestion
   markNsfw?: boolean;
-  skipDuplicatesByHash?: boolean;
+  skipDuplicatesByHash?: boolean; // reserved; deduplication is not implemented
 }
 
 // Batch metadata applied to the model at commit time
 interface BatchUploadMetadata {
+  modelName?: string;
+  description?: string | null;
   collectionId?: string;        // assign to an existing collection
   newCollectionName?: string;   // or create and assign a new collection by name
   artist?: string;
   tags?: string[];
+  metadata?: SetModelMetadataRequest; // configured fields keyed by slug
   options?: UploadOptions;
 }
 ```
+
+`collectionId` and `newCollectionName` are mutually exclusive. An assistant-applied draft patch shallow-merges direct fields and separately merges `metadata` and `options`; choosing either collection form removes the other from the stored draft. At commit, an explicitly supplied `batchMetadata` object replaces the entire stored draft as the request source. When `batchMetadata` is omitted, the stored draft is used. Within the effective object, dedicated `artist` and `tags` fields override the same slugs in `metadata`.
 
 The file and byte counters in `ImportCommitProgress` describe transfer into managed storage, while `percent` describes the whole commit pipeline. Storage occupies 0–80%; later phases report 85% (`saving_records`), 90% (`generating_thumbnails`), 95% (`applying_metadata`), and 100% (`complete`). After storage finishes, the counters remain at their totals while the later phases run.
 
@@ -797,7 +812,11 @@ interface AiChatRequest {
   message: string;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>; // max 20; message + history <= 32k chars
   providerId?: string; // omitted = user's default provider
-  context?: { modelId?: string };
+  context?: {
+    modelId?: string;          // backward-compatible single-model target
+    modelIds?: string[];       // current page/selection targets; max 25 unique model targets total
+    importSessionIds?: string[]; // current staged-upload targets; max 25 unique IDs
+  };
 }
 
 interface AiChatResponse {
@@ -817,6 +836,7 @@ interface AiApplyProposalResponse {
   proposalId: string;
   status: 'applied';
   changedModelIds: string[];
+  changedImportSessionIds: string[];
 }
 ```
 
@@ -903,6 +923,8 @@ interface SetModelMetadataRequest {
   [fieldSlug: string]: string | string[] | number | boolean | null;
 }
 ```
+
+The union describes the wire representation; the resolved field definition determines which member is legal. MetadataService centrally enforces finite numbers, booleans, parseable dates, HTTP(S) URLs, configured enum options, string-array multi-enums, and configured text validation patterns. `null` removes the value. The same validation is used for direct writes, assistant proposals, and effective staged-upload metadata before commit.
 
 ### Auth Requests
 
@@ -1038,7 +1060,8 @@ User ──owns──→ Library ──scopes──→ Model ──has many─�
   │               │               no membership table; results derived on read)
   │               │
   │               └──scopes──→ ImportSession ──(on commit)──→ Model
-  │                              (staged upload; expires 24h; FK set null on model delete)
+  │                              (staged upload + persisted review draft;
+  │                               expires 24h; FK set null on model delete)
   │
   └──owns──→ Collection (via userId, for ownership; libraryId for scope)
   └──owns──→ SmartCollection (via userId, for ownership; libraryId for scope)
@@ -1049,4 +1072,4 @@ The key insights:
 - Library is the top-level scope for models, collections, and smart collections. Every model, collection, and smart collection has a NOT NULL `libraryId` FK. The API enforces this via the `requireLibrary` preHandler, which injects `request.libraryId` from the session — clients never supply it.
 - Tag and model_tags exist as database-level optimizations. At the API level, tags are just metadata values of type `multi_enum`. MetadataService abstracts the storage routing.
 - `SmartCollection` stores only a rule tree. It has no join table and no parent/child nesting. The model result set is computed on each request by compiling the tree into SQL.
-- `ImportSession` is a transient entity. It exists between `POST /models/upload` (scan enqueued) and `POST /models/import-sessions/:id/commit` (model created). The `modelId` FK is set to null on model deletion; the session row itself is deleted by the discard endpoint or reaped by the expiry cleanup.
+- `ImportSession` is a transient entity. It exists between `POST /models/upload` (scan enqueued) and `POST /models/import-sessions/:id/commit` (model created), and its `draftMetadata` persists user- or assistant-reviewed values without committing them. The `modelId` FK is set to null on model deletion; the session row itself is deleted by the discard endpoint or reaped by the expiry cleanup.

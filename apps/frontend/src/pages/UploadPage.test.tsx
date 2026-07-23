@@ -33,6 +33,10 @@ vi.mock('../api/collections', () => ({
   getCollections: vi.fn().mockResolvedValue({ data: [], meta: null, errors: null }),
 }));
 
+vi.mock('../hooks/use-assistant-context', () => ({
+  useAssistantTarget: vi.fn(),
+}));
+
 import {
   discardImportSession,
   getImportSession,
@@ -41,16 +45,19 @@ import {
   scanMultipartUpload,
   uploadImportSessionFiles,
 } from '../api/models';
+import { useAssistantTarget } from '../hooks/use-assistant-context';
 
 const failedSession: ImportSession = {
   id: '11111111-1111-4111-8111-111111111111',
   originalFilename: 'failed-upload.zip',
   status: 'error',
+  draftMetadata: null,
   detected: null,
   modelId: null,
   commitProgress: null,
   error: 'Archive is corrupt',
   createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
 const scanningSession: ImportSession = {
@@ -105,6 +112,21 @@ describe('UploadPage', () => {
     expect(screen.getByRole('tab', { name: 'Multi-part archive' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('heading', { name: 'Create one model from several files' })).toBeVisible();
     expect(screen.getByRole('tab', { name: 'Server folder import' })).toBeVisible();
+  });
+
+  it('should expose the selected ready-for-review upload as the assistant target', async () => {
+    vi.mocked(listImportSessions).mockResolvedValue([readySession]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(useAssistantTarget).toHaveBeenLastCalledWith({
+      importSessionIds: [readySession.id],
+    }));
   });
 
   it('supports roving keyboard focus and activation across upload tabs', () => {

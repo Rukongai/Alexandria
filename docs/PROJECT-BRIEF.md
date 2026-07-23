@@ -18,15 +18,16 @@ Alexandria fills this gap: a library manager that understands what a 3D printing
 
 - **Ingests models** from archive uploads, explicitly grouped archives, supported split archives (split ZIP or modern split RAR sets), and existing folder-based libraries with user-defined hierarchy patterns
 - **Processes uploaded files** asynchronously — extracts zips, classifies files by type, generates image thumbnails, computes file hashes
-- **Provides flexible metadata** — ships with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL) and supports user-defined custom fields. Tags have optimized query performance under the hood.
+- **Provides flexible metadata** — ships with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL, Source) and supports user-defined custom fields. Tags have optimized query performance under the hood.
 - **Organizes via collections** — nestable collection hierarchy, models can belong to multiple collections
 - **Supports import strategies** — hardlink (zero-copy on same filesystem), copy, or move for importing existing libraries
 - **Full-text search and filtering** — search across names and descriptions, filter by any metadata field, sort and paginate with cursor-based pagination
+- **Previews STL geometry** — opens model STL files in a lazy-loaded in-browser 3D viewer with multi-file switching
 - **Single-user auth** — local email/password authentication with session management
+- **Assists with library cleanup** — uses the current model selection or staged uploads to fill metadata, suggest tags and collections, and prepare reviewable changes without bypassing explicit apply or upload commit steps
 
 ### What Alexandria Doesn't Do (Yet)
 
-- No 3D model viewer (planned for Phase 11)
 - No multi-user support or permissions (planned for Phase 12)
 - No client-side object encryption; managed storage supports local filesystems and private S3-compatible buckets
 - No print job tracking or slicer integration (planned for Phase 14)
@@ -57,7 +58,7 @@ These decisions were made deliberately during the architecture phase and should 
 | Database | PostgreSQL (primary), Drizzle ORM |
 | Job Queue | BullMQ + Redis |
 | Storage | Local filesystem or private S3-compatible object storage |
-| Auth | Lucia or Auth.js (session-based) |
+| Auth | Signed HTTP-only session cookie with argon2 password hashing |
 | Deployment | Docker Compose |
 | Monorepo | Turborepo with shared types package |
 
@@ -70,7 +71,7 @@ The backend is organized around focused services with clear ownership boundaries
 - **StorageService** — manages blob storage through local-filesystem or S3-compatible providers
 - **ThumbnailService** — generates webp thumbnails from images
 - **UploadService** — manages bounded chunked uploads and multipart assembly
-- **ImportSessionService** — owns staged scan, review, and commit sessions
+- **ImportSessionService** — owns staged scan, persisted review drafts, and commit sessions
 - **ImportStrategyService** — moves folder imports into managed storage
 - **MetadataService** — manages field definitions and metadata values with hybrid storage
 - **ModelService** — CRUD for models and their files
@@ -83,8 +84,8 @@ The backend is organized around focused services with clear ownership boundaries
 - **JobService** — async job queue management
 - **PresenterService** — assembles API response payloads
 - **AiProviderService** — manages encrypted OpenAI-compatible BYOK providers
-- **AiAssistantService** — runs the bounded, library-scoped assistant tool loop
-- **AiProposalService** — validates immutable previews and atomically applies approved changes
+- **AiAssistantService** — runs the bounded, library-scoped assistant tool loop across models, collections, metadata knowledge, and staged uploads
+- **AiProposalService** — validates immutable previews and atomically applies approved model changes or staged-upload draft updates
 - **WebSearchService** — researches public metadata and image candidates without mutating the library
 
 The frontend communicates with the backend via a REST API using a consistent response envelope (`{ data, meta, errors }`) on every endpoint.
@@ -106,4 +107,4 @@ Implementation uses a team of 7 specialized Claude Code agents (Orchestrator, Ba
 
 ## Current Status
 
-The core application, staged ingestion workflow, multipart archive support, and preview-first AI assistant are implemented. Development continues through reviewed feature branches and pull requests.
+The core application, staged ingestion workflow, multipart archive support, and preview-first AI assistant are implemented. The assistant uses current single- or multi-model page context and ready-for-review uploads, can parse `{Artist} - {Date} - {Model}` filenames, infer a supported Source, and suggest tags and collections. Upload proposals persist review metadata only; an explicit commit still starts ingestion. Development continues through reviewed feature branches and pull requests.

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, FolderOpen, User } from 'lucide-react';
 import type { DetectedImportMetadata, BatchUploadMetadata } from '@alexandria/shared';
@@ -16,6 +16,9 @@ interface BatchMetadataFormProps {
   sessionId: string;
   originalFilename: string;
   detected: DetectedImportMetadata;
+  draftMetadata?: BatchUploadMetadata | null;
+  /** Changes only when server-provided defaults should replace local edits. */
+  resetKey?: string;
   onCommitted: (modelId: string) => void;
 }
 
@@ -31,15 +34,21 @@ interface FormState {
   autoThumbnails: boolean;
   markNsfw: boolean;
   skipDuplicatesByHash: boolean;
+  metadata: NonNullable<BatchUploadMetadata['metadata']>;
+  metadataTypes: Record<string, 'array' | 'boolean' | 'number' | 'string'>;
 }
 
 function archiveName(filename: string): string {
   return filename.replace(/\.(tar\.gz|zip|rar|7z)$/i, '').trim() || filename;
 }
 
-function createInitialForm(detected: DetectedImportMetadata, originalFilename: string): FormState {
+function createInitialForm(
+  detected: DetectedImportMetadata,
+  originalFilename: string,
+  draftMetadata?: BatchUploadMetadata | null,
+): FormState {
   const seenTags = new Set<string>();
-  const tags = detected.tagsGuessed.reduce<string[]>((result, rawTag) => {
+  const tags = (draftMetadata?.tags ?? detected.tagsGuessed).reduce<string[]>((result, rawTag) => {
     const tag = rawTag.trim();
     const key = tag.toLowerCase();
     if (!key || seenTags.has(key)) return result;
@@ -48,18 +57,31 @@ function createInitialForm(detected: DetectedImportMetadata, originalFilename: s
     return result;
   }, []);
 
+  const metadata = { ...(draftMetadata?.metadata ?? {}) };
+  const metadataTypes = Object.fromEntries(
+    Object.entries(metadata).map(([field, value]) => [
+      field,
+      Array.isArray(value) ? 'array' : typeof value === 'boolean'
+        ? 'boolean' : typeof value === 'number' ? 'number' : 'string',
+    ]),
+  ) as FormState['metadataTypes'];
+
   return {
-    modelName: archiveName(originalFilename),
-    description: '',
-    collectionId: '',
-    newCollectionName: '',
-    artist: detected.artist ?? '',
+    modelName: draftMetadata?.modelName ?? archiveName(originalFilename),
+    description: draftMetadata?.description ?? '',
+    collectionId: draftMetadata?.newCollectionName
+      ? '__new__'
+      : draftMetadata?.collectionId ?? '',
+    newCollectionName: draftMetadata?.newCollectionName ?? '',
+    artist: draftMetadata?.artist ?? detected.artist ?? '',
     tags,
     tagInput: '',
-    markPreSupported: false,
-    autoThumbnails: true,
-    markNsfw: false,
-    skipDuplicatesByHash: true,
+    markPreSupported: draftMetadata?.options?.markPreSupported ?? false,
+    autoThumbnails: draftMetadata?.options?.autoThumbnails ?? true,
+    markNsfw: draftMetadata?.options?.markNsfw ?? false,
+    skipDuplicatesByHash: draftMetadata?.options?.skipDuplicatesByHash ?? true,
+    metadata,
+    metadataTypes,
   };
 }
 
@@ -67,13 +89,17 @@ export function BatchMetadataForm({
   sessionId,
   originalFilename,
   detected,
+  draftMetadata,
+  resetKey = sessionId,
   onCommitted,
 }: BatchMetadataFormProps) {
-  const [form, setForm] = useState<FormState>(() => createInitialForm(detected, originalFilename));
+  const initialFormRef = useRef(createInitialForm(detected, originalFilename, draftMetadata));
+  initialFormRef.current = createInitialForm(detected, originalFilename, draftMetadata);
+  const [form, setForm] = useState<FormState>(() => initialFormRef.current);
 
   useEffect(() => {
-    setForm(createInitialForm(detected, originalFilename));
-  }, [sessionId]);
+    setForm(initialFormRef.current);
+  }, [resetKey]);
 
   const { data: collections } = useQuery({
     queryKey: ['collections', { depth: 1 }],
@@ -105,6 +131,7 @@ export function BatchMetadataForm({
         : {}),
       ...(form.artist.trim() ? { artist: form.artist.trim() } : {}),
       ...(form.tags.length > 0 ? { tags: form.tags } : {}),
+      ...(Object.keys(form.metadata).length > 0 ? { metadata: form.metadata } : {}),
       options: {
         markPreSupported: form.markPreSupported,
         autoThumbnails: form.autoThumbnails,
@@ -237,6 +264,50 @@ export function BatchMetadataForm({
           Inferred from filenames + folder paths. Press Enter or comma to add.
         </p>
       </FormSection>
+
+      {Object.keys(form.metadata).length > 0 && (
+        <FormSection label="Additional metadata">
+          <div className="flex flex-col gap-2">
+            {Object.entries(form.metadata).map(([field, value]) => (
+              <div key={field} className="grid grid-cols-[minmax(90px,0.35fr)_minmax(0,1fr)] items-center gap-2">
+                <Label htmlFor={`draft-metadata-${field}`} className="truncate text-[12px] capitalize">
+                  {field.replace(/[-_]+/g, ' ')}
+                </Label>
+                {form.metadataTypes[field] === 'boolean' ? (
+                  <Checkbox
+                    id={`draft-metadata-${field}`}
+                    checked={value === true}
+                    onChange={(event) => setForm((current) => ({
+                      ...current,
+                      metadata: { ...current.metadata, [field]: event.target.checked },
+                    }))}
+                    aria-label={field.replace(/[-_]+/g, ' ')}
+                  />
+                ) : (
+                  <Input
+                    id={`draft-metadata-${field}`}
+                    type={form.metadataTypes[field] === 'number' ? 'number' : 'text'}
+                    value={Array.isArray(value) ? value.join(', ') : value === null ? '' : String(value)}
+                    onChange={(event) => setForm((current) => {
+                      const type = current.metadataTypes[field];
+                      const nextValue = type === 'array'
+                        ? event.target.value.split(',').map((item) => item.trim()).filter(Boolean)
+                        : type === 'number'
+                          ? (event.target.value === '' ? null : Number(event.target.value))
+                          : event.target.value;
+                      return {
+                        ...current,
+                        metadata: { ...current.metadata, [field]: nextValue },
+                      };
+                    })}
+                    className="text-[13px]"
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </FormSection>
+      )}
 
       {/* Options */}
       <FormSection label="Options">

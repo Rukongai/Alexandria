@@ -39,6 +39,7 @@ import { Label } from '../components/ui/label';
 import { useToast } from '../hooks/use-toast';
 import { formatFileSize } from '../lib/format';
 import { cn } from '../lib/utils';
+import { useAssistantTarget } from '../hooks/use-assistant-context';
 
 type FileAction =
   | { type: 'create-folder'; path: string }
@@ -70,6 +71,7 @@ function fileActionStatus(action: FileAction | undefined): string | undefined {
 
 export function ModelDetailPage() {
   const { id } = useParams<{ id: string }>();
+  useAssistantTarget({ modelIds: id ? [id] : [] });
   const libPath = useLibraryPath();
   const queryClient = useQueryClient();
   const { toast } = useToast();

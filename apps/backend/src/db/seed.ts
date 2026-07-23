@@ -75,6 +75,18 @@ const DEFAULT_FIELDS = [
     config: null,
     sortOrder: 5,
   },
+  {
+    name: 'Source',
+    slug: 'source',
+    type: 'text' as const,
+    isDefault: true,
+    isFilterable: true,
+    isBrowsable: true,
+    config: null,
+    // Append so existing installations keep a deterministic order without
+    // rewriting the sort order of fields they already have.
+    sortOrder: 6,
+  },
 ] as const;
 
 interface SeedLogger {

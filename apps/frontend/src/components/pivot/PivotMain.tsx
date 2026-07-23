@@ -8,6 +8,7 @@ import { useModelResults } from '../../hooks/use-model-results';
 import { getSmartCollections, getSmartCollectionModels } from '../../api/smart-collections';
 import { useDisplayPreferences } from '../../hooks/use-display-preferences';
 import { useBulkSelection } from '../../hooks/use-bulk-selection';
+import { useAssistantTarget } from '../../hooks/use-assistant-context';
 import { ModelCard } from '../models/ModelCard';
 import { ModelList } from '../models/ModelList';
 import { ModelGroupView } from '../models/ModelGroupView';
@@ -105,6 +106,11 @@ export function PivotMain() {
     queryKeyExtra: smartActive ? ['smart', smartCollectionId] : [],
     enabled: !isSmart || smartActive,
   });
+
+  const assistantModelIds = count > 0
+    ? Array.from(selected).slice(0, 25)
+    : models.slice(0, 25).map((model) => model.id);
+  useAssistantTarget({ modelIds: assistantModelIds });
 
   function handleSelectAll() {
     selectAll(models.map((m) => m.id));

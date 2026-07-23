@@ -17,7 +17,7 @@ A self-hosted personal library for managing 3D printing model collections. Think
 - Store managed files on the local filesystem or in a private S3-compatible bucket, including MEGA S4
 
 **Organization**
-- Flexible metadata system with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL) and user-defined custom fields
+- Flexible metadata system with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL, Source) and user-defined custom fields
 - Nestable collections — models can belong to multiple collections simultaneously
 - Existing tag values are suggested during model editing, upload review, and bulk tagging; free-form tags remain supported
 - Tag normalization prevents case-variant duplicates
@@ -26,11 +26,14 @@ A self-hosted personal library for managing 3D printing model collections. Think
 - PostgreSQL full-text search across model names and descriptions
 - Filter by any metadata field value
 - Cursor-based pagination for efficient large library browsing
+- Lazy-loaded in-browser STL viewer with multi-file switching and orbit controls
 
 **AI assistant**
 - Connect user-owned, OpenAI-compatible providers; API keys are encrypted at rest and never returned by the API
-- Search and inspect the active library, research public sources, and prepare reviewable model, metadata, cover, or collection changes
-- Enforce preview-before-apply with immutable, expiring, single-use proposals applied atomically
+- Search models, collections, metadata fields and known values, and staged uploads in the active library; research public sources; and prepare reviewable model or upload-draft changes
+- Use the current detail, page selection, or upload review as context, with starter tasks for filling metadata and suggesting tags or collections
+- Try `{Artist Name} - {Date} - {Model Name}` filenames when filling metadata and infer Source as the character's originating work when evidence supports it
+- Enforce preview-before-apply with immutable, expiring, single-use proposals applied atomically; staged proposals update review metadata but never commit an upload
 
 **API**
 - Typed REST endpoints with a consistent `{ data, meta, errors }` envelope on every response
@@ -229,6 +232,5 @@ AI_ENCRYPTION_KEY=test-only-not-for-production docker compose -f docker/docker-c
 
 The following are planned but not yet implemented:
 
-- **3D model viewer** — in-browser STL/3MF rendering
 - **Multi-user support** — roles, per-user collections, shared libraries
 - **Print job tracking** — link models to print history and notes

@@ -3,6 +3,7 @@ import { and, count, eq } from 'drizzle-orm';
 import { db } from './index.js';
 import { users } from './schema/user.js';
 import { libraries } from './schema/library.js';
+import { metadataFieldDefinitions } from './schema/metadata.js';
 import { runSeed } from './seed.js';
 
 // ---------------------------------------------------------------------------
@@ -85,5 +86,30 @@ describe('runSeed() — admin default library idempotency', () => {
     expect(lib).toBeDefined();
     expect(lib.name).toBe(`${ADMIN_DISPLAY_NAME}'s Library`);
     expect(lib.slug).toBe(`library-${adminUserId.replace(/-/g, '')}`);
+  });
+});
+
+describe('runSeed() — Source metadata field idempotency', () => {
+  it('creates and retains exactly one default Source definition after running twice', async () => {
+    const rows = await db
+      .select({
+        name: metadataFieldDefinitions.name,
+        type: metadataFieldDefinitions.type,
+        isDefault: metadataFieldDefinitions.isDefault,
+        isFilterable: metadataFieldDefinitions.isFilterable,
+        isBrowsable: metadataFieldDefinitions.isBrowsable,
+      })
+      .from(metadataFieldDefinitions)
+      .where(eq(metadataFieldDefinitions.slug, 'source'));
+
+    expect(rows).toEqual([
+      {
+        name: 'Source',
+        type: 'text',
+        isDefault: true,
+        isFilterable: true,
+        isBrowsable: true,
+      },
+    ]);
   });
 });

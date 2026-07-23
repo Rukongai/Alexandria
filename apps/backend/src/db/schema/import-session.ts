@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
-import type { DetectedImportMetadata } from '@alexandria/shared';
+import type { BatchUploadMetadata, DetectedImportMetadata } from '@alexandria/shared';
 import { users } from './user.js';
 import { libraries } from './library.js';
 import { models } from './model.js';
@@ -26,6 +26,8 @@ export const importSessions = pgTable(
     status: varchar('status', { length: 20 }).notNull().default('scanning'),
     // Best-effort metadata detected during scan.
     detected: jsonb('detected').$type<DetectedImportMetadata>(),
+    // User-reviewed metadata draft applied when this staged session is committed.
+    draftMetadata: jsonb('draft_metadata').$type<BatchUploadMetadata>(),
     // The file manifest captured at scan, reused at commit (FileManifest shape).
     manifest: jsonb('manifest').$type<unknown>(),
     // Directory of extracted files kept between scan and commit.

@@ -42,7 +42,12 @@ vi.mock('../../api/models', () => ({
   getModels: vi.fn(),
 }));
 
+vi.mock('../../hooks/use-assistant-context', () => ({
+  useAssistantTarget: vi.fn(),
+}));
+
 import { getModels } from '../../api/models';
+import { useAssistantTarget } from '../../hooks/use-assistant-context';
 const mockGetModels = vi.mocked(getModels);
 
 // ---------------------------------------------------------------------------
@@ -136,6 +141,21 @@ describe('PivotMain', () => {
       expect(screen.getByText('Benchy')).toBeTruthy();
       expect(screen.getByText('Voronoi Vase')).toBeTruthy();
     });
+  });
+
+  it('should target the current result page and narrow to an explicit selection', async () => {
+    render(<PivotMain />, { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(useAssistantTarget).toHaveBeenCalledWith({
+      modelIds: ['model-1', 'model-2'],
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select model: Benchy' }));
+
+    await waitFor(() => expect(useAssistantTarget).toHaveBeenLastCalledWith({
+      modelIds: ['model-1'],
+    }));
   });
 
   it('displays the result count', async () => {

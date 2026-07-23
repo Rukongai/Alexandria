@@ -15,6 +15,7 @@ import { FolderImport } from '../components/upload/FolderImport';
 import { RecentUploads } from '../components/upload/RecentUploads';
 import { MultipartArchiveUpload } from '../components/upload/multipart-archive-upload';
 import { cn } from '../lib/utils';
+import { useAssistantTarget } from '../hooks/use-assistant-context';
 
 type Tab = 'queue' | 'multipart' | 'folder';
 const UPLOAD_TABS: Tab[] = ['queue', 'multipart', 'folder'];
@@ -66,6 +67,13 @@ export function UploadPage() {
   const listedActiveSession = scopedSessions.find((s) => s.id === scopedActiveId) ?? null;
   const activeSession = listedActiveSession
     ?? (scopedSessions.length === 0 ? selectedSession ?? null : null);
+  const assistantImportSessionIds = activeSession?.status === 'ready_for_review'
+    ? [activeSession.id]
+    : scopedSessions
+      .filter((session) => session.status === 'ready_for_review')
+      .slice(0, 25)
+      .map((session) => session.id);
+  useAssistantTarget({ importSessionIds: assistantImportSessionIds });
   const discardingId = discardSession.isPending ? (discardSession.variables ?? null) : null;
   const addingFilesId = addSessionFiles.isPending
     ? (addSessionFiles.variables?.id ?? null)

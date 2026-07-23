@@ -7,6 +7,17 @@ const fsMocks = vi.hoisted(() => ({
     () => ({ pipe: vi.fn() }) as unknown as NodeJS.ReadableStream,
   ),
 }));
+const databaseMocks = vi.hoisted(() => {
+  const tx = { kind: 'transaction' };
+  return {
+    tx,
+    transaction: vi.fn(async (callback: (executor: unknown) => unknown) => callback(tx)),
+  };
+});
+
+vi.mock('../db/index.js', () => ({
+  db: { transaction: databaseMocks.transaction },
+}));
 
 // ---------------------------------------------------------------------------
 // Mock all collaborating services before the IngestionService module is
@@ -56,6 +67,8 @@ vi.mock('./import-session.service.js', () => ({
     create: vi.fn(),
     getRow: vi.fn(),
     getOwnedRow: vi.fn(),
+    lockOwnedReadyForReviewSessions: vi.fn(),
+    lockOwnedSessions: vi.fn(),
     update: vi.fn(),
     toDto: vi.fn(),
   },
@@ -66,6 +79,8 @@ vi.mock('./metadata.service.js', () => ({
   metadataService: {
     listFieldValues: vi.fn().mockResolvedValue([]),
     setModelMetadata: vi.fn().mockResolvedValue(undefined),
+    getFieldBySlug: vi.fn().mockResolvedValue({ slug: 'field', type: 'text' }),
+    validateFieldValue: vi.fn(),
   },
   MetadataService: vi.fn(),
 }));
@@ -81,6 +96,7 @@ vi.mock('./collection.service.js', () => ({
   collectionService: {
     findOrCreateByName: vi.fn(),
     addModelToCollection: vi.fn(),
+    requireOwnedCollection: vi.fn(),
   },
   CollectionService: vi.fn(),
 }));
@@ -131,8 +147,10 @@ import { fileProcessingService } from './file-processing.service.js';
 import { storageService } from './storage.service.js';
 import { importSessionService } from './import-session.service.js';
 import { metadataService } from './metadata.service.js';
+import { collectionService } from './collection.service.js';
 import fsPromises from 'node:fs/promises';
 import { validationError } from '../utils/errors.js';
+import { notFound } from '../utils/errors.js';
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -248,6 +266,105 @@ describe('IngestionService – handleUpload', () => {
     expect(modelService.createModel).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'Cool Model' }),
     );
+  });
+});
+
+describe('IngestionService – staged draft commit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    databaseMocks.transaction.mockImplementation(
+      async (callback: (executor: unknown) => unknown) => callback(databaseMocks.tx),
+    );
+  });
+
+  it('uses a persisted draft when commit metadata is omitted', async () => {
+    const service = new IngestionService();
+    const draftMetadata = {
+      modelName: 'Reviewed Dragon',
+      collectionId: 'collection-1',
+      metadata: { source: 'Fullmetal Alchemist' },
+    };
+    vi.mocked(importSessionService.lockOwnedSessions).mockResolvedValue([{
+      id: 'session-1',
+      userId: 'user-1',
+      libraryId: 'library-1',
+      status: 'ready_for_review',
+      originalFilename: 'Maker - 2024 - Dragon.zip',
+      draftMetadata,
+    }] as never);
+    vi.mocked(modelService.createModel).mockResolvedValue({ id: 'model-1' } as never);
+    vi.mocked(jobService.enqueueCommitJob).mockResolvedValue('job-1');
+
+    await service.handleCommit('session-1', undefined, 'user-1', 'library-1');
+
+    expect(collectionService.requireOwnedCollection)
+      .toHaveBeenCalledWith('collection-1', 'user-1', 'library-1', databaseMocks.tx);
+    expect(modelService.createModel).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Reviewed Dragon' }),
+      databaseMocks.tx,
+    );
+    expect(importSessionService.update).toHaveBeenCalledWith(
+      'session-1',
+      { status: 'committing', modelId: 'model-1' },
+      databaseMocks.tx,
+    );
+    expect(jobService.enqueueCommitJob).toHaveBeenCalledWith(expect.objectContaining({
+      batchMetadata: draftMetadata,
+    }));
+  });
+
+  it('uses explicit commit metadata instead of the persisted draft', async () => {
+    const service = new IngestionService();
+    vi.mocked(importSessionService.lockOwnedSessions).mockResolvedValue([{
+      id: 'session-1',
+      userId: 'user-1',
+      libraryId: 'library-1',
+      status: 'ready_for_review',
+      originalFilename: 'Dragon.zip',
+      draftMetadata: { modelName: 'Draft name' },
+    }] as never);
+    vi.mocked(modelService.createModel).mockResolvedValue({ id: 'model-1' } as never);
+    vi.mocked(jobService.enqueueCommitJob).mockResolvedValue('job-1');
+
+    await service.handleCommit(
+      'session-1',
+      { modelName: 'Explicit name' },
+      'user-1',
+      'library-1',
+    );
+
+    expect(modelService.createModel).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Explicit name' }),
+      databaseMocks.tx,
+    );
+    expect(jobService.enqueueCommitJob).toHaveBeenCalledWith(expect.objectContaining({
+      batchMetadata: { modelName: 'Explicit name' },
+    }));
+  });
+
+  it('rejects invalid effective metadata before creating or enqueueing a model', async () => {
+    const service = new IngestionService();
+    vi.mocked(importSessionService.lockOwnedSessions).mockResolvedValue([{
+      id: 'session-1',
+      userId: 'user-1',
+      libraryId: 'library-1',
+      status: 'ready_for_review',
+      originalFilename: 'Dragon.zip',
+      draftMetadata: { metadata: { year: 'not-a-number' } },
+    }] as never);
+    vi.mocked(metadataService.getFieldBySlug).mockResolvedValue({
+      slug: 'year', type: 'number',
+    } as never);
+    vi.mocked(metadataService.validateFieldValue).mockImplementation(() => {
+      throw validationError('Value must be a finite number', 'year');
+    });
+
+    await expect(service.handleCommit(
+      'session-1', undefined, 'user-1', 'library-1',
+    )).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(modelService.createModel).not.toHaveBeenCalled();
+    expect(importSessionService.update).not.toHaveBeenCalled();
+    expect(jobService.enqueueCommitJob).not.toHaveBeenCalled();
   });
 });
 
@@ -425,6 +542,41 @@ describe('IngestionService – staged commit progress', () => {
     });
     expect(importSessionService.update).toHaveBeenCalledWith('session-1', {
       status: 'committed',
+    });
+  });
+
+  it('applies configured metadata with dedicated artist/tags taking precedence', async () => {
+    const job = {
+      id: 'session-1',
+      data: {
+        sessionId: 'session-1',
+        modelId: 'model-1',
+        userId: 'user-1',
+        libraryId: 'library-1',
+        batchMetadata: {
+          artist: 'Reviewed Artist',
+          tags: ['reviewed'],
+          metadata: {
+            source: 'Konosuba',
+            year: 2024,
+            artist: 'Generic Artist',
+            tags: ['generic'],
+          },
+        },
+      },
+      updateProgress: vi.fn().mockResolvedValue(undefined),
+      opts: { attempts: 1 },
+      attemptsMade: 0,
+      failedReason: null,
+    };
+
+    await service.processCommitJob(job as never);
+
+    expect(metadataService.setModelMetadata).toHaveBeenCalledWith('model-1', {
+      source: 'Konosuba',
+      year: 2024,
+      artist: 'Reviewed Artist',
+      tags: ['reviewed'],
     });
   });
 });
