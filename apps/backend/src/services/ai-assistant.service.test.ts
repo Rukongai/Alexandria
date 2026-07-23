@@ -120,10 +120,16 @@ describe('AiAssistantService tool-loop safety', () => {
     expect(SYSTEM_PROMPT).toContain('{Artist Name} - {Date} - {Model Name}');
     expect(SYSTEM_PROMPT).toContain("Lust's Source is Fullmetal Alchemist");
     expect(SYSTEM_PROMPT).toContain("Aqua's Source is Konosuba");
+    expect(SYSTEM_PROMPT).toContain('make the best-supported Source inference');
+    expect(SYSTEM_PROMPT).toContain('do not keep searching merely for certainty');
+    expect(SYSTEM_PROMPT).toContain('genuinely weak or conflicting');
     expect(SYSTEM_PROMPT).toContain('does not commit');
     expect(SYSTEM_PROMPT).toContain('preview_bulk_changes');
     expect(SYSTEM_PROMPT).toContain('at most 8 tool calls in one provider response');
     expect(SYSTEM_PROMPT).toContain('at most 12 tool calls across the entire user request');
+    expect(SYSTEM_PROMPT).toContain('at most 14 provider responses');
+    expect(SYSTEM_PROMPT).toContain('current response is the final tool-capable one');
+    expect(SYSTEM_PROMPT).toContain('The final provider response is reserved for that tool-free synthesis');
     expect(parseFilenameHint('Maker - 2024-05 - Dragon Bust.tar.gz')).toEqual({
       artistName: 'Maker', date: '2024-05', modelName: 'Dragon Bust',
     });
@@ -464,6 +470,9 @@ describe('AiAssistantService tool-loop safety', () => {
     expect(bulkTool.function.description).toContain('server resolves and freezes the exact model IDs');
     expect(bulkTool.function.parameters.properties.target.properties.scope.enum)
       .toEqual(['current_models', 'active_library']);
+    const synthesisPayload = deps.providers.createChatCompletion.mock.calls[1][1];
+    expect(synthesisPayload.tools).toBeUndefined();
+    expect(synthesisPayload.messages.at(-1).content).toContain('Finish the request now without calling tools');
   });
 
   it('hard-caps list tool output and reports additional rows', async () => {
@@ -762,14 +771,16 @@ describe('AiAssistantService tool-loop safety', () => {
     deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
 
     await expect(serviceWith(deps).chat({ message: 'Search broadly' }, USER_ID, LIBRARY_ID))
-      .rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
+      .resolves.toMatchObject({
+        message: expect.stringContaining('could not gather enough reliable information'),
+      });
     expect(deps.search.searchModels).toHaveBeenCalledTimes(12);
     expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(4);
     const repairInstruction = deps.providers.createChatCompletion.mock.calls[2][1].messages.at(-1);
     expect(repairInstruction.content).toContain('at most 4 tool calls');
   });
 
-  it('should count a repair request within the six-request provider ceiling', async () => {
+  it('should count an oversized-batch repair as a provider request', async () => {
     const deps = makeDependencies();
     const oneCall = (index: number) => [{
       id: `valid-${index}`,
@@ -788,12 +799,123 @@ describe('AiAssistantService tool-loop safety', () => {
     }
     deps.providers.createChatCompletion
       .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: oversized } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: 'This seventh request is forbidden.' } }] });
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Recovered within the request budget.' } }] });
     deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
 
     await expect(serviceWith(deps).chat({ message: 'Search repeatedly' }, USER_ID, LIBRARY_ID))
-      .rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
-    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(6);
+      .resolves.toMatchObject({ message: 'Recovered within the request budget.' });
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(7);
     expect(deps.search.searchModels).toHaveBeenCalledTimes(5);
+  });
+
+  it('should reserve a tool-free synthesis after a small model uses all 12 tool calls', async () => {
+    const deps = makeDependencies();
+    for (let index = 0; index < 12; index += 1) {
+      deps.providers.createChatCompletion.mockResolvedValueOnce({
+        choices: [{ message: { content: null, tool_calls: [{
+          id: `research-${index}`,
+          type: 'function',
+          function: {
+            name: 'search_web',
+            arguments: JSON.stringify({ query: `Mint character origin ${index}` }),
+          },
+        }] } }],
+      });
+    }
+    deps.providers.createChatCompletion.mockResolvedValueOnce({
+      choices: [{ message: { content: 'I found likely matches for Mint, but the franchise remains uncertain.' } }],
+    });
+    deps.web.searchWeb.mockResolvedValue({
+      sources: [{ title: 'Mint reference', url: 'https://example.com/mint', snippet: 'Reference' }],
+    });
+
+    const result = await serviceWith(deps).chat({
+      message: "tag and fill out metadata on this. I don't know what Mint is from so try and look it up",
+      context: { modelId: MODEL_ID },
+    }, USER_ID, LIBRARY_ID);
+
+    expect(result).toMatchObject({
+      message: 'I found likely matches for Mint, but the franchise remains uncertain.',
+      sources: [expect.objectContaining({ url: 'https://example.com/mint' })],
+    });
+    expect(deps.web.searchWeb).toHaveBeenCalledTimes(12);
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(13);
+    const lastToolPayload = deps.providers.createChatCompletion.mock.calls[11][1];
+    expect(lastToolPayload.messages.at(-1).content).toContain('final tool-capable response');
+    const synthesisPayload = deps.providers.createChatCompletion.mock.calls[12][1];
+    expect(synthesisPayload.tools).toBeUndefined();
+    expect(synthesisPayload.tool_choice).toBeUndefined();
+    expect(synthesisPayload.messages.at(-1)).toMatchObject({ role: 'system' });
+    expect(synthesisPayload.messages.at(-1).content).toContain('Finish the request now without calling tools');
+  });
+
+  it('should retain final synthesis capacity after one repair and 12 one-at-a-time tool calls', async () => {
+    const deps = makeDependencies();
+    const researchCall = (index: number) => ({
+      id: `research-${index}`,
+      type: 'function',
+      function: {
+        name: 'search_web',
+        arguments: JSON.stringify({ query: `Mint origin ${index}` }),
+      },
+    });
+    const oversized = Array.from({ length: 9 }, (_, index) => researchCall(100 + index));
+    deps.providers.createChatCompletion.mockResolvedValueOnce({
+      choices: [{ message: { content: null, tool_calls: oversized } }],
+    });
+    for (let index = 0; index < 12; index += 1) {
+      deps.providers.createChatCompletion.mockResolvedValueOnce({
+        choices: [{ message: { content: null, tool_calls: [researchCall(index)] } }],
+      });
+    }
+    deps.providers.createChatCompletion.mockResolvedValueOnce({
+      choices: [{ message: { content: 'Finished after bounded research.' } }],
+    });
+    deps.web.searchWeb.mockResolvedValue({ sources: [] });
+
+    const result = await serviceWith(deps).chat({
+      message: 'Research Mint and fill its metadata',
+      context: { modelId: MODEL_ID },
+    }, USER_ID, LIBRARY_ID);
+
+    expect(result.message).toBe('Finished after bounded research.');
+    expect(deps.web.searchWeb).toHaveBeenCalledTimes(12);
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(14);
+    const finalPayload = deps.providers.createChatCompletion.mock.calls[13][1];
+    expect(finalPayload.tools).toBeUndefined();
+    expect(finalPayload.messages.at(-1).content).toContain('Finish the request now without calling tools');
+  });
+
+  it('should return a useful fallback when a provider ignores the tool-free synthesis request', async () => {
+    const deps = makeDependencies();
+    const researchCall = (index: number) => ({
+      id: `research-${index}`,
+      type: 'function',
+      function: {
+        name: 'search_web',
+        arguments: JSON.stringify({ query: `Mint model source ${index}` }),
+      },
+    });
+    for (let index = 0; index < 12; index += 1) {
+      deps.providers.createChatCompletion.mockResolvedValueOnce({
+        choices: [{ message: { content: null, tool_calls: [researchCall(index)] } }],
+      });
+    }
+    deps.providers.createChatCompletion.mockResolvedValueOnce({
+      choices: [{ message: { content: null, tool_calls: [researchCall(12)] } }],
+    });
+    deps.web.searchWeb.mockResolvedValue({
+      sources: [{ title: 'Mint reference', url: 'https://example.com/mint', snippet: 'Reference' }],
+    });
+
+    const result = await serviceWith(deps).chat({
+      message: 'Research Mint and fill its metadata',
+      context: { modelId: MODEL_ID },
+    }, USER_ID, LIBRARY_ID);
+
+    expect(result.message).toContain('found relevant source material');
+    expect(result.sources).toEqual([expect.objectContaining({ url: 'https://example.com/mint' })]);
+    expect(deps.web.searchWeb).toHaveBeenCalledTimes(12);
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(13);
   });
 });
