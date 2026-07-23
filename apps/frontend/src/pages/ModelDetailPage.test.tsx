@@ -1,0 +1,180 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import type { ModelDetail } from '@alexandria/shared';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ModelDetailPage } from './ModelDetailPage';
+
+const mocks = vi.hoisted(() => ({
+  toast: vi.fn(),
+}));
+
+vi.mock('../hooks/use-toast', () => ({
+  useToast: () => ({ toast: mocks.toast }),
+}));
+
+vi.mock('../api/collections', () => ({
+  addModelsToCollection: vi.fn(),
+  getCollections: vi.fn(),
+}));
+
+vi.mock('../api/models', () => ({
+  createModelFolder: vi.fn(),
+  deleteModelFile: vi.fn(),
+  deleteModelFolder: vi.fn(),
+  extractModelArchive: vi.fn(),
+  getModel: vi.fn(),
+  getModelFiles: vi.fn(),
+  getModels: vi.fn(),
+  mergeModels: vi.fn(),
+  updateModelFile: vi.fn(),
+  updateModelFolder: vi.fn(),
+  uploadModelFiles: vi.fn(),
+}));
+
+vi.mock('../components/models/ModelHero', () => ({
+  ModelHero: () => <div>Model hero</div>,
+}));
+
+vi.mock('../components/models/ModelBreadcrumb', () => ({
+  ModelBreadcrumb: () => <div>Model breadcrumb</div>,
+}));
+
+vi.mock('../components/models/ModelViewer3DModal', () => ({
+  ModelViewer3DModal: () => null,
+}));
+
+vi.mock('../components/models/TextFilePreviewModal', () => ({
+  TextFilePreviewModal: () => null,
+}));
+
+vi.mock('../components/models/ModelDetailSkeleton', () => ({
+  ModelDetailSkeleton: () => <div>Loading model</div>,
+}));
+
+interface DetailPanelTestProps {
+  collectionAddPending: boolean;
+  onAddToCollections: (collectionIds: string[]) => Promise<void>;
+}
+
+vi.mock('../components/models/ModelDetailPanel', () => ({
+  ModelDetailPanel: ({ collectionAddPending, onAddToCollections }: DetailPanelTestProps) => (
+    <button
+      type="button"
+      disabled={collectionAddPending}
+      onClick={() => {
+        void onAddToCollections(['collection-fails', 'collection-delayed']).catch(() => undefined);
+      }}
+    >
+      {collectionAddPending ? 'Adding collections' : 'Add collections'}
+    </button>
+  ),
+}));
+
+import { addModelsToCollection, getCollections } from '../api/collections';
+import { getModel, getModelFiles } from '../api/models';
+
+const model: ModelDetail = {
+  id: 'model-1',
+  name: 'Benchy',
+  slug: 'benchy',
+  description: null,
+  thumbnailUrl: null,
+  previewImageFileId: null,
+  previewCropX: null,
+  previewCropY: null,
+  previewCropScale: null,
+  metadata: [],
+  sourceType: 'manual',
+  originalFilename: null,
+  fileCount: 0,
+  totalSizeBytes: 0,
+  status: 'ready',
+  collections: [],
+  images: [],
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+function renderPage(queryClient: QueryClient) {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/models/model-1']}>
+        <Routes>
+          <Route path="/models/:id" element={<ModelDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe('ModelDetailPage collection membership', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getModel).mockResolvedValue(model);
+    vi.mocked(getModelFiles).mockResolvedValue([]);
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+  });
+
+  it('should wait for every collection request before reporting a partial failure and invalidating caches', async () => {
+    const delayedRequest = deferred<void>();
+    vi.mocked(addModelsToCollection)
+      .mockRejectedValueOnce(new Error('first request failed'))
+      .mockReturnValueOnce(delayedRequest.promise);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    renderPage(queryClient);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add collections' }));
+
+    await waitFor(() => {
+      expect(addModelsToCollection).toHaveBeenNthCalledWith(
+        1,
+        'collection-fails',
+        ['model-1'],
+      );
+      expect(addModelsToCollection).toHaveBeenNthCalledWith(
+        2,
+        'collection-delayed',
+        ['model-1'],
+      );
+      expect(screen.getByRole('button', { name: 'Adding collections' })).toBeDisabled();
+    });
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(invalidateQueries).not.toHaveBeenCalled();
+
+    delayedRequest.resolve();
+
+    await waitFor(() => {
+      expect(mocks.toast).toHaveBeenCalledWith({
+        title: 'Could not add to collections',
+        description: '1 of 2 collection updates failed.',
+        variant: 'destructive',
+      });
+    });
+
+    for (const queryKey of [
+      ['model', 'model-1'],
+      ['models'],
+      ['collections'],
+      ['collection'],
+      ['collection-models'],
+      ['search'],
+      ['smart-collection'],
+      ['smart-collections'],
+      ['smart-preview'],
+    ]) {
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey });
+    }
+  });
+});

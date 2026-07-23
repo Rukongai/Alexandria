@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { ModelDetail, FileTreeNode } from '@alexandria/shared';
+import type { CollectionDetail, ModelDetail, FileTreeNode } from '@alexandria/shared';
 import { ModelInfo } from './ModelInfo';
 import { MetadataPanel } from './MetadataPanel';
 import { CollectionsList } from './CollectionsList';
@@ -33,6 +33,12 @@ interface ModelDetailPanelProps {
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
   onDeleteFolder?: (path: string, name: string) => void;
+  allCollections: CollectionDetail[];
+  collectionsLoading: boolean;
+  collectionsError: boolean;
+  collectionAddPending: boolean;
+  onRetryCollections: () => void;
+  onAddToCollections: (collectionIds: string[]) => Promise<void>;
 }
 
 /**
@@ -58,6 +64,12 @@ export function ModelDetailPanel({
   onRenameFolder,
   onMoveFolder,
   onDeleteFolder,
+  allCollections,
+  collectionsLoading,
+  collectionsError,
+  collectionAddPending,
+  onRetryCollections,
+  onAddToCollections,
 }: ModelDetailPanelProps) {
   const [tab, setTab] = React.useState<PanelTabValue>('info');
 
@@ -83,7 +95,17 @@ export function ModelDetailPanel({
         </div>
       )}
 
-      {tab === 'collections' && <CollectionsList collections={model.collections} />}
+      {tab === 'collections' && (
+        <CollectionsList
+          collections={model.collections}
+          allCollections={allCollections}
+          isLoading={collectionsLoading}
+          isError={collectionsError}
+          isAdding={collectionAddPending}
+          onRetry={onRetryCollections}
+          onAdd={onAddToCollections}
+        />
+      )}
 
       {tab === 'files' && (
         <FileTree
