@@ -31,7 +31,8 @@ export class ApiRequestError extends Error {
 
 async function request<T>(
   path: string,
-  init: RequestInit = {}
+  init: RequestInit = {},
+  libraryIdOverride?: string | null,
 ): Promise<ApiResponse<T>> {
   const url = `${BASE_URL}${path}`;
 
@@ -41,7 +42,10 @@ async function request<T>(
   if (init.body !== undefined) {
     headers['Content-Type'] ??= 'application/json';
   }
-  if (activeLibraryId) {
+  if (libraryIdOverride !== undefined) {
+    delete headers[LIBRARY_HEADER];
+    if (libraryIdOverride) headers[LIBRARY_HEADER] = libraryIdOverride;
+  } else if (activeLibraryId) {
     headers[LIBRARY_HEADER] ??= activeLibraryId;
   }
 
@@ -82,6 +86,21 @@ export async function post<T>(
   });
 }
 
+/**
+ * POST against an explicitly captured library scope. Unlike `post`, this does
+ * not consult the mutable active-library state when the request is sent.
+ */
+export async function postForLibrary<T>(
+  path: string,
+  body: unknown,
+  libraryId: string | null,
+): Promise<ApiResponse<T>> {
+  return request<T>(path, {
+    method: 'POST',
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  }, libraryId);
+}
+
 export async function patch<T>(path: string, body?: unknown): Promise<ApiResponse<T>> {
   return request<T>(path, {
     method: 'PATCH',
@@ -96,17 +115,44 @@ export async function del<T = null>(path: string): Promise<ApiResponse<T>> {
 export async function postForm<T>(
   path: string,
   formData: FormData,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<T>> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let settled = false;
+
+    const cleanup = () => signal?.removeEventListener('abort', handleSignalAbort);
+    const resolveOnce = (value: ApiResponse<T>) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const rejectOnce = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const handleSignalAbort = () => {
+      xhr.abort();
+      rejectOnce(new DOMException('Request aborted', 'AbortError'));
+    };
+
+    if (signal?.aborted) {
+      rejectOnce(new DOMException('Request aborted', 'AbortError'));
+      return;
+    }
+
     xhr.open('POST', `${BASE_URL}${path}`);
     xhr.withCredentials = true;
     if (activeLibraryId) xhr.setRequestHeader(LIBRARY_HEADER, activeLibraryId);
+    signal?.addEventListener('abort', handleSignalAbort, { once: true });
 
     if (onProgress) {
       xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable) {
+        if (!signal?.aborted && e.lengthComputable) {
           onProgress(Math.round((e.loaded / e.total) * 100));
         }
       });
@@ -116,10 +162,10 @@ export async function postForm<T>(
       try {
         const body: ApiResponse<T> = JSON.parse(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(body);
+          resolveOnce(body);
         } else {
           const firstError = body.errors?.[0];
-          reject(
+          rejectOnce(
             new ApiRequestError(
               xhr.status,
               firstError?.code ?? 'UNKNOWN_ERROR',
@@ -129,12 +175,15 @@ export async function postForm<T>(
           );
         }
       } catch {
-        reject(new ApiRequestError(xhr.status, 'PARSE_ERROR', 'Failed to parse response'));
+        rejectOnce(new ApiRequestError(xhr.status, 'PARSE_ERROR', 'Failed to parse response'));
       }
     });
 
     xhr.addEventListener('error', () => {
-      reject(new ApiRequestError(0, 'NETWORK_ERROR', 'Network request failed'));
+      rejectOnce(new ApiRequestError(0, 'NETWORK_ERROR', 'Network request failed'));
+    });
+    xhr.addEventListener('abort', () => {
+      rejectOnce(new DOMException('Request aborted', 'AbortError'));
     });
 
     xhr.send(formData);
@@ -144,18 +193,45 @@ export async function postForm<T>(
 export async function putRaw<T>(
   path: string,
   data: Blob,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<T>> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let settled = false;
+
+    const cleanup = () => signal?.removeEventListener('abort', handleSignalAbort);
+    const resolveOnce = (value: ApiResponse<T>) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const rejectOnce = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const handleSignalAbort = () => {
+      xhr.abort();
+      rejectOnce(new DOMException('Request aborted', 'AbortError'));
+    };
+
+    if (signal?.aborted) {
+      rejectOnce(new DOMException('Request aborted', 'AbortError'));
+      return;
+    }
+
     xhr.open('PUT', `${BASE_URL}${path}`);
     xhr.withCredentials = true;
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     if (activeLibraryId) xhr.setRequestHeader(LIBRARY_HEADER, activeLibraryId);
+    signal?.addEventListener('abort', handleSignalAbort, { once: true });
 
     if (onProgress) {
       xhr.upload.addEventListener('progress', (e) => {
-        if (e.lengthComputable) {
+        if (!signal?.aborted && e.lengthComputable) {
           onProgress(Math.round((e.loaded / e.total) * 100));
         }
       });
@@ -165,10 +241,10 @@ export async function putRaw<T>(
       try {
         const body: ApiResponse<T> = JSON.parse(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(body);
+          resolveOnce(body);
         } else {
           const firstError = body.errors?.[0];
-          reject(
+          rejectOnce(
             new ApiRequestError(
               xhr.status,
               firstError?.code ?? 'UNKNOWN_ERROR',
@@ -178,12 +254,15 @@ export async function putRaw<T>(
           );
         }
       } catch {
-        reject(new ApiRequestError(xhr.status, 'PARSE_ERROR', 'Failed to parse response'));
+        rejectOnce(new ApiRequestError(xhr.status, 'PARSE_ERROR', 'Failed to parse response'));
       }
     });
 
     xhr.addEventListener('error', () => {
-      reject(new ApiRequestError(0, 'NETWORK_ERROR', 'Network request failed'));
+      rejectOnce(new ApiRequestError(0, 'NETWORK_ERROR', 'Network request failed'));
+    });
+    xhr.addEventListener('abort', () => {
+      rejectOnce(new DOMException('Request aborted', 'AbortError'));
     });
 
     xhr.send(data);

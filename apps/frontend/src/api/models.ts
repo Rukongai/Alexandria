@@ -18,7 +18,7 @@ import type {
   MergeModelsResponse,
   ExtractArchiveResponse,
 } from '@alexandria/shared';
-import { get, post, patch, del, putRaw, postForm } from './client';
+import { get, post, postForLibrary, patch, del, putRaw, postForm } from './client';
 import { buildQueryString } from '../lib/query';
 
 export async function getModels(params: ModelSearchParams): Promise<ApiResponse<ModelCard[]>> {
@@ -129,6 +129,7 @@ async function uploadChunks(
   file: File,
   uploadId: string,
   onChunkProgress?: (uploadedBytes: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
@@ -139,6 +140,7 @@ async function uploadChunks(
 
     let lastError: unknown;
     for (let attempt = 0; attempt < MAX_CHUNK_RETRIES; attempt++) {
+      signal?.throwIfAborted();
       try {
         await putRaw(
           `/models/upload/${uploadId}/chunk/${i}`,
@@ -147,13 +149,15 @@ async function uploadChunks(
             const currentChunkBytes = chunk.size * (chunkPct / 100);
             onChunkProgress?.(start + currentChunkBytes);
           },
+          signal,
         );
         lastError = null;
         break;
       } catch (err) {
         lastError = err;
+        if (signal?.aborted) throw err;
         if (attempt < MAX_CHUNK_RETRIES - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+          await abortableDelay(1000 * Math.pow(2, attempt), signal);
         }
       }
     }
@@ -163,6 +167,31 @@ async function uploadChunks(
   }
 }
 
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  signal.throwIfAborted();
+
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout>;
+    const handleAbort = () => {
+      clearTimeout(timeout);
+      reject(signal.reason ?? new DOMException('Request aborted', 'AbortError'));
+    };
+    timeout = setTimeout(() => {
+      signal.removeEventListener('abort', handleAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', handleAbort, { once: true });
+    if (signal.aborted) handleAbort();
+  });
+}
+
+async function cleanUpUploads(uploadIds: string[]): Promise<void> {
+  await Promise.allSettled(
+    uploadIds.map((uploadId) => del(`/models/upload/${uploadId}`)),
+  );
+}
+
 /**
  * Upload an archive file using chunked upload. Creates an import session
  * (status: scanning) instead of immediately creating a model.
@@ -170,33 +199,49 @@ async function uploadChunks(
  */
 export async function scanUpload(
   file: File,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
+  onFinalizing?: () => void,
+  libraryId: string | null = null,
 ): Promise<ScanUploadResponse> {
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+  let uploadId: string | null = null;
 
-  // 1. Initiate chunked upload session
-  const initResponse = await post<UploadInitResponse>(
-    '/models/upload/init',
-    { filename: file.name, totalSize: file.size, totalChunks },
-  );
-  const { uploadId } = initResponse.data;
+  try {
+    // 1. Initiate chunked upload session
+    const initResponse = await post<UploadInitResponse>(
+      '/models/upload/init',
+      { filename: file.name, totalSize: file.size, totalChunks },
+      signal,
+    );
+    uploadId = initResponse.data.uploadId;
+    signal?.throwIfAborted();
 
-  // 2. Upload chunks sequentially with per-chunk retry
-  await uploadChunks(file, uploadId, (uploadedBytes) => {
-    const ratio = file.size > 0 ? uploadedBytes / file.size : 1;
-    onProgress?.(Math.round(ratio * 95));
-  });
+    // 2. Upload chunks sequentially with per-chunk retry
+    await uploadChunks(file, uploadId, (uploadedBytes) => {
+      if (signal?.aborted) return;
+      const ratio = file.size > 0 ? uploadedBytes / file.size : 1;
+      onProgress?.(Math.round(ratio * 95));
+    }, signal);
 
-  onProgress?.(95);
+    if (!signal?.aborted) onProgress?.(95);
 
-  // 3. Complete — assemble and start scan; returns { sessionId }
-  const completeResponse = await post<ScanUploadResponse>(
-    `/models/upload/${uploadId}/complete`,
-  );
+    // 3. Complete — assemble and start scan; returns { sessionId }
+    signal?.throwIfAborted();
+    onFinalizing?.();
+    const completeResponse = await postForLibrary<ScanUploadResponse>(
+      `/models/upload/${uploadId}/complete`,
+      undefined,
+      libraryId,
+    );
 
-  onProgress?.(100);
+    onProgress?.(100);
 
-  return completeResponse.data;
+    return completeResponse.data;
+  } catch (error) {
+    if (uploadId) await cleanUpUploads([uploadId]);
+    throw error;
+  }
 }
 
 /**
@@ -207,6 +252,9 @@ export async function scanMultipartUpload(
   files: File[],
   mode: MultipartArchiveMode,
   onProgress?: (pct: number) => void,
+  signal?: AbortSignal,
+  onFinalizing?: () => void,
+  libraryId: string | null = null,
 ): Promise<ScanUploadResponse> {
   if (files.length < 2 || files.length > 100) {
     throw new Error('Choose between 2 and 100 archive files.');
@@ -223,6 +271,7 @@ export async function scanMultipartUpload(
   onProgress?.(0);
 
   const reportProgress = (nextProgress: number) => {
+    if (signal?.aborted) return;
     reportedProgress = Math.max(reportedProgress, nextProgress);
     onProgress?.(reportedProgress);
   };
@@ -233,29 +282,32 @@ export async function scanMultipartUpload(
       const initResponse = await post<UploadInitResponse>(
         '/models/upload/multipart/init',
         { filename: file.name, totalSize: file.size, totalChunks },
+        signal,
       );
       const { uploadId } = initResponse.data;
       uploadIds.push(uploadId);
+      signal?.throwIfAborted();
 
       await uploadChunks(file, uploadId, (fileUploadedBytes) => {
         const uploadedBytes = completedBytes + fileUploadedBytes;
         reportProgress(Math.round((uploadedBytes / totalBytes) * 95));
-      });
+      }, signal);
       completedBytes += file.size;
     }
 
     reportProgress(95);
-    const completeResponse = await post<ScanUploadResponse>(
+    signal?.throwIfAborted();
+    onFinalizing?.();
+    const completeResponse = await postForLibrary<ScanUploadResponse>(
       '/models/upload/multipart/complete',
       { uploadIds, mode } satisfies CompleteMultipartUploadRequest,
+      libraryId,
     );
     reportProgress(100);
 
     return completeResponse.data;
   } catch (error) {
-    await Promise.allSettled(
-      uploadIds.map((uploadId) => del(`/models/upload/${uploadId}`)),
-    );
+    await cleanUpUploads(uploadIds);
     throw error;
   }
 }

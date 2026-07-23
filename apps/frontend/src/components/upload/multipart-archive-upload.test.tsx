@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MultipartArchiveUpload, validateMultipartSelection } from './multipart-archive-upload';
 
 const mutateAsync = vi.fn();
@@ -151,7 +151,7 @@ describe('MultipartArchiveUpload', () => {
   });
 
   it('should explain that grouped uploads create one review session', () => {
-    render(<MultipartArchiveUpload onSessionCreated={vi.fn()} />);
+    render(<MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={vi.fn()} />);
 
     expect(screen.getByRole('radio', { name: /Combine archives/ })).toBeChecked();
     expect(screen.getByRole('radio', { name: /Split archive/ })).not.toBeChecked();
@@ -161,7 +161,7 @@ describe('MultipartArchiveUpload', () => {
   });
 
   it('should validate selected files against the chosen mode', () => {
-    render(<MultipartArchiveUpload onSessionCreated={vi.fn()} />);
+    render(<MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={vi.fn()} />);
     const input = screen.getByLabelText('Select multipart archive files');
 
     fireEvent.change(input, {
@@ -176,7 +176,7 @@ describe('MultipartArchiveUpload', () => {
   });
 
   it('should accept a modern split RAR selection in split archive mode', () => {
-    render(<MultipartArchiveUpload onSessionCreated={vi.fn()} />);
+    render(<MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={vi.fn()} />);
     const input = screen.getByLabelText('Select multipart archive files');
 
     fireEvent.click(screen.getByRole('radio', { name: /Split archive/ }));
@@ -194,7 +194,7 @@ describe('MultipartArchiveUpload', () => {
   });
 
   it('should explain how to upload split RAR files selected in combine mode', () => {
-    render(<MultipartArchiveUpload onSessionCreated={vi.fn()} />);
+    render(<MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={vi.fn()} />);
 
     fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
       target: {
@@ -212,7 +212,7 @@ describe('MultipartArchiveUpload', () => {
   });
 
   it('should remove individual files and reset the selection', () => {
-    render(<MultipartArchiveUpload onSessionCreated={vi.fn()} />);
+    render(<MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={vi.fn()} />);
     fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
       target: { files: [archive('one.zip'), archive('two.zip'), archive('three.zip')] },
     });
@@ -228,7 +228,7 @@ describe('MultipartArchiveUpload', () => {
   it('should submit all files once and return the created session', async () => {
     const onSessionCreated = vi.fn();
     mutateAsync.mockResolvedValue({ sessionId: 'new-session' });
-    render(<MultipartArchiveUpload onSessionCreated={onSessionCreated} />);
+    render(<MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={onSessionCreated} />);
     const files = [archive('one.zip'), archive('two.zip')];
 
     fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
@@ -240,9 +240,107 @@ describe('MultipartArchiveUpload', () => {
       expect(mutateAsync).toHaveBeenCalledWith({
         files,
         mode: 'combine',
+        currentLibraryId: 'library-a',
+        onFinalizing: expect.any(Function),
         onProgress: expect.any(Function),
+        signal: expect.any(AbortSignal),
       });
-      expect(onSessionCreated).toHaveBeenCalledWith('new-session');
+      expect(onSessionCreated).toHaveBeenCalledWith('new-session', 'library-a');
     });
+  });
+
+  it('should cancel the grouped upload and ignore stale success callbacks', async () => {
+    let uploadSignal: AbortSignal | undefined;
+    let reportProgress: ((pct: number) => void) | undefined;
+    let resolveUpload: ((result: { sessionId: string }) => void) | undefined;
+    mutateAsync.mockImplementation(({
+      signal,
+      onProgress,
+    }: {
+      signal: AbortSignal;
+      onProgress: (pct: number) => void;
+    }) => {
+      uploadSignal = signal;
+      reportProgress = onProgress;
+      return new Promise((resolve) => {
+        resolveUpload = resolve;
+      });
+    });
+    const onSessionCreated = vi.fn();
+    render(<MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={onSessionCreated} />);
+    const files = [archive('one.zip'), archive('two.zip')];
+
+    fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
+      target: { files },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Upload as one model' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel grouped upload' }));
+
+    expect(uploadSignal?.aborted).toBe(true);
+    expect(screen.queryByRole('progressbar', {
+      name: 'Multipart archive upload progress',
+    })).toBeNull();
+    expect(screen.getByText('2 of 100 · 14 B total')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Upload as one model' })).toBeEnabled();
+
+    await act(async () => {
+      reportProgress?.(91);
+      resolveUpload?.({ sessionId: 'stale-session' });
+    });
+
+    expect(onSessionCreated).not.toHaveBeenCalled();
+    expect(screen.queryByRole('progressbar', {
+      name: 'Multipart archive upload progress',
+    })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('should pin the grouped upload to its starting library and close cancellation while finalizing', async () => {
+    let resolveUpload: ((result: { sessionId: string }) => void) | undefined;
+    mutateAsync.mockImplementation(() => new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+    const onSessionCreated = vi.fn();
+    const { rerender } = render(
+      <MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={onSessionCreated} />,
+    );
+    const files = [archive('one.zip'), archive('two.zip')];
+
+    fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
+      target: { files },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Upload as one model' }));
+    const [variables] = mutateAsync.mock.calls[0];
+    rerender(
+      <MultipartArchiveUpload currentLibraryId="library-b" onSessionCreated={onSessionCreated} />,
+    );
+    act(() => variables.onFinalizing());
+
+    expect(variables.currentLibraryId).toBe('library-a');
+    expect(screen.getByText('Finalizing')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Cancel grouped upload' })).toBeNull();
+    expect(variables.signal.aborted).toBe(false);
+
+    await act(async () => resolveUpload?.({ sessionId: 'group-session' }));
+    expect(onSessionCreated).toHaveBeenCalledWith('group-session', 'library-a');
+    expect(variables.signal.aborted).toBe(false);
+  });
+
+  it('should reset the live announcement before cancelling the same group again', async () => {
+    mutateAsync.mockImplementation(() => new Promise(() => {}));
+    render(<MultipartArchiveUpload currentLibraryId="library-a" onSessionCreated={vi.fn()} />);
+    const files = [archive('one.zip'), archive('two.zip')];
+
+    fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
+      target: { files },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Upload as one model' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel grouped upload' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Grouped upload cancelled.');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Upload as one model' }));
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel grouped upload' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Grouped upload cancelled.');
   });
 });
