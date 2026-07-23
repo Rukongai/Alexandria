@@ -79,41 +79,46 @@ function DialogOverlay({ className, ...props }: React.HTMLAttributes<HTMLDivElem
   );
 }
 
-const DialogContent = React.forwardRef<
-  HTMLDivElement,
-  React.HTMLAttributes<HTMLDivElement>
->(({ className, children, ...props }, ref) => {
-  const { onOpenChange } = useDialog();
-  return (
-    <DialogPortal>
-      <DialogOverlay />
-      <div
-        ref={ref}
-        role="dialog"
-        aria-modal="true"
-        className={cn(
-          'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2',
-          'bg-background rounded-xl border shadow-xl',
-          'p-6 flex flex-col gap-4',
-          'max-h-[90vh] overflow-y-auto',
-          className
-        )}
-        onClick={(e) => e.stopPropagation()}
-        {...props}
-      >
-        {children}
-        <button
-          type="button"
-          onClick={() => onOpenChange(false)}
-          className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-ring"
-          aria-label="Close dialog"
+interface DialogContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  showCloseButton?: boolean;
+}
+
+const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
+  ({ className, children, showCloseButton = true, ...props }, ref) => {
+    const { onOpenChange } = useDialog();
+    return (
+      <DialogPortal>
+        <DialogOverlay />
+        <div
+          ref={ref}
+          role="dialog"
+          aria-modal="true"
+          className={cn(
+            'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2',
+            'bg-background rounded-xl border shadow-xl',
+            'p-6 flex flex-col gap-4',
+            'max-h-[90vh] overflow-y-auto',
+            className
+          )}
+          onClick={(e) => e.stopPropagation()}
+          {...props}
         >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-    </DialogPortal>
-  );
-});
+          {children}
+          {showCloseButton && (
+            <button
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-ring"
+              aria-label="Close dialog"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </DialogPortal>
+    );
+  },
+);
 DialogContent.displayName = 'DialogContent';
 
 function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

@@ -22,15 +22,16 @@ interface ModelDetailPanelProps {
   selectedImageFileId: string | null;
   onSelectImageFile: (fileId: string) => void;
   fileActionsDisabled?: boolean;
+  fileActionStatus?: string;
   onCreateFolder?: (path: string) => void;
   onRenameFile?: (fileId: string, filename: string) => void;
-  onMoveFile?: (fileId: string, parentPath: string) => void;
+  onMoveFile?: (fileId: string, parentPath: string) => Promise<void>;
   onDeleteFile?: (fileId: string, name: string) => void;
   onExtractArchive?: (fileId: string, name: string) => void;
-  onMoveFiles?: (fileIds: string[], parentPath: string) => void;
+  onMoveFiles?: (fileIds: string[], parentPath: string) => Promise<void>;
   onDeleteFiles?: (fileIds: string[]) => void;
   onRenameFolder?: (path: string, name: string) => void;
-  onMoveFolder?: (path: string, parentPath: string) => void;
+  onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
   onDeleteFolder?: (path: string, name: string) => void;
 }
 
@@ -46,6 +47,7 @@ export function ModelDetailPanel({
   selectedImageFileId,
   onSelectImageFile,
   fileActionsDisabled,
+  fileActionStatus,
   onCreateFolder,
   onRenameFile,
   onMoveFile,
@@ -92,6 +94,7 @@ export function ModelDetailPanel({
           selectedImageFileId={selectedImageFileId}
           onSelectImageFile={onSelectImageFile}
           disabled={fileActionsDisabled}
+          operationStatus={fileActionStatus}
           onCreateFolder={onCreateFolder}
           onRenameFile={onRenameFile}
           onMoveFile={onMoveFile}

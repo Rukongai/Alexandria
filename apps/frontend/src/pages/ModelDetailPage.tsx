@@ -39,6 +39,34 @@ import { useToast } from '../hooks/use-toast';
 import { formatFileSize } from '../lib/format';
 import { cn } from '../lib/utils';
 
+type FileAction =
+  | { type: 'create-folder'; path: string }
+  | { type: 'rename-file'; fileId: string; filename: string }
+  | { type: 'move-file'; fileId: string; parentPath: string }
+  | { type: 'delete-file'; fileId: string; name: string }
+  | { type: 'extract-archive'; fileId: string; name: string }
+  | { type: 'move-files'; fileIds: string[]; parentPath: string }
+  | { type: 'delete-files'; fileIds: string[] }
+  | { type: 'rename-folder'; path: string; name: string }
+  | { type: 'move-folder'; path: string; parentPath: string }
+  | { type: 'delete-folder'; path: string; name: string };
+
+function fileActionStatus(action: FileAction | undefined): string | undefined {
+  if (!action) return undefined;
+  switch (action.type) {
+    case 'create-folder': return 'Creating folder…';
+    case 'rename-file': return 'Renaming file…';
+    case 'move-file': return 'Moving file…';
+    case 'delete-file': return 'Deleting file…';
+    case 'extract-archive': return 'Extracting archive…';
+    case 'move-files': return `Moving ${action.fileIds.length} files…`;
+    case 'delete-files': return `Deleting ${action.fileIds.length} files…`;
+    case 'rename-folder': return 'Renaming folder…';
+    case 'move-folder': return 'Moving folder…';
+    case 'delete-folder': return 'Deleting folder…';
+  }
+}
+
 export function ModelDetailPage() {
   const { id } = useParams<{ id: string }>();
   const libPath = useLibraryPath();
@@ -79,19 +107,7 @@ export function ModelDetailPage() {
   const [selectedImageFileId, setSelectedImageFileId] = React.useState<string | null>(null);
 
   const fileMutation = useMutation({
-    mutationFn: async (
-      action:
-        | { type: 'create-folder'; path: string }
-        | { type: 'rename-file'; fileId: string; filename: string }
-        | { type: 'move-file'; fileId: string; parentPath: string }
-        | { type: 'delete-file'; fileId: string; name: string }
-        | { type: 'extract-archive'; fileId: string; name: string }
-        | { type: 'move-files'; fileIds: string[]; parentPath: string }
-        | { type: 'delete-files'; fileIds: string[] }
-        | { type: 'rename-folder'; path: string; name: string }
-        | { type: 'move-folder'; path: string; parentPath: string }
-        | { type: 'delete-folder'; path: string; name: string },
-    ) => {
+    mutationFn: async (action: FileAction) => {
       if (!id) throw new Error('Model id is required');
       switch (action.type) {
         case 'create-folder':
@@ -146,6 +162,14 @@ export function ModelDetailPage() {
       });
     },
   });
+
+  const activeFileActionStatus = fileMutation.isPending
+    ? fileActionStatus(fileMutation.variables)
+    : undefined;
+
+  function runFileAction(action: FileAction): Promise<void> {
+    return fileMutation.mutateAsync(action).then(() => undefined);
+  }
 
   function openViewer(stl: StlFileRef) {
     setActiveStl(stl);
@@ -273,15 +297,16 @@ export function ModelDetailPage() {
               selectedImageFileId={selectedImageFileId}
               onSelectImageFile={setSelectedImageFileId}
               fileActionsDisabled={fileMutation.isPending}
+              fileActionStatus={activeFileActionStatus}
               onCreateFolder={(path) => fileMutation.mutate({ type: 'create-folder', path })}
               onRenameFile={(fileId, filename) => fileMutation.mutate({ type: 'rename-file', fileId, filename })}
-              onMoveFile={(fileId, parentPath) => fileMutation.mutate({ type: 'move-file', fileId, parentPath })}
+              onMoveFile={(fileId, parentPath) => runFileAction({ type: 'move-file', fileId, parentPath })}
               onDeleteFile={(fileId, name) => fileMutation.mutate({ type: 'delete-file', fileId, name })}
               onExtractArchive={(fileId, name) => fileMutation.mutate({ type: 'extract-archive', fileId, name })}
-              onMoveFiles={(fileIds, parentPath) => fileMutation.mutate({ type: 'move-files', fileIds, parentPath })}
+              onMoveFiles={(fileIds, parentPath) => runFileAction({ type: 'move-files', fileIds, parentPath })}
               onDeleteFiles={(fileIds) => fileMutation.mutate({ type: 'delete-files', fileIds })}
               onRenameFolder={(path, name) => fileMutation.mutate({ type: 'rename-folder', path, name })}
-              onMoveFolder={(path, parentPath) => fileMutation.mutate({ type: 'move-folder', path, parentPath })}
+              onMoveFolder={(path, parentPath) => runFileAction({ type: 'move-folder', path, parentPath })}
               onDeleteFolder={(path, name) => fileMutation.mutate({ type: 'delete-folder', path, name })}
             />
           </div>

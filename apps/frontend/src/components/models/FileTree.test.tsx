@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { FileTreeNode } from '@alexandria/shared';
 import { FileTree } from './FileTree';
 
@@ -13,6 +13,16 @@ const TREE: FileTreeNode[] = [
   },
   { name: 'readme.txt', type: 'file', fileType: 'document', sizeBytes: 10, id: 'd1' },
 ];
+
+function deferredPromise() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 describe('FileTree', () => {
   it('fires onOpenStl with the reconstructed relative path for a nested STL', () => {
@@ -137,5 +147,59 @@ describe('FileTree', () => {
 
     fireEvent.click(imageRow);
     expect(onSelectImageFile).toHaveBeenCalledWith('img-1');
+  });
+
+  it('shows an accessible operation status while file actions are pending', () => {
+    const { container } = render(
+      <FileTree
+        tree={TREE}
+        modelId="m1"
+        disabled
+        operationStatus="Renaming folder…"
+      />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('Renaming folder…');
+    expect(container.firstElementChild).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('button', { name: 'Create folder' })).toBeDisabled();
+  });
+
+  it('keeps the move dialog open with a busy indicator until the move completes', async () => {
+    const move = deferredPromise();
+    const onMoveFolder = vi.fn(() => move.promise);
+    render(<FileTree tree={TREE} modelId="m1" onMoveFolder={onMoveFolder} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for folder parts' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move' }));
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }));
+
+    expect(onMoveFolder).toHaveBeenCalledWith('parts', '');
+    expect(within(dialog).getByRole('button', { name: 'Moving…' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    expect(dialog).toHaveAttribute('aria-busy', 'true');
+
+    expect(within(dialog).queryByRole('button', { name: 'Close dialog' })).not.toBeInTheDocument();
+
+    move.resolve();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('keeps the move dialog open for retry when the move fails', async () => {
+    const move = deferredPromise();
+    const onMoveFolder = vi.fn(() => move.promise);
+    render(<FileTree tree={TREE} modelId="m1" onMoveFolder={onMoveFolder} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for folder parts' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Move' }));
+
+    move.reject(new Error('Move failed'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Move' })).toBeEnabled();
+    });
   });
 });

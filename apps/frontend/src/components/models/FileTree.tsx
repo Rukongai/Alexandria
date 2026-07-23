@@ -15,6 +15,7 @@ import {
   SquareCheck,
   Trash2,
   PackageOpen,
+  Loader2,
 } from 'lucide-react';
 import type { FileTreeNode, FileType } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
@@ -59,11 +60,11 @@ interface FileNodeProps {
   onToggleFileSelection: (fileId: string) => void;
   onCreateFolder?: (parentPath: string) => void;
   onRenameFile?: (fileId: string, filename: string) => void;
-  onMoveFile?: (fileId: string, parentPath: string) => void;
+  onMoveFile?: (fileId: string, parentPath: string) => Promise<void>;
   onDeleteFile?: (fileId: string, name: string) => void;
   onExtractArchive?: (fileId: string, name: string) => void;
   onRenameFolder?: (path: string, name: string) => void;
-  onMoveFolder?: (path: string, parentPath: string) => void;
+  onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
   onDeleteFolder?: (path: string, name: string) => void;
   selectionMode: boolean;
   onRequestMove: (request: MoveRequest) => void;
@@ -181,11 +182,12 @@ function MoveDestinationDialog({
   request: MoveRequest | null;
   destinations: FolderDestination[];
   onCreateDestination: (parentPath: string, name: string) => FolderDestination | null;
-  onConfirm: (destinationPath: string) => void;
+  onConfirm: (destinationPath: string) => Promise<void>;
 }) {
   const [selectedPath, setSelectedPath] = React.useState('');
   const [newFolderParentPath, setNewFolderParentPath] = React.useState('');
   const [newFolderName, setNewFolderName] = React.useState('');
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
   const title = request?.type === 'folder' ? `Move ${request.folderName}` : 'Move Files';
 
   React.useEffect(() => {
@@ -193,6 +195,7 @@ function MoveDestinationDialog({
       setSelectedPath('');
       setNewFolderParentPath('');
       setNewFolderName('');
+      setIsSubmitting(false);
       return;
     }
     setSelectedPath(destinations[0]?.path ?? '');
@@ -207,9 +210,29 @@ function MoveDestinationDialog({
     setNewFolderName('');
   }
 
+  async function confirmMove(): Promise<void> {
+    setIsSubmitting(true);
+    try {
+      await onConfirm(selectedPath);
+    } catch {
+      // The mutation owner reports the error. Keep this dialog open for retry.
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!isSubmitting) onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent
+        className="max-w-md"
+        aria-busy={isSubmitting}
+        showCloseButton={!isSubmitting}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -220,6 +243,7 @@ function MoveDestinationDialog({
               key={destination.path || 'root'}
               type="button"
               onClick={() => setSelectedPath(destination.path)}
+              disabled={isSubmitting}
               className={cn(
                 'flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-sm last:border-b-0 hover:bg-accent',
                 selectedPath === destination.path && 'bg-primary/10 text-primary hover:bg-primary/15',
@@ -238,6 +262,7 @@ function MoveDestinationDialog({
             <select
               value={newFolderParentPath}
               onChange={(event) => setNewFolderParentPath(event.currentTarget.value)}
+              disabled={isSubmitting}
               className="h-8 max-w-[180px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
             >
               {destinations.map((destination) => (
@@ -251,13 +276,14 @@ function MoveDestinationDialog({
             <input
               value={newFolderName}
               onChange={(event) => setNewFolderName(event.currentTarget.value)}
+              disabled={isSubmitting}
               className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm"
               aria-label="New folder name"
             />
             <button
               type="button"
               onClick={createDestination}
-              disabled={newFolderName.trim().length === 0}
+              disabled={isSubmitting || newFolderName.trim().length === 0}
               className="inline-flex h-8 items-center gap-1 rounded-md border border-input px-2 text-xs font-medium hover:bg-accent disabled:opacity-50"
             >
               <FolderPlus className="h-3.5 w-3.5" />
@@ -270,17 +296,21 @@ function MoveDestinationDialog({
           <button
             type="button"
             onClick={() => onOpenChange(false)}
+            disabled={isSubmitting}
             className="inline-flex h-8 items-center rounded-md border border-input px-3 text-sm hover:bg-accent"
           >
             Cancel
           </button>
           <button
             type="button"
-            onClick={() => onConfirm(selectedPath)}
-            disabled={destinations.length === 0}
-            className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            onClick={() => void confirmMove()}
+            disabled={isSubmitting || destinations.length === 0}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            Move
+            {isSubmitting && (
+              <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            )}
+            {isSubmitting ? 'Moving…' : 'Move'}
           </button>
         </DialogFooter>
       </DialogContent>
@@ -658,15 +688,16 @@ interface FileTreeProps {
   selectedImageFileId?: string | null;
   onSelectImageFile?: (fileId: string) => void;
   disabled?: boolean;
+  operationStatus?: string;
   onCreateFolder?: (path: string) => void;
   onRenameFile?: (fileId: string, filename: string) => void;
-  onMoveFile?: (fileId: string, parentPath: string) => void;
+  onMoveFile?: (fileId: string, parentPath: string) => Promise<void>;
   onDeleteFile?: (fileId: string, name: string) => void;
   onExtractArchive?: (fileId: string, name: string) => void;
-  onMoveFiles?: (fileIds: string[], parentPath: string) => void;
+  onMoveFiles?: (fileIds: string[], parentPath: string) => Promise<void>;
   onDeleteFiles?: (fileIds: string[]) => void;
   onRenameFolder?: (path: string, name: string) => void;
-  onMoveFolder?: (path: string, parentPath: string) => void;
+  onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
   onDeleteFolder?: (path: string, name: string) => void;
 }
 
@@ -678,6 +709,7 @@ export function FileTree({
   selectedImageFileId,
   onSelectImageFile,
   disabled = false,
+  operationStatus,
   onCreateFolder,
   onRenameFile,
   onMoveFile,
@@ -819,21 +851,24 @@ export function FileTree({
     return created;
   }
 
-  function confirmMove(destinationPath: string): void {
+  async function confirmMove(destinationPath: string): Promise<void> {
     if (!moveRequest) return;
     if (moveRequest.type === 'folder') {
-      onMoveFolder?.(moveRequest.folderPath, destinationPath);
+      await onMoveFolder?.(moveRequest.folderPath, destinationPath);
     } else if (moveRequest.fileIds.length === 1) {
-      onMoveFile?.(moveRequest.fileIds[0], destinationPath);
+      await onMoveFile?.(moveRequest.fileIds[0], destinationPath);
     } else {
-      onMoveFiles?.(moveRequest.fileIds, destinationPath);
+      await onMoveFiles?.(moveRequest.fileIds, destinationPath);
       setSelectedFileIds(new Set());
     }
     setMoveRequest(null);
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card overflow-visible">
+    <div
+      className="rounded-xl border border-border bg-card overflow-visible"
+      aria-busy={Boolean(operationStatus)}
+    >
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border bg-muted/30">
         <span className="text-sm font-semibold text-foreground">Files</span>
         <div className="flex items-center gap-2">
@@ -864,7 +899,21 @@ export function FileTree({
           >
             <FolderPlus className="h-4 w-4" />
           </button>
-          <span className="text-xs text-muted-foreground">{totalFiles} files</span>
+          {operationStatus ? (
+            <span
+              role="status"
+              aria-live="polite"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary"
+            >
+              <Loader2
+                className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+              {operationStatus}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">{totalFiles} files</span>
+          )}
         </div>
       </div>
       {selectionMode && (
