@@ -14,7 +14,7 @@ Several decisions were made during the architecture phase and are treated as set
 
 **One upload session, one model.** A normal archive upload creates one review session and then one model. The dedicated Multi-part archive workflow can instead combine several independent complete archives or upload every part of one supported split archive—split ZIP or modern split RAR—into that same session. Alexandria never infers separate models from archive contents, and ordinary multi-select still creates one session per archive.
 
-**Metadata is unified, storage is not.** Tags, Artist, Year, NSFW, and user-defined custom fields are all accessed through the same metadata API. Internally, some field types (tags, which are multi-value enumeration) use a dedicated join table for query performance. This routing is invisible to the API and to the frontend. Adding a new field type does not require a new API surface — it is a new metadata field definition.
+**Metadata is unified, storage is not.** Tags, Artist, Year, Source, NSFW, and user-defined custom fields are all accessed through the same metadata API. Internally, some field types (tags, which are multi-value enumeration) use a dedicated join table for query performance. This routing is invisible to the API and to the frontend. Adding a new field type does not require a new API surface — it is a new metadata field definition.
 
 **Collections are not metadata.** Collections are organizational (where you put a model), not descriptive (what a model is). This is why Artist is a metadata field and Collections are a separate entity. A model can belong to multiple collections.
 
@@ -23,6 +23,8 @@ Several decisions were made during the architecture phase and are treated as set
 **Server-side response assembly.** PresenterService on the backend assembles all API response payloads into ready-to-render shapes before sending them. The frontend does not reshape or join data — it receives what it needs to display. This keeps frontend complexity low and makes response format changes a single-location concern.
 
 **Cursor-based pagination everywhere.** No offset-based pagination. Cursor pagination is stable under concurrent mutations and performs better on large libraries.
+
+**Assistant changes are staged and reviewable.** The assistant can inspect models, collections, configured metadata and known values, and uploads waiting for review in the active library. It uses the current model, page selection, or upload review as its target. For simple metadata cleanup it can parse filenames written as `{Artist} - {Date} - {Model}`, infer a character's Source as the originating series or work when supported, and suggest existing tags and collections. Every change is an immutable preview that requires a separate apply action. Applying an upload proposal updates only its review draft; committing the upload remains an explicit human action.
 
 **Auto-seed on startup.** The backend automatically runs database migrations and seeds default data (admin account, default metadata fields) on every startup before accepting traffic. Seeding is idempotent — it uses conflict-safe upserts and never overwrites existing data. Seed failures are non-fatal: the backend logs a warning and continues.
 
@@ -37,7 +39,7 @@ The backend is organized around focused services. Each service owns a coherent s
 - **StorageService** — manages backend-independent logical keys through local-filesystem or S3-compatible providers
 - **ThumbnailService** — generates WebP thumbnails at grid and detail sizes using sharp
 - **UploadService** — manages chunked upload sessions in memory, bounds accepted chunk bytes to the declared file size, supports explicit abort and cleanup, and assembles single files or multipart groups for ingestion
-- **ImportSessionService** — owns staged scan, review, and commit sessions
+- **ImportSessionService** — owns staged scan, persisted review drafts, and commit sessions
 - **ImportStrategyService** — moves folder imports into managed storage using hardlink, copy, or move strategies
 - **JobService** — manages BullMQ queues and job lifecycle
 - **ModelService** — CRUD for Model and ModelFile records
@@ -50,8 +52,8 @@ The backend is organized around focused services. Each service owns a coherent s
 - **AuthService** — single-user email/password auth with argon2 hashing and signed HTTP-only session cookies
 - **PresenterService** — assembles API response payloads from domain data
 - **AiProviderService** — stores encrypted OpenAI-compatible BYOK provider credentials, discovers models, and enforces outbound network policy
-- **AiAssistantService** — runs the bounded, library-scoped assistant tool loop
-- **AiProposalService** — validates immutable change previews and atomically applies only user-approved proposals
+- **AiAssistantService** — runs the bounded, library-scoped assistant tool loop across current model and staged-upload targets
+- **AiProposalService** — validates immutable change previews and atomically applies approved model changes or staged-upload draft updates
 - **WebSearchService** — researches public metadata and image candidates without mutating the library
 
 Route handlers are thin: validate input, call a service, return the response envelope. All business logic lives in services. All response shaping lives in PresenterService. Services throw typed `AppError` instances for expected failures; the global error handler formats these as envelope responses.
@@ -68,6 +70,6 @@ Default credentials (`admin@alexandria.local` / `changeme`) are applied by the a
 
 ## Current Status
 
-Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, and the React frontend — is implemented and reviewed. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent complete archives or uploading one complete supported split archive, including a modern `<base>.partN.rar` set, into a single review session and model.
+Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, the React frontend, the in-browser STL viewer, and the preview-first assistant — is implemented and reviewed. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent complete archives or uploading one complete supported split archive, including a modern `<base>.partN.rar` set, into a single review session and model. The assistant can now read collections and metadata knowledge, act on current single or multi-model page targets, and stage metadata for pre-commit uploads without committing them.
 
-Planned but not yet implemented: 3D model viewer (in-browser STL/3MF rendering), multi-user support, and print job tracking.
+Planned but not yet implemented: multi-user support and print job tracking.

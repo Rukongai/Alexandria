@@ -11,10 +11,19 @@ const metadataFieldTypeSchema = z.enum([
 ]);
 
 const metadataFieldConfigSchema = z.object({
-  enumOptions: z.array(z.string()).optional(),
-  validationPattern: z.string().optional(),
-  displayHint: z.string().optional(),
+  enumOptions: z.array(z.string().max(10_000)).max(100).optional(),
+  validationPattern: z.string().max(512).optional(),
+  displayHint: z.string().max(255).optional(),
 });
+
+const metadataStringSchema = z.string().max(10_000);
+const nonNullMetadataValueSchema = z.union([
+  metadataStringSchema,
+  z.array(metadataStringSchema).max(100),
+  z.number().finite(),
+  z.boolean(),
+]);
+const metadataValueSchema = z.union([nonNullMetadataValueSchema, z.null()]);
 
 export const createMetadataFieldSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
@@ -32,25 +41,14 @@ export const updateMetadataFieldSchema = z.object({
 });
 
 export const setModelMetadataSchema = z.record(
-  z.string(),
-  z.union([
-    z.string(),
-    z.array(z.string()),
-    z.number(),
-    z.boolean(),
-    z.null(),
-  ]),
+  z.string().min(1).max(255),
+  metadataValueSchema,
 );
 
 const bulkMetadataOperationSchema = z.object({
   fieldSlug: z.string().min(1),
   action: z.enum(['set', 'add', 'remove']),
-  value: z.union([
-    z.string(),
-    z.array(z.string()),
-    z.number(),
-    z.boolean(),
-  ]).optional(),
+  value: nonNullMetadataValueSchema.optional(),
 });
 
 export const bulkMetadataSchema = z.object({

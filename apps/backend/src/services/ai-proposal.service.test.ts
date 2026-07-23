@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AiProposalService } from './ai-proposal.service.js';
+import { notFound } from '../utils/errors.js';
 
 const PROPOSAL_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
@@ -7,7 +8,9 @@ const LIBRARY_ID = '33333333-3333-4333-8333-333333333333';
 const MODEL_ID = '44444444-4444-4444-8444-444444444444';
 const COLLECTION_ID = '55555555-5555-4555-8555-555555555555';
 const OTHER_COLLECTION_ID = '66666666-6666-4666-8666-666666666666';
+const IMPORT_SESSION_ID = '77777777-7777-4777-8777-777777777777';
 const NOW = new Date('2026-07-21T12:00:00.000Z');
+const EXPECTED_UPDATED_AT = '2026-07-21T11:00:00.000Z';
 
 function dependencies() {
   return {
@@ -20,12 +23,23 @@ function dependencies() {
     metadata: {
       getFieldBySlug: vi.fn().mockResolvedValue({ slug: 'artist' }),
       setModelMetadata: vi.fn().mockResolvedValue(undefined),
+      validateFieldValue: vi.fn(),
     },
     collections: {
       requireOwnedCollection: vi.fn().mockResolvedValue(undefined),
       getCollectionById: vi.fn().mockImplementation(async (id: string) => ({ id, name: `Collection ${id}` })),
       addModelsToCollection: vi.fn().mockResolvedValue(undefined),
       removeModelFromCollection: vi.fn().mockResolvedValue(undefined),
+    },
+    importSessions: {
+      getOwnedReadyForReviewRow: vi.fn().mockResolvedValue({
+        id: IMPORT_SESSION_ID,
+        originalFilename: 'Maker - 2024 - Dragon.zip',
+        updatedAt: new Date(EXPECTED_UPDATED_AT),
+        draftMetadata: { metadata: { source: 'Existing Source', year: '2024' } },
+      }),
+      lockOwnedReadyForReviewSessions: vi.fn().mockResolvedValue([]),
+      updateDraftMetadata: vi.fn().mockResolvedValue(undefined),
     },
   };
 }
@@ -265,6 +279,7 @@ describe('AiProposalService preview/apply invariant', () => {
       proposalId: PROPOSAL_ID,
       status: 'applied',
       changedModelIds: [MODEL_ID],
+      changedImportSessionIds: [],
     });
   });
 
@@ -342,5 +357,222 @@ describe('AiProposalService preview/apply invariant', () => {
       .toHaveBeenCalledWith(COLLECTION_ID, [MODEL_ID], tx);
     expect(deps.collections.removeModelFromCollection)
       .toHaveBeenCalledWith(OTHER_COLLECTION_ID, MODEL_ID, tx);
+  });
+
+  it('should validate, lock, and atomically apply a staged draft patch without touching models', async () => {
+    const deps = dependencies();
+    deps.metadata.getFieldBySlug.mockResolvedValue({ slug: 'source', type: 'text' });
+    const changes = [{
+      type: 'update_import_session',
+      importSessionId: IMPORT_SESSION_ID,
+      originalFilename: 'Maker - 2024 - Dragon.zip',
+      expectedUpdatedAt: EXPECTED_UPDATED_AT,
+      patch: {
+        collectionId: COLLECTION_ID,
+        metadata: { source: 'Fullmetal Alchemist' },
+      },
+    }];
+    const tx = { update: vi.fn().mockReturnValue(updateChain(true)) };
+    const database = {
+      select: vi.fn().mockReturnValue(selectChain([proposalRow({ changes })])),
+      transaction: vi.fn().mockImplementation(async (callback) => callback(tx)),
+    };
+    const service = new AiProposalService(
+      deps.models as never,
+      deps.metadata as never,
+      deps.collections as never,
+      database as never,
+      () => NOW,
+      deps.importSessions as never,
+    );
+
+    const result = await service.apply(PROPOSAL_ID, USER_ID, LIBRARY_ID);
+
+    expect(deps.importSessions.lockOwnedReadyForReviewSessions)
+      .toHaveBeenCalledWith([IMPORT_SESSION_ID], USER_ID, LIBRARY_ID, tx);
+    expect(deps.importSessions.getOwnedReadyForReviewRow)
+      .toHaveBeenCalledWith(IMPORT_SESSION_ID, USER_ID, LIBRARY_ID, tx);
+    expect(deps.importSessions.lockOwnedReadyForReviewSessions)
+      .toHaveBeenCalledBefore(deps.importSessions.getOwnedReadyForReviewRow);
+    expect(deps.importSessions.getOwnedReadyForReviewRow)
+      .toHaveBeenCalledBefore(deps.importSessions.updateDraftMetadata);
+    expect(deps.importSessions.updateDraftMetadata)
+      .toHaveBeenCalledWith(IMPORT_SESSION_ID, changes[0].patch, tx);
+    expect(deps.collections.requireOwnedCollection)
+      .toHaveBeenCalledWith(COLLECTION_ID, USER_ID, LIBRARY_ID, tx);
+    expect(deps.models.lockOwnedModels).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      proposalId: PROPOSAL_ID,
+      status: 'applied',
+      changedModelIds: [],
+      changedImportSessionIds: [IMPORT_SESSION_ID],
+    });
+  });
+
+  it('should reject a stale staged filename before preview persistence', async () => {
+    const deps = dependencies();
+    const { tx, database } = previewDatabase({});
+    const service = new AiProposalService(
+      deps.models as never,
+      deps.metadata as never,
+      deps.collections as never,
+      database as never,
+      () => NOW,
+      deps.importSessions as never,
+    );
+
+    await expect(service.createPreview(USER_ID, LIBRARY_ID, {
+      summary: 'Fill staged metadata',
+      changes: [{
+        type: 'update_import_session',
+        importSessionId: IMPORT_SESSION_ID,
+        originalFilename: 'stale.zip',
+        expectedUpdatedAt: EXPECTED_UPDATED_AT,
+        patch: { artist: 'Maker' },
+      }],
+    })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
+  it('should revalidate a staged filename at apply time before claiming or mutating', async () => {
+    const deps = dependencies();
+    const changes = [{
+      type: 'update_import_session',
+      importSessionId: IMPORT_SESSION_ID,
+      originalFilename: 'Maker - 2024 - Dragon.zip',
+      expectedUpdatedAt: EXPECTED_UPDATED_AT,
+      patch: { artist: 'Maker' },
+    }];
+    deps.importSessions.getOwnedReadyForReviewRow.mockResolvedValue({
+      id: IMPORT_SESSION_ID,
+      originalFilename: 'Replacement.zip',
+      updatedAt: new Date(EXPECTED_UPDATED_AT),
+    });
+    const tx = { update: vi.fn().mockReturnValue(updateChain(true)) };
+    const database = {
+      select: vi.fn().mockReturnValue(selectChain([proposalRow({ changes })])),
+      transaction: vi.fn().mockImplementation(async (callback) => callback(tx)),
+    };
+    const service = new AiProposalService(
+      deps.models as never,
+      deps.metadata as never,
+      deps.collections as never,
+      database as never,
+      () => NOW,
+      deps.importSessions as never,
+    );
+
+    await expect(service.apply(PROPOSAL_ID, USER_ID, LIBRARY_ID))
+      .rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(tx.update).not.toHaveBeenCalled();
+    expect(deps.importSessions.updateDraftMetadata).not.toHaveBeenCalled();
+  });
+
+  it('should reject a staged proposal when updatedAt changed under the apply lock', async () => {
+    const deps = dependencies();
+    const changes = [{
+      type: 'update_import_session',
+      importSessionId: IMPORT_SESSION_ID,
+      originalFilename: 'Maker - 2024 - Dragon.zip',
+      expectedUpdatedAt: EXPECTED_UPDATED_AT,
+      patch: { artist: 'Maker' },
+    }];
+    deps.importSessions.getOwnedReadyForReviewRow.mockResolvedValue({
+      id: IMPORT_SESSION_ID,
+      originalFilename: 'Maker - 2024 - Dragon.zip',
+      updatedAt: new Date('2026-07-21T11:01:00.000Z'),
+    });
+    const tx = { update: vi.fn().mockReturnValue(updateChain(true)) };
+    const database = {
+      select: vi.fn().mockReturnValue(selectChain([proposalRow({ changes })])),
+      transaction: vi.fn().mockImplementation(async (callback) => callback(tx)),
+    };
+    const service = new AiProposalService(
+      deps.models as never,
+      deps.metadata as never,
+      deps.collections as never,
+      database as never,
+      () => NOW,
+      deps.importSessions as never,
+    );
+
+    await expect(service.apply(PROPOSAL_ID, USER_ID, LIBRARY_ID))
+      .rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(deps.importSessions.lockOwnedReadyForReviewSessions).toHaveBeenCalledOnce();
+    expect(deps.importSessions.updateDraftMetadata).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['unknown custom metadata', 'metadata'],
+    ['unowned collection', 'collection'],
+  ] as const)(
+    'should reject %s before persisting a staged preview',
+    async (_label, failureKind) => {
+      const deps = dependencies();
+      const expected = notFound('Referenced value is unavailable');
+      if (failureKind === 'metadata') deps.metadata.getFieldBySlug.mockRejectedValue(expected);
+      else deps.collections.requireOwnedCollection.mockRejectedValue(expected);
+      const insertChain = { values: vi.fn(), returning: vi.fn() };
+      insertChain.values.mockReturnValue(insertChain);
+      insertChain.returning.mockResolvedValue([{ id: PROPOSAL_ID }]);
+      const { tx, database } = previewDatabase(insertChain);
+      const service = new AiProposalService(
+        deps.models as never,
+        deps.metadata as never,
+        deps.collections as never,
+        database as never,
+        () => NOW,
+        deps.importSessions as never,
+      );
+
+      await expect(service.createPreview(USER_ID, LIBRARY_ID, {
+        summary: 'Fill staged metadata',
+        changes: [{
+          type: 'update_import_session',
+          importSessionId: IMPORT_SESSION_ID,
+          originalFilename: 'Maker - 2024 - Dragon.zip',
+          expectedUpdatedAt: EXPECTED_UPDATED_AT,
+          patch: failureKind === 'metadata'
+            ? { metadata: { unknown: 'value' } }
+            : { collectionId: COLLECTION_ID },
+        }],
+      })).rejects.toMatchObject({
+        code: failureKind === 'metadata' ? 'VALIDATION_ERROR' : 'NOT_FOUND',
+      });
+      expect(tx.insert).not.toHaveBeenCalled();
+    },
+  );
+
+  it('should stop before validation and mutation when a staged session is no longer reviewable', async () => {
+    const deps = dependencies();
+    const changes = [{
+      type: 'update_import_session',
+      importSessionId: IMPORT_SESSION_ID,
+      originalFilename: 'Maker - 2024 - Dragon.zip',
+      expectedUpdatedAt: EXPECTED_UPDATED_AT,
+      patch: { artist: 'Maker' },
+    }];
+    deps.importSessions.lockOwnedReadyForReviewSessions.mockRejectedValue(
+      Object.assign(new Error('Import session not found'), { code: 'NOT_FOUND', statusCode: 404 }),
+    );
+    const tx = { update: vi.fn().mockReturnValue(updateChain(true)) };
+    const database = {
+      select: vi.fn().mockReturnValue(selectChain([proposalRow({ changes })])),
+      transaction: vi.fn().mockImplementation(async (callback) => callback(tx)),
+    };
+    const service = new AiProposalService(
+      deps.models as never,
+      deps.metadata as never,
+      deps.collections as never,
+      database as never,
+      () => NOW,
+      deps.importSessions as never,
+    );
+
+    await expect(service.apply(PROPOSAL_ID, USER_ID, LIBRARY_ID))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(deps.importSessions.getOwnedReadyForReviewRow).not.toHaveBeenCalled();
+    expect(deps.importSessions.updateDraftMetadata).not.toHaveBeenCalled();
+    expect(tx.update).not.toHaveBeenCalled();
   });
 });

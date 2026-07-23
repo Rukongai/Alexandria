@@ -17,8 +17,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { users, libraries, importSessions } from '../db/schema/index.js';
+import { users, libraries, importSessions, models } from '../db/schema/index.js';
 import { importSessionService, ImportSessionService } from './import-session.service.js';
+import { IngestionService } from './ingestion.service.js';
+import { jobService } from './job.service.js';
 import type { DetectedImportMetadata } from '@alexandria/shared';
 
 // ---------------------------------------------------------------------------
@@ -253,11 +255,156 @@ describe('ImportSessionService.getOwnedRow()', () => {
   });
 });
 
+describe('ImportSessionService assistant scope guards', () => {
+  it('should expose only active sessions owned by the user in the active library', async () => {
+    const { id } = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'assistant-target.zip',
+    });
+    track(id);
+    await importSessionService.update(id, { status: 'ready_for_review' });
+
+    await expect(
+      importSessionService.getOwnedActiveSession(id, testUserId, testLibraryId),
+    ).resolves.toMatchObject({ id, status: 'ready_for_review' });
+    await expect(
+      importSessionService.getOwnedActiveSession(id, testUserId, otherLibraryId),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    await importSessionService.update(id, { status: 'committed' });
+    await expect(
+      importSessionService.getOwnedActiveSession(id, testUserId, testLibraryId),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('should require ready-for-review status and return locked rows in deterministic order', async () => {
+    const first = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'first.zip',
+    });
+    const second = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'second.zip',
+    });
+    track(first.id);
+    track(second.id);
+    await importSessionService.update(first.id, { status: 'ready_for_review' });
+    await importSessionService.update(second.id, { status: 'ready_for_review' });
+
+    const rows = await db.transaction((tx) =>
+      importSessionService.lockOwnedReadyForReviewSessions(
+        [second.id, first.id, second.id],
+        testUserId,
+        testLibraryId,
+        tx,
+      ));
+    expect(rows.map((row) => row.id)).toEqual([first.id, second.id].sort());
+
+    await importSessionService.update(second.id, { status: 'committing' });
+    await expect(db.transaction((tx) =>
+      importSessionService.lockOwnedReadyForReviewSessions(
+        [first.id, second.id],
+        testUserId,
+        testLibraryId,
+        tx,
+      ))).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('serializes parallel handleCommit calls so exactly one model is created', async () => {
+    const filename = `parallel-${Date.now()}.zip`;
+    const { id } = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: filename,
+    });
+    track(id);
+    await importSessionService.update(id, { status: 'ready_for_review' });
+    const enqueue = vi.spyOn(jobService, 'enqueueCommitJob').mockResolvedValue('job-1');
+
+    try {
+      const results = await Promise.allSettled([
+        new IngestionService().handleCommit(id, undefined, testUserId, testLibraryId),
+        new IngestionService().handleCommit(id, undefined, testUserId, testLibraryId),
+      ]);
+      const fulfilled = results.filter(
+        (result): result is PromiseFulfilledResult<{ modelId: string; jobId: string }> =>
+          result.status === 'fulfilled',
+      );
+      expect(fulfilled).toHaveLength(1);
+      expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+      expect(enqueue).toHaveBeenCalledOnce();
+
+      const created = await db
+        .select({ id: models.id })
+        .from(models)
+        .where(eq(models.originalFilename, filename));
+      expect(created).toHaveLength(1);
+    } finally {
+      enqueue.mockRestore();
+      await db.delete(models).where(eq(models.originalFilename, filename));
+    }
+  });
+
+  it('makes a locked AI draft update visible to a waiting commit claim', async () => {
+    const { id } = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'serialized-draft.zip',
+    });
+    track(id);
+    await importSessionService.update(id, { status: 'ready_for_review' });
+
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const hasLock = new Promise<void>((resolve) => { locked = resolve; });
+    const draftApply = db.transaction(async (tx) => {
+      await importSessionService.lockOwnedReadyForReviewSessions(
+        [id], testUserId, testLibraryId, tx,
+      );
+      await importSessionService.updateDraftMetadata(
+        id, { metadata: { source: 'Konosuba' } }, tx,
+      );
+      locked();
+      await hold;
+    });
+    await hasLock;
+    const waitingClaim = db.transaction(async (tx) => {
+      const [row] = await importSessionService.lockOwnedReadyForReviewSessions(
+        [id], testUserId, testLibraryId, tx,
+      );
+      await importSessionService.update(id, { status: 'committing' }, tx);
+      return row.draftMetadata;
+    });
+    release();
+
+    await expect(draftApply).resolves.toBeUndefined();
+    await expect(waitingClaim).resolves.toEqual({ metadata: { source: 'Konosuba' } });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // describe: listActive()
 // ---------------------------------------------------------------------------
 
 describe('ImportSessionService.listActive()', () => {
+  it('should apply an optional database query limit', async () => {
+    for (const filename of ['limited-one.zip', 'limited-two.zip']) {
+      const { id } = await importSessionService.create({
+        userId: testUserId,
+        libraryId: testLibraryId,
+        originalFilename: filename,
+      });
+      track(id);
+    }
+    await expect(importSessionService.listActive(
+      testUserId, testLibraryId, { limit: 1 },
+    )).resolves.toHaveLength(1);
+  });
+
   it('should return only active sessions for the given user and library', async () => {
     // Insert one session in each of the active statuses
     const activeStatuses = ['scanning', 'ready_for_review', 'committing', 'error'] as const;
@@ -477,6 +624,91 @@ describe('ImportSessionService.update()', () => {
 
     expect(updatedAtAfter).toBeGreaterThanOrEqual(updatedAtBefore);
   });
+
+  it('semantically merges staged draft metadata inside the supplied executor', async () => {
+    const { id } = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'draft.zip',
+    });
+    track(id);
+    await importSessionService.update(id, {
+      status: 'ready_for_review',
+      draftMetadata: {
+        newCollectionName: 'Old collection',
+        metadata: { source: 'Existing', year: 2023 },
+        options: { markNsfw: true },
+      },
+    });
+
+    const merged = await db.transaction(async (tx) => {
+      await importSessionService.lockOwnedReadyForReviewSessions(
+        [id], testUserId, testLibraryId, tx,
+      );
+      return importSessionService.updateDraftMetadata(id, {
+        collectionId: '11111111-1111-4111-8111-111111111111',
+        metadata: { source: 'Updated', custom: null },
+        options: { autoThumbnails: true },
+      }, tx);
+    });
+
+    expect(merged).toEqual({
+      collectionId: '11111111-1111-4111-8111-111111111111',
+      metadata: { source: 'Updated', year: 2023, custom: null },
+      options: { markNsfw: true, autoThumbnails: true },
+    });
+    expect((await importSessionService.getRow(id))?.draftMetadata).toEqual(merged);
+  });
+
+  it('should serialize concurrent draft merges so neither patch is lost', async () => {
+    const { id } = await importSessionService.create({
+      userId: testUserId,
+      libraryId: testLibraryId,
+      originalFilename: 'concurrent-draft.zip',
+    });
+    track(id);
+    await importSessionService.update(id, {
+      status: 'ready_for_review',
+      draftMetadata: { metadata: { source: 'Existing' } },
+    });
+
+    let markFirstLocked!: () => void;
+    const firstLocked = new Promise<void>((resolve) => { markFirstLocked = resolve; });
+    let releaseFirst!: () => void;
+    const holdFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let secondAcquiredLock = false;
+
+    const firstMerge = db.transaction(async (tx) => {
+      await importSessionService.lockOwnedReadyForReviewSessions(
+        [id], testUserId, testLibraryId, tx,
+      );
+      markFirstLocked();
+      await holdFirst;
+      return importSessionService.updateDraftMetadata(
+        id, { metadata: { source: 'Updated' } }, tx,
+      );
+    });
+    await firstLocked;
+
+    const secondMerge = db.transaction(async (tx) => {
+      await importSessionService.lockOwnedReadyForReviewSessions(
+        [id], testUserId, testLibraryId, tx,
+      );
+      secondAcquiredLock = true;
+      return importSessionService.updateDraftMetadata(
+        id, { metadata: { year: 2026 } }, tx,
+      );
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(secondAcquiredLock).toBe(false);
+    releaseFirst();
+    await Promise.all([firstMerge, secondMerge]);
+
+    expect((await importSessionService.getRow(id))?.draftMetadata).toEqual({
+      metadata: { source: 'Updated', year: 2026 },
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -500,6 +732,7 @@ describe('ImportSessionService.toDto()', () => {
     expect(dto).toHaveProperty('originalFilename', 'dto-test.zip');
     expect(dto).toHaveProperty('status', 'scanning');
     expect(dto).toHaveProperty('detected', null);
+    expect(dto).toHaveProperty('draftMetadata', null);
     expect(dto).toHaveProperty('modelId', null);
     expect(dto).toHaveProperty('commitProgress', null);
     expect(dto).toHaveProperty('error', null);

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { setModelMetadataSchema } from './metadata.js';
+import { batchUploadMetadataSchema } from './upload.js';
 
 const httpUrlSchema = z.string().url().max(2048).refine((value) => {
   const protocol = new URL(value).protocol;
@@ -37,6 +38,8 @@ export const aiChatSchema = z.object({
   providerId: z.string().uuid().optional(),
   context: z.object({
     modelId: z.string().uuid().optional(),
+    modelIds: z.array(z.string().uuid()).max(25).optional(),
+    importSessionIds: z.array(z.string().uuid()).max(25).optional(),
   }).optional(),
 }).superRefine((value, context) => {
   const totalCharacters = value.message.length
@@ -46,6 +49,26 @@ export const aiChatSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['history'],
       message: 'Message and history must contain at most 32000 characters total',
+    });
+  }
+  const modelIds = [
+    ...(value.context?.modelId ? [value.context.modelId] : []),
+    ...(value.context?.modelIds ?? []),
+  ];
+  if (new Set(modelIds).size > 25) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['context', 'modelIds'],
+      message: 'At most 25 model targets are allowed',
+    });
+  }
+  if ((value.context?.modelIds && new Set(value.context.modelIds).size !== value.context.modelIds.length)
+    || (value.context?.importSessionIds
+      && new Set(value.context.importSessionIds).size !== value.context.importSessionIds.length)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['context'],
+      message: 'Context target IDs must be unique',
     });
   }
 });
@@ -83,10 +106,26 @@ const updateCollectionsChangeSchema = z.object({
   { message: 'At least one collection change is required' },
 );
 
+const updateImportSessionChangeSchema = z.object({
+  type: z.literal('update_import_session'),
+  importSessionId: z.string().uuid(),
+  originalFilename: z.string().min(1).max(512),
+  expectedUpdatedAt: z.string().datetime({ offset: true }),
+  patch: batchUploadMetadataSchema.refine((value) => {
+    const directKeys = ['modelName', 'description', 'collectionId', 'newCollectionName', 'artist', 'tags'] as const;
+    return directKeys.some((key) => key in value)
+      || (value.metadata !== undefined && Object.keys(value.metadata).length > 0)
+      || (value.options !== undefined && Object.keys(value.options).length > 0);
+  }, {
+    message: 'At least one staged metadata field is required',
+  }),
+});
+
 export const aiChangeSchema = z.union([
   updateModelChangeSchema,
   setMetadataChangeSchema,
   updateCollectionsChangeSchema,
+  updateImportSessionChangeSchema,
 ]);
 
 export const aiChangeSetSchema = z.object({

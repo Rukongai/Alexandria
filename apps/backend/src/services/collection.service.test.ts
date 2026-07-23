@@ -403,6 +403,19 @@ describe('CollectionService – listCollections()', () => {
     expect(resultIds).toContain(child.id);
   });
 
+  it('should apply an optional database query limit', async () => {
+    await collectionService.createCollection(
+      { name: 'Limited One' }, testUserId, testLibraryId,
+    );
+    await collectionService.createCollection(
+      { name: 'Limited Two' }, testUserId, testLibraryId,
+    );
+
+    await expect(collectionService.listCollections(
+      testUserId, testLibraryId, { limit: 1 },
+    )).resolves.toHaveLength(1);
+  });
+
   it('should return CollectionDetail[] with children populated at depth=1', async () => {
     const top = await collectionService.createCollection(
       { name: 'Top with Sub' },

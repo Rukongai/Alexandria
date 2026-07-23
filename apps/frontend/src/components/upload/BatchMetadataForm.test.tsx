@@ -12,8 +12,14 @@ vi.mock('../../api/metadata', () => ({
   getFieldValues: vi.fn(),
 }));
 
+vi.mock('../../api/models', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/models')>();
+  return { ...actual, commitImportSession: vi.fn() };
+});
+
 import { getCollections } from '../../api/collections';
 import { getFieldValues } from '../../api/metadata';
+import { commitImportSession } from '../../api/models';
 
 const collection: CollectionDetail = {
   id: '22222222-2222-4222-8222-222222222222',
@@ -31,6 +37,7 @@ describe('BatchMetadataForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getFieldValues).mockResolvedValue([]);
+    vi.mocked(commitImportSession).mockResolvedValue({ modelId: 'model-1', jobId: 'job-1' });
   });
 
   it('lists collections when the browse rail has already populated its cache', async () => {
@@ -187,5 +194,88 @@ describe('BatchMetadataForm', () => {
 
     expect(screen.getAllByRole('button', { name: /Remove tag Fantasy/i })).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'Remove tag Terrain' })).toBeInTheDocument();
+  });
+
+  it('refreshes from a changed AI draft without letting polling clobber local edits', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+    const detected: DetectedImportMetadata = {
+      modelCount: 1,
+      fileCount: 1,
+      totalSizeBytes: 100,
+      artist: null,
+      tagsGuessed: [],
+      folderStructure: [],
+    };
+    const firstDraft = {
+      modelName: 'Lust',
+      artist: 'Model Artist',
+      metadata: { source: 'Fullmetal Alchemist', year: 2024, mature: false },
+    };
+
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="Artist - 2024 - Lust.zip"
+          detected={detected}
+          draftMetadata={firstDraft}
+          resetKey="draft-1"
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('Lust');
+    expect(screen.getByLabelText('source')).toHaveValue('Fullmetal Alchemist');
+    fireEvent.change(screen.getByPlaceholderText('Model name'), { target: { value: 'My local edit' } });
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="Artist - 2024 - Lust.zip"
+          detected={{
+            ...detected,
+            artist: 'New scanner guess',
+            tagsGuessed: ['new-scanner-tag'],
+          }}
+          draftMetadata={{ ...firstDraft, metadata: { ...firstDraft.metadata } }}
+          resetKey="draft-1"
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('My local edit');
+    expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('Model Artist');
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="Artist - 2024 - Lust.zip"
+          detected={detected}
+          draftMetadata={{ ...firstDraft, modelName: 'Lust, Homunculus' }}
+          resetKey="draft-2"
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByPlaceholderText('Model name')).toHaveValue('Lust, Homunculus'));
+
+    fireEvent.change(screen.getByLabelText('year'), { target: { value: '2025' } });
+    fireEvent.click(screen.getByLabelText('mature'));
+    fireEvent.click(screen.getByRole('button', { name: 'Import one model' }));
+
+    await waitFor(() => expect(commitImportSession).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        metadata: {
+          source: 'Fullmetal Alchemist',
+          year: 2025,
+          mature: true,
+        },
+      }),
+    ));
   });
 });

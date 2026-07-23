@@ -138,11 +138,14 @@ export class ModelService {
     }
   }
 
-  async createModel(data: CreateModelData): Promise<{ id: string }> {
+  async createModel(
+    data: CreateModelData,
+    executor: DatabaseExecutor = db,
+  ): Promise<{ id: string }> {
     // Every model is scoped to a library (library_id NOT NULL since 0007).
     // Resolve the owner's default library when not explicitly provided.
     const libraryId = data.libraryId ?? (await libraryService.resolveDefaultLibraryId(data.userId));
-    const [row] = await db
+    const [row] = await executor
       .insert(models)
       .values({
         name: data.name,

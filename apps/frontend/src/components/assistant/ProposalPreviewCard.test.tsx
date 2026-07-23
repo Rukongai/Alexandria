@@ -118,4 +118,47 @@ describe('ProposalPreviewCard', () => {
       '/api/files/thumbnails/dragon-hero.webp',
     );
   });
+
+  it('renders staged-upload metadata and a resolved destination collection', () => {
+    render(
+      <ProposalPreviewCard
+        proposal={{
+          proposalId: '88888888-8888-4888-8888-888888888888',
+          summary: 'Fill upload metadata',
+          expiresAt: '2026-07-21T12:15:00.000Z',
+          display: {
+            collections: {
+              '99999999-9999-4999-8999-999999999999': { name: 'Anime' },
+            },
+            images: {},
+          },
+          changes: [{
+            type: 'update_import_session',
+            importSessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            originalFilename: 'Artist - 2024 - Lust.zip',
+            expectedUpdatedAt: '2026-07-21T12:00:00.000Z',
+            patch: {
+              modelName: 'Lust',
+              artist: 'Artist',
+              collectionId: '99999999-9999-4999-8999-999999999999',
+              metadata: { source: 'Fullmetal Alchemist', year: 2024 },
+              options: { markPreSupported: true, markNsfw: false },
+            },
+          }],
+        }}
+        isApplying={false}
+        isApplied={false}
+        onApply={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Update upload Artist - 2024 - Lust.zip')).toBeVisible();
+    expect(screen.getByText('modelName: Lust')).toBeVisible();
+    expect(screen.getByText('source: Fullmetal Alchemist')).toBeVisible();
+    expect(screen.getByText('year: 2024')).toBeVisible();
+    expect(screen.getByText('Collection: Anime')).toBeVisible();
+    expect(screen.getByText('markPreSupported: Yes')).toBeVisible();
+    expect(screen.getByText('markNsfw: No')).toBeVisible();
+  });
 });

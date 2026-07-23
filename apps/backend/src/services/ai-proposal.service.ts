@@ -12,6 +12,7 @@ import { aiChangeProposals } from '../db/schema/index.js';
 import { collectionService } from './collection.service.js';
 import { metadataService } from './metadata.service.js';
 import { modelService } from './model.service.js';
+import { importSessionService } from './import-session.service.js';
 import { AppError, conflict, notFound, processingError, validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -29,11 +30,17 @@ export interface AiProposalOperation {
 }
 type MetadataDependency = Pick<
   typeof metadataService,
-  'getFieldBySlug' | 'setModelMetadata'
+  'getFieldBySlug' | 'setModelMetadata' | 'validateFieldValue'
 >;
 type CollectionDependency = Pick<
   typeof collectionService,
   'requireOwnedCollection' | 'getCollectionById' | 'addModelsToCollection' | 'removeModelFromCollection'
+>;
+type ImportSessionDependency = Pick<
+  typeof importSessionService,
+  | 'getOwnedReadyForReviewRow'
+  | 'lockOwnedReadyForReviewSessions'
+  | 'updateDraftMetadata'
 >;
 
 export class AiProposalService {
@@ -43,6 +50,7 @@ export class AiProposalService {
     private readonly collections: CollectionDependency = collectionService,
     private readonly database: typeof db = db,
     private readonly now: () => Date = () => new Date(),
+    private readonly importSessions: ImportSessionDependency = importSessionService,
   ) {}
 
   async createPreview(
@@ -136,16 +144,29 @@ export class AiProposalService {
     }
     const changes = parsed.data.changes as AiChange[];
 
-    const changedModelIds = new Set(changes.map((change) => change.modelId));
+    const changedModelIds = new Set(changes.flatMap((change) =>
+      change.type === 'update_import_session' ? [] : [change.modelId]));
+    const changedImportSessionIds = new Set(changes.flatMap((change) =>
+      change.type === 'update_import_session' ? [change.importSessionId] : []));
     await this.database.transaction(async (tx) => {
       // Deterministic model-row locking serializes proposals that were prepared
       // from the same state and prevents a stale modelName check from racing.
-      await this.models.lockOwnedModels(
-        [...changedModelIds],
-        userId,
-        libraryId,
-        tx,
-      );
+      if (changedModelIds.size > 0) {
+        await this.models.lockOwnedModels(
+          [...changedModelIds],
+          userId,
+          libraryId,
+          tx,
+        );
+      }
+      if (changedImportSessionIds.size > 0) {
+        await this.importSessions.lockOwnedReadyForReviewSessions(
+          [...changedImportSessionIds],
+          userId,
+          libraryId,
+          tx,
+        );
+      }
       await this.validateChanges(changes, userId, libraryId, tx);
 
       const [claimed] = await tx
@@ -162,6 +183,14 @@ export class AiProposalService {
       if (!claimed) throw conflict('AI change proposal is expired or already being applied');
 
       for (const change of changes) {
+        if (change.type === 'update_import_session') {
+          await this.importSessions.updateDraftMetadata(
+            change.importSessionId,
+            change.patch,
+            tx,
+          );
+          continue;
+        }
         if (change.type === 'update_model') {
           await this.models.updateModel(change.modelId, change.patch, tx);
           continue;
@@ -188,7 +217,12 @@ export class AiProposalService {
       { service: 'AiProposalService', proposalId, userId, libraryId },
       'AI change proposal applied',
     );
-    return { proposalId, status: 'applied', changedModelIds: [...changedModelIds] };
+    return {
+      proposalId,
+      status: 'applied',
+      changedModelIds: [...changedModelIds],
+      changedImportSessionIds: [...changedImportSessionIds],
+    };
   }
 
   private async validateChanges(
@@ -201,6 +235,46 @@ export class AiProposalService {
     const display: AiChangePreviewDisplay = { collections: {}, images: {} };
     for (const [index, change] of changes.entries()) {
       assertOperationActive(operation);
+      if (change.type === 'update_import_session') {
+        const session = await this.importSessions.getOwnedReadyForReviewRow(
+          change.importSessionId,
+          userId,
+          libraryId,
+          executor,
+        );
+        assertOperationActive(operation);
+        if (change.originalFilename !== session.originalFilename) {
+          throw validationError(
+            'Original filename does not match the referenced import session',
+            `changes.${index}.originalFilename`,
+          );
+        }
+        if (change.expectedUpdatedAt !== session.updatedAt.toISOString()) {
+          throw validationError(
+            'Import session changed after this proposal was prepared',
+            `changes.${index}.expectedUpdatedAt`,
+          );
+        }
+        if (change.patch.metadata) {
+          await this.validateMetadataValues(
+            change.patch.metadata,
+            `changes.${index}.patch.metadata`,
+            executor,
+            operation,
+          );
+        }
+        if (change.patch.collectionId) {
+          await this.resolveCollectionDisplay(
+            change.patch.collectionId,
+            userId,
+            libraryId,
+            display,
+            executor,
+            operation,
+          );
+        }
+        continue;
+      }
       const model = await this.models.requireOwnedModel(
         change.modelId,
         userId,
@@ -231,24 +305,12 @@ export class AiProposalService {
       }
 
       if (change.type === 'set_metadata') {
-        for (const [slug, value] of Object.entries(change.values)) {
-          let field;
-          try {
-            field = await this.metadata.getFieldBySlug(slug, executor);
-            assertOperationActive(operation);
-          } catch (error) {
-            if (error instanceof AppError && error.code === ErrorCodes.NOT_FOUND) {
-              throw validationError('Metadata field does not exist', `changes.${index}.values.${slug}`);
-            }
-            throw error;
-          }
-          if (!this.isValidMetadataValue(field.type, value)) {
-            throw validationError(
-              `Value does not match metadata field type ${field.type}`,
-              `changes.${index}.values.${slug}`,
-            );
-          }
-        }
+        await this.validateMetadataValues(
+          change.values,
+          `changes.${index}.values`,
+          executor,
+          operation,
+        );
       }
 
       if (change.type === 'update_collections') {
@@ -261,22 +323,68 @@ export class AiProposalService {
         }
         const ids = new Set([...change.addCollectionIds, ...change.removeCollectionIds]);
         for (const collectionId of ids) {
-          await this.collections.requireOwnedCollection(
+          await this.resolveCollectionDisplay(
             collectionId,
             userId,
             libraryId,
+            display,
             executor,
+            operation,
           );
-          assertOperationActive(operation);
-          if (!display.collections[collectionId]) {
-            const collection = await this.collections.getCollectionById(collectionId, executor);
-            assertOperationActive(operation);
-            display.collections[collectionId] = { name: collection.name };
-          }
         }
       }
     }
     return display;
+  }
+
+  private async validateMetadataValues(
+    values: Record<string, unknown>,
+    path: string,
+    executor: DatabaseExecutor,
+    operation: AiProposalOperation,
+  ): Promise<void> {
+    for (const [slug, value] of Object.entries(values)) {
+      let field;
+      try {
+        field = await this.metadata.getFieldBySlug(slug, executor);
+        assertOperationActive(operation);
+      } catch (error) {
+        if (error instanceof AppError && error.code === ErrorCodes.NOT_FOUND) {
+          throw validationError('Metadata field does not exist', `${path}.${slug}`);
+        }
+        throw error;
+      }
+      try {
+        this.metadata.validateFieldValue(field, value);
+      } catch (error) {
+        if (error instanceof AppError && error.code === ErrorCodes.VALIDATION_ERROR) {
+          throw validationError(error.message, `${path}.${slug}`);
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async resolveCollectionDisplay(
+    collectionId: string,
+    userId: string,
+    libraryId: string,
+    display: AiChangePreviewDisplay,
+    executor: DatabaseExecutor,
+    operation: AiProposalOperation,
+  ): Promise<void> {
+    await this.collections.requireOwnedCollection(
+      collectionId,
+      userId,
+      libraryId,
+      executor,
+    );
+    assertOperationActive(operation);
+    if (!display.collections[collectionId]) {
+      const collection = await this.collections.getCollectionById(collectionId, executor);
+      assertOperationActive(operation);
+      display.collections[collectionId] = { name: collection.name };
+    }
   }
 
   private async configureOperationTransaction(
@@ -290,15 +398,6 @@ export class AiProposalService {
     assertOperationActive(operation);
   }
 
-  private isValidMetadataValue(type: string, value: unknown): boolean {
-    if (value === null) return true;
-    if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
-    if (type === 'boolean') return typeof value === 'boolean';
-    if (type === 'multi_enum') {
-      return Array.isArray(value) && value.every((item) => typeof item === 'string');
-    }
-    return typeof value === 'string';
-  }
 }
 
 function encodeRelativePath(relativePath: string): string {

@@ -441,7 +441,7 @@ The upstream `owned_by` field is exposed as `ownedBy`; missing or non-string val
 
 ### POST /ai/chat
 
-Send one assistant turn through the selected provider. The assistant can search and inspect models only in the active library. It may also use public lookup tools and can create one reviewable change proposal, but it cannot mutate library data during chat.
+Send one assistant turn through the selected provider. The assistant can search and inspect models, collections, configured metadata fields with library-scoped known values, and active staged import sessions. Model, collection, value, and import-session reads remain scoped to the active library. It may also use public lookup tools and can create one reviewable change proposal, but it cannot mutate library data during chat.
 
 **Auth required:** Yes
 
@@ -464,7 +464,8 @@ Send one assistant turn through the selected provider. The assistant can search 
   ],
   "providerId": "20c1f03d-4e5f-4e42-b5a0-a85672dc486d",
   "context": {
-    "modelId": "11de19f0-3164-4f86-8741-b876777f7d17"
+    "modelIds": ["11de19f0-3164-4f86-8741-b876777f7d17"],
+    "importSessionIds": ["2ca5fa21-d16f-4a73-9f4d-f83ab877ba9b"]
   }
 }
 ```
@@ -476,9 +477,17 @@ Send one assistant turn through the selected provider. The assistant can search 
 | `history[].role` | `user` \| `assistant` | Required for each history item |
 | `history[].content` | string | Required; 1–8,000 characters |
 | `providerId` | UUID string | Optional; must identify the user's provider; omission uses the user's default provider |
-| `context.modelId` | UUID string | Optional; must identify a model owned by the user in the active library |
+| `context.modelId` | UUID string | Optional backward-compatible single-model target; must identify a model owned by the user in the active library |
+| `context.modelIds` | UUID string[] | Optional current detail, selection, or page targets; unique; at most 25 model targets across `modelId` and `modelIds` |
+| `context.importSessionIds` | UUID string[] | Optional current staged-upload targets; unique; at most 25; each must be active, owned by the user, and in the active library |
 
-The backend does not persist chat transcripts. It sends the supplied message and history to the selected external provider. When `context.modelId` is present, it verifies ownership and active-library membership before also sending the assembled model detail as an explicitly untrusted user-role payload, not as a privileged system instruction. Tool results needed for the turn—including library search/model content and public search results—are also sent to that provider and are labeled as untrusted data.
+The backend does not persist chat transcripts. It sends the supplied message and history to the selected external provider. Before sending target context, it validates every model and import session; any invalid target rejects the turn before any target data is disclosed. Model context includes compact model details and file information. Import-session context includes its filename, status, `updatedAt`, detected scan summary and path preview, and current `draftMetadata`. These are sent as explicitly untrusted user-role data, not as privileged system instructions. Tool results needed for the turn—including library search/model content, collections, metadata definitions and known values, import sessions, and public search results—are also sent to that provider and labeled as untrusted data.
+
+The internal list tools for collections, metadata fields, known metadata values, and import sessions return at most 100 items and set `hasMore: true` when additional items exist. This bound applies only to data supplied through the provider tool loop and does not change the corresponding public REST endpoints.
+
+The frontend supplies context from the current page. A model detail page targets that model. The pivot workspace targets up to 25 selected models, or the first 25 visible results when nothing is selected. The upload page targets the active session when it is `ready_for_review`; otherwise it targets up to 25 ready-for-review sessions. The assistant is instructed to operate only on those explicit targets and not silently broaden the request. Changing the active library or exact target set aborts in-flight chat, clears the prior conversation and proposal UI, and ignores stale chat/apply completions so an answer prepared for one selection cannot appear against another.
+
+For a simple “fill metadata” task, the assistant inspects the target's archive/original filename, scan details or files, existing metadata, and configured fields. It first tries the exact `{Artist Name} - {Date} - {Model Name}` convention after stripping the archive extension, maps artist and model name to their relevant fields and the date to a configured date or year field when one exists, and treats the parse as an untrusted hint rather than a change. Source means the depicted character's originating intellectual property, franchise, series, game, film, or other work—not a download site or artist (for example, Fullmetal Alchemist for Lust or Konosuba for Aqua). The assistant should infer it only with reasonable evidence and may research when local evidence is insufficient. It reads known values before suggesting tags or an existing collection and uses only server-returned collection IDs. The assistant bubble exposes starter prompts for filling metadata, suggesting tags, and suggesting a collection.
 
 **Response (200):**
 
@@ -527,17 +536,18 @@ The backend does not persist chat transcripts. It sends the supplied message and
 
 Public text lookup uses DuckDuckGo's Instant Answer API and returns at most eight abstract/related-topic sources; it is not a general crawl of arbitrary pages. Image lookup uses Wikimedia Commons and returns at most eight file-page and thumbnail candidates. Both services are keyless, use a 7-second timeout and 1 MiB response-body limit, and fail safely as an unavailable tool result so the assistant may still answer. Returned image URLs are research candidates only: the backend does not import them into managed storage, although the frontend may load a returned thumbnail to display its source card. An AI cover change can reference only an image file already belonging to the target model.
 
-The complete chat operation has a 45-second deadline; provider calls receive the remaining time under that same 45-second ceiling, while public-search calls are further limited to 7 seconds. If the client disconnects while chat is running, the cancellation signal is propagated to active provider and public-search fetches. Provider resolution, model-context reads, library/model tools, and proposal creation are raced against the same cancellation/deadline boundary. Because PostgreSQL queries are not cancelled by that JavaScript race, the shared pool additionally enforces a 5-second connection-acquisition timeout, 45-second server statement timeout, and 50-second client query timeout so abandoned work cannot remain unbounded. Preview validation and insertion use one transaction with the operation deadline applied locally and cancellation/deadline checks around the insert, so an abandoned mutating tool cannot commit a late proposal. Each user may start at most 10 chats per rolling minute and run at most two chats concurrently; exceeding either limit returns `429 PROCESSING_FAILED`. The limiter is process-local, bounded to 10,000 tracked users, and resets when the backend restarts, which is appropriate for the current single-instance deployment but must be replaced by shared state before horizontally scaling the backend. The provider tool loop accepts at most one proposal per response and applies these resource limits: six provider turns, eight tool calls per turn, 12 tool calls total, 20,000 argument characters per call, 40,000 argument characters total, 12,000 result characters per tool, 48,000 result characters total, and 64,000 serialized provider-context characters. The returned assistant message is capped at 16,000 characters. Provider failures, invalid/empty responses, or exceeding a deadline, turn, tool, argument, result, or context budget return `422 PROCESSING_FAILED`; an overlong final message is truncated. Expected tool errors sent back through the provider loop are length-bounded, while unexpected internal and database errors are replaced with `Tool call failed` rather than exposing their messages to the provider.
+The complete chat operation has a 45-second deadline; provider calls receive the remaining time under that same 45-second ceiling, while public-search calls are further limited to 7 seconds. If the client disconnects while chat is running, the cancellation signal is propagated to active provider and public-search fetches. Provider resolution, target-context reads, library/model/collection/metadata/import-session tools, and proposal creation are raced against the same cancellation/deadline boundary. Because PostgreSQL queries are not cancelled by that JavaScript race, the shared pool additionally enforces a 5-second connection-acquisition timeout, 45-second server statement timeout, and 50-second client query timeout so abandoned work cannot remain unbounded. Preview validation and insertion use one transaction with the operation deadline applied locally and cancellation/deadline checks around the insert, so an abandoned mutating tool cannot commit a late proposal. Each user may start at most 10 chats per rolling minute and run at most two chats concurrently; exceeding either limit returns `429 PROCESSING_FAILED`. The limiter is process-local, bounded to 10,000 tracked users, and resets when the backend restarts, which is appropriate for the current single-instance deployment but must be replaced by shared state before horizontally scaling the backend. The provider tool loop accepts at most one proposal per response and applies these resource limits: six provider turns, eight tool calls per turn, 12 tool calls total, 20,000 argument characters per call, 40,000 argument characters total, 12,000 result characters per tool, 48,000 result characters total, and 64,000 serialized provider-context characters. The returned assistant message is capped at 16,000 characters. Provider failures, invalid/empty responses, or exceeding a deadline, turn, tool, argument, result, or context budget return `422 PROCESSING_FAILED`; an overlong final message is truncated. Expected tool errors sent back through the provider loop are length-bounded, while unexpected internal and database errors are replaced with `Tool call failed` rather than exposing their messages to the provider.
 
 #### Proposal validation
 
-There is intentionally no client-facing endpoint for creating a proposal. The provider's only change-capable tool is the internal `preview_changes` tool. Before storing a preview, the server validates a non-empty summary of at most 1,000 characters and 1–25 changes. Each model must belong to the authenticated user and active library, and `modelName` must exactly match its current name.
+There is intentionally no client-facing endpoint for creating a proposal. The provider's only change-capable tool is the internal `preview_changes` tool. Before storing a preview, the server validates a non-empty summary of at most 1,000 characters and 1–25 changes. Each model must belong to the authenticated user and active library, and `modelName` must exactly match its current name. Each referenced import session must be owned by the user, belong to the active library, remain `ready_for_review`, have the expected original filename, and have an `updatedAt` exactly matching the proposal's optimistic stale-state guard.
 
 The supported changes are:
 
 - `update_model`: a non-empty patch containing only `name` (1–255 characters), `description` (string up to 20,000 characters or `null`), or `previewImageFileId` (UUID or `null`). A non-null preview file must be an image belonging to that model. Crop changes are not supported by AI proposals.
-- `set_metadata`: a non-empty object keyed by existing metadata-field slug. `null` clears a value; numbers must be finite, booleans must be booleans, `multi_enum` values must be string arrays, and other field types require strings.
+- `set_metadata`: a non-empty object keyed by existing metadata-field slug. It uses the same field-semantic validation as direct metadata writes: `null` clears a value; numbers must be finite; booleans must be booleans; dates must be non-empty parseable strings; URLs must use HTTP or HTTPS; enum and multi-enum values must obey configured options; multi-enums require string arrays; and text fields must satisfy any configured validation pattern.
 - `update_collections`: `addCollectionIds` and `removeCollectionIds` are arrays of at most 50 UUIDs each. At least one ID is required, an ID cannot appear in both arrays, and every collection must belong to the user and active library.
+- `update_import_session`: `importSessionId`, the current `originalFilename`, the session's exact `updatedAt` copied into `expectedUpdatedAt`, and a non-empty `patch` are required. `originalFilename` guards identity; `expectedUpdatedAt` is an optimistic stale-state guard, so any intervening session or draft update makes the proposal invalid. The patch is a `BatchUploadMetadata` object and may include `modelName`, `description`, one of `collectionId` or `newCollectionName`, `artist`, `tags`, configured metadata values keyed by slug, and upload options. Existing collection IDs and configured metadata slugs/types are validated. Applying this change merges it into the persisted review draft; it never commits, enqueues, or otherwise processes the upload.
 
 The resulting proposal is immutable, server-owned, scoped to the user and active library, and expires 15 minutes after creation.
 
@@ -564,18 +574,19 @@ Apply the exact stored changes from a prior assistant preview. The request accep
     "status": "applied",
     "changedModelIds": [
       "11de19f0-3164-4f86-8741-b876777f7d17"
-    ]
+    ],
+    "changedImportSessionIds": []
   },
   "meta": null,
   "errors": null
 }
 ```
 
-Immediately before applying, the server reloads the stored payload and enters the mutation transaction. It locks every referenced model row `FOR UPDATE` in deterministic model-ID order, then revalidates model names, ownership, active-library scope, metadata fields, image files, and collections through that same transaction executor. Only after revalidation does it conditionally change the proposal from `pending` to `applying`; this atomic claim prevents concurrent requests from applying it twice, while the model locks prevent two independently previewed stale-name proposals from both overwriting the same model. Apply-time expiry checks use the database clock.
+Immediately before applying, the server reloads the stored payload and enters the mutation transaction. It locks every referenced model and ready-for-review import-session row `FOR UPDATE` in deterministic ID order, then revalidates names/filenames, ownership, active-library scope, metadata fields, image files, collections, and import-session status through that same transaction executor. Only after revalidation does it conditionally change the proposal from `pending` to `applying`; this atomic claim prevents concurrent requests from applying it twice, while the row locks prevent independently previewed stale proposals from overwriting the same entity. Apply-time expiry checks use the database clock.
 
 A proposal can be applied once successfully and only while its 15-minute review window is open. Expired proposals and non-pending proposals return `409 CONFLICT` and cannot be replayed. Expiry is enforced when applying; this endpoint does not expose or renew expired proposals.
 
-The conditional claim, all proposed model/metadata/collection writes, and the final `applied` status run in one database transaction. If any operation fails or the process exits before commit, every domain change and the claim are rolled back together. The proposal remains `pending` and may be retried while unexpired and still valid; there is no committed `applying` state to strand.
+The conditional claim, all proposed model/metadata/collection/import-draft writes, and the final `applied` status run in one database transaction. If any operation fails or the process exits before commit, every domain change and the claim are rolled back together. The proposal remains `pending` and may be retried while unexpired and still valid; there is no committed `applying` state to strand.
 
 An invalid proposal UUID returns `400 VALIDATION_ERROR`; a missing, un-owned, or wrong-library proposal returns `404 NOT_FOUND`. A stale live reference can return `404 NOT_FOUND` or `400 VALIDATION_ERROR` during revalidation. An invalid stored payload, expiry, prior use, or a concurrent claim returns `409 CONFLICT`.
 
@@ -937,10 +948,12 @@ List the authenticated user's active import sessions for the current library. Ac
           ]}
         ]
       },
+      "draftMetadata": null,
       "modelId": null,
       "commitProgress": null,
       "error": null,
-      "createdAt": "2026-05-30T10:00:00.000Z"
+      "createdAt": "2026-05-30T10:00:00.000Z",
+      "updatedAt": "2026-05-30T10:01:00.000Z"
     }
   ],
   "meta": null,
@@ -948,7 +961,7 @@ List the authenticated user's active import sessions for the current library. Ac
 }
 ```
 
-`data` is an array of `ImportSession`. The `detected` field is `null` while the session is still scanning. `commitProgress` is `null` unless the session is `committing`; see the progress contract below. Session TTL is 24 hours — sessions not committed within that window may be reaped.
+`data` is an array of `ImportSession`. The `detected` field is `null` while the session is still scanning. `draftMetadata` is a persisted `BatchUploadMetadata` review draft or `null`; applying an assistant proposal may update it, but does not commit the session. `commitProgress` is `null` unless the session is `committing`; see the progress contract below. Session TTL is 24 hours — sessions not committed within that window may be reaped.
 
 ---
 
@@ -976,17 +989,22 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
       "tagsGuessed": ["fantasy", "bust"],
       "folderStructure": [...]
     },
+    "draftMetadata": {
+      "modelName": "Dragon Bust",
+      "metadata": { "year": 2025 }
+    },
     "modelId": null,
     "commitProgress": null,
     "error": null,
-    "createdAt": "2026-05-30T10:00:00.000Z"
+    "createdAt": "2026-05-30T10:00:00.000Z",
+    "updatedAt": "2026-05-30T10:01:00.000Z"
   },
   "meta": null,
   "errors": null
 }
 ```
 
-`data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on scan success, `ready_for_review` → `committing` → `committed` after commit, or an active phase → `error` on failure. Polling this endpoint after commit returns the same `commitProgress` contract as the list endpoint.
+`data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on scan success, `ready_for_review` → `committing` → `committed` after commit, or an active phase → `error` on failure. `draftMetadata` exposes the current persisted review draft and is still only staged state. The upload review form refreshes from a changed server draft, including an applied assistant proposal, but ordinary detected-metadata polling does not overwrite unsaved local form edits. Polling this endpoint after commit returns the same `commitProgress` contract as the list endpoint.
 
 While `status` is `committing`, `commitProgress` has this shape:
 
@@ -1018,7 +1036,7 @@ For `scanning`, `ready_for_review`, `committed`, and `error` sessions, `commitPr
 
 ### POST /models/import-sessions/:id/commit
 
-Commit a reviewed import session, creating a model and enqueuing the full ingestion pipeline. The session must be in `ready_for_review` status.
+Commit a reviewed import session, creating a model and enqueuing the full ingestion pipeline. The session must be in `ready_for_review` status. The server locks and claims that state while creating the model and changing the session to `committing` in one transaction, so concurrent commit requests cannot create duplicate models and an assistant draft apply cannot race the commit's draft read. A missing, un-owned, wrong-library, or no-longer-ready session returns `404 NOT_FOUND` without distinguishing the failed scope or state check.
 
 **Auth required:** Yes
 
@@ -1032,9 +1050,12 @@ Commit a reviewed import session, creating a model and enqueuing the full ingest
 {
   "batchMetadata": {
     "collectionId": "uuid-of-existing-collection",
-    "newCollectionName": "My New Collection",
     "artist": "Maker Name",
     "tags": ["fantasy", "bust"],
+    "metadata": {
+      "year": 2025,
+      "source": "Example Series"
+    },
     "options": {
       "markPreSupported": false,
       "markNsfw": false,
@@ -1044,18 +1065,24 @@ Commit a reviewed import session, creating a model and enqueuing the full ingest
 }
 ```
 
-`batchMetadata` is fully optional. `collectionId` and `newCollectionName` are mutually exclusive — use one or neither. All metadata detected during scan can be overridden or supplemented here.
+`batchMetadata` is fully optional. `collectionId` and `newCollectionName` are mutually exclusive — use one or neither. `metadata` accepts configured field values keyed by field slug. An explicitly supplied `batchMetadata` object is authoritative and is used instead of the persisted session draft, even when it is empty. If `batchMetadata` is omitted, the persisted `draftMetadata` is used. Within the effective object, dedicated `artist` and `tags` fields override duplicate `artist` or `tags` entries in `metadata`.
+
+Before creating the model or changing the session state, the server validates every effective metadata value synchronously inside the same transaction used to claim the session. Validation follows the field semantics described under `PATCH /models/:id/metadata`. A failure returns an error, rolls back the claim, leaves the session ready for review, and creates no model. If queueing fails after a successful claim, both the created model and import session are marked `error`.
 
 | Field | Type | Constraints |
 |-------|------|-------------|
 | `batchMetadata` | object (optional) | Batch metadata to apply to the committed model |
+| `batchMetadata.modelName` | string (optional) | Model name (1–255 chars) |
+| `batchMetadata.description` | string or `null` (optional) | Model description (max 2,000 chars); `null` clears it |
 | `batchMetadata.collectionId` | UUID string (optional) | Assign model to an existing collection |
 | `batchMetadata.newCollectionName` | string (optional) | Create a new collection and assign the model to it (1–255 chars) |
 | `batchMetadata.artist` | string (optional) | Override detected artist (max 255 chars) |
 | `batchMetadata.tags` | string[] (optional) | Override detected tags (max 50 tags, each max 100 chars) |
+| `batchMetadata.metadata` | object (optional) | Configured metadata values keyed by field slug; values follow `SetModelMetadataRequest` |
 | `batchMetadata.options.markPreSupported` | boolean (optional) | Mark model as pre-supported |
+| `batchMetadata.options.autoThumbnails` | boolean (optional) | Informational review preference; thumbnail generation currently always runs |
 | `batchMetadata.options.markNsfw` | boolean (optional) | Mark model as NSFW |
-| `batchMetadata.options.skipDuplicatesByHash` | boolean (optional) | Skip if a model with the same file hash already exists |
+| `batchMetadata.options.skipDuplicatesByHash` | boolean (optional) | Reserved for future deduplication; currently has no ingestion effect and the frontend submits `false` |
 
 **Response (202):**
 
@@ -1296,6 +1323,8 @@ Set or update metadata values on a model. The request body is a flat object mapp
 ```
 
 Keys are field slugs. Values may be `string`, `number`, `boolean`, `string[]` (for `multi_enum` fields like tags), or `null` to remove.
+
+Values are validated against the resolved field definition before storage. Numbers must be finite; booleans must be booleans; dates must be non-empty strings accepted by JavaScript date parsing; URLs must be valid HTTP or HTTPS URLs; enums and multi-enums must use configured options when present; multi-enums require arrays of strings; and text fields must match `config.validationPattern` when configured. Metadata strings are limited to 10,000 characters and metadata arrays to 100 entries. Validation patterns are limited to 512 characters and execute through the non-backtracking RE2 engine. Unsupported constructs such as backreferences and lookarounds are rejected. All other scalar field types require strings. This same validator is reused by assistant proposals and staged-upload commit validation.
 
 **Response (200):**
 
@@ -1976,7 +2005,7 @@ List all metadata field definitions.
 }
 ```
 
-`data` is an array of `MetadataFieldDetail`. Default fields (`isDefault: true`) are seeded on first run and cannot be deleted.
+`data` is an array of `MetadataFieldDetail`. Default fields (`isDefault: true`) are seeded idempotently on startup and cannot be deleted. They include Artist, Year, NSFW, URL, Pre-supported, Tags, and Source. Source is a filterable, browsable text field with `sortOrder: 6`; startup adds it to existing installations that do not yet have it.
 
 **Field types:**
 
@@ -2025,7 +2054,7 @@ Create a custom metadata field definition.
 | Field | Type | When used |
 |-------|------|-----------|
 | `enumOptions` | string[] | `enum` and `multi_enum` types |
-| `validationPattern` | string | Optional regex for `text` type |
+| `validationPattern` | string | Optional RE2-compatible regex for `text` type; maximum 512 characters |
 | `displayHint` | string | Optional frontend rendering hint |
 
 **Response (201):** Returns the created `MetadataFieldDetail`.

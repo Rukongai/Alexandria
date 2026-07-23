@@ -23,10 +23,12 @@ const session: ImportSession = {
   id: '11111111-1111-4111-8111-111111111111',
   originalFilename: 'model-pack.zip',
   status: 'ready_for_review',
+  draftMetadata: null,
   modelId: null,
   commitProgress: null,
   error: null,
   createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
   detected: {
     modelCount: 1,
     fileCount: 2,
@@ -47,6 +49,61 @@ const session: ImportSession = {
 };
 
 describe('ReviewPane nested archives', () => {
+  it('preserves local metadata edits across detection refreshes but applies a changed server draft', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const props = {
+      onCommitted: () => {},
+      onDiscard: () => {},
+      onRetry: () => {},
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ReviewPane session={session} {...props} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Model name'), {
+      target: { value: 'Unsaved local name' },
+    });
+    rerender(
+      <QueryClientProvider client={client}>
+        <ReviewPane
+          session={{
+            ...session,
+            detected: {
+              ...session.detected!,
+              artist: 'New scanner guess',
+              tagsGuessed: ['new-scanner-tag'],
+            },
+          }}
+          {...props}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('Unsaved local name');
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ReviewPane
+          session={{
+            ...session,
+            draftMetadata: {
+              modelName: 'AI-reviewed name',
+              artist: 'AI Artist',
+              metadata: { source: 'Example Series' },
+            },
+          }}
+          {...props}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Model name')).toHaveValue('AI-reviewed name');
+      expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('AI Artist');
+      expect(screen.getByLabelText('source')).toHaveValue('Example Series');
+    });
+  });
+
   it('keeps preview content from widening the review columns', () => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },

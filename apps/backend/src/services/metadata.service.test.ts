@@ -59,6 +59,48 @@ const ALL_DEFAULT_SLUGS = [
   DEFAULT_SLUG_PRE_SUPPORTED,
 ] as const;
 
+describe('MetadataService – configured value validation', () => {
+  const service = new MetadataService();
+  const field = (type: string, config: unknown = null) => ({
+    slug: type,
+    type,
+    config,
+  } as never);
+
+  it('validates scalar, date, URL, enum, multi-enum, and patterned text semantics', () => {
+    expect(() => service.validateFieldValue(field('number'), 2026)).not.toThrow();
+    expect(() => service.validateFieldValue(field('number'), Number.NaN)).toThrow();
+    expect(() => service.validateFieldValue(field('boolean'), 'true')).toThrow();
+    expect(() => service.validateFieldValue(field('date'), '2026-07-22')).not.toThrow();
+    expect(() => service.validateFieldValue(field('date'), 'not-a-date')).toThrow();
+    expect(() => service.validateFieldValue(field('url'), 'https://example.com/model')).not.toThrow();
+    expect(() => service.validateFieldValue(field('url'), 'file:///private/model')).toThrow();
+    expect(() => service.validateFieldValue(
+      field('enum', { enumOptions: ['A', 'B'] }), 'C',
+    )).toThrow();
+    expect(() => service.validateFieldValue(
+      field('multi_enum', { enumOptions: ['A', 'B'] }), ['A', 'C'],
+    )).toThrow();
+    expect(() => service.validateFieldValue(
+      field('text', { validationPattern: '^MODEL-[0-9]+$' }), 'MODEL-42',
+    )).not.toThrow();
+    expect(() => service.validateFieldValue(
+      field('text', { validationPattern: '^MODEL-[0-9]+$' }), 'dragon',
+    )).toThrow();
+    expect(() => service.validateFieldValue(
+      field('text', { validationPattern: '(a|aa)+$' }), `${'a'.repeat(9_999)}!`,
+    )).toThrow(/does not match the required format/);
+    expect(() => service.validateFieldValue(
+      field('text', { validationPattern: '(a)\\1' }), 'aa',
+    )).toThrow(/invalid validation pattern/);
+    expect(() => service.validateFieldValue(field('text'), 'x'.repeat(10_001)))
+      .toThrow(/at most 10000 characters/);
+    expect(() => service.validateFieldValue(field('multi_enum'), Array(101).fill('x')))
+      .toThrow(/at most 100 items/);
+    expect(() => service.validateFieldValue(field('number'), null)).not.toThrow();
+  });
+});
+
 // Track custom field IDs created during tests so we can clean them up.
 const createdFieldIds: string[] = [];
 
@@ -217,6 +259,10 @@ describe('MetadataService – storage routing logic', () => {
 // ---------------------------------------------------------------------------
 
 describe('MetadataService – listFields()', () => {
+  it('applies an optional database query limit', async () => {
+    await expect(metadataService.listFields({ limit: 1 })).resolves.toHaveLength(1);
+  });
+
   it('should return all six seeded default fields', async () => {
     const fields = await metadataService.listFields();
 
@@ -668,6 +714,15 @@ describe('MetadataService – getModelMetadata()', () => {
 // ---------------------------------------------------------------------------
 
 describe('MetadataService – listFieldValues()', () => {
+  it('should apply an optional database query limit', async () => {
+    await metadataService.setModelMetadata(testModelId, {
+      [DEFAULT_SLUG_TAGS]: ['limit-a', 'limit-b'],
+    });
+    await expect(metadataService.listFieldValues(
+      DEFAULT_SLUG_TAGS, testLibraryId, { limit: 1 },
+    )).resolves.toHaveLength(1);
+  });
+
   it("should return tag names with model counts for the 'tags' field", async () => {
     await metadataService.setModelMetadata(testModelId, {
       [DEFAULT_SLUG_TAGS]: ['list-test-dragon', 'list-test-fantasy'],

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { SUPPORTED_ARCHIVE_EXTENSIONS } from '../constants/index.js';
+import { setModelMetadataSchema } from './metadata.js';
 
 const isSupportedArchiveFilename = (filename: string): boolean => {
   const lower = filename.toLowerCase();
@@ -71,8 +72,12 @@ export const batchUploadMetadataSchema = z.object({
   newCollectionName: z.string().min(1).max(255).optional(),
   artist: z.string().max(255).optional(),
   tags: z.array(z.string().min(1).max(100)).max(50).optional(),
+  metadata: setModelMetadataSchema.optional(),
   options: uploadOptionsSchema.optional(),
-});
+}).refine(
+  (value) => !(value.collectionId && value.newCollectionName),
+  { message: 'Choose either an existing collection or a new collection, not both' },
+);
 
 export const commitImportSessionSchema = z.object({
   batchMetadata: batchUploadMetadataSchema.optional(),

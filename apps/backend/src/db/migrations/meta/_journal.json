@@ -92,6 +92,13 @@
       "when": 1784736001000,
       "tag": "0012_add_ai_assistant",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784771952000,
+      "tag": "0013_add_import_session_draft_metadata",
+      "breakpoints": true
     }
   ]
 }

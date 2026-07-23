@@ -234,9 +234,9 @@ export class CollectionService {
   async listCollections(
     userId: string,
     libraryId: string,
-    params: { depth?: number } = {},
+    params: { depth?: number; limit?: number } = {},
   ): Promise<CollectionDetail[]> {
-    const allRows = await db
+    const query = db
       .select()
       .from(collections)
       .where(
@@ -246,6 +246,7 @@ export class CollectionService {
         ),
       )
       .orderBy(collections.createdAt);
+    const allRows = params.limit === undefined ? await query : await query.limit(params.limit);
 
     if (allRows.length === 0) {
       return [];
@@ -256,7 +257,9 @@ export class CollectionService {
 
     const results: CollectionDetail[] = [];
     for (const row of allRows) {
-      const children = await this._loadChildren(row.id, libraryId);
+      const children = params.depth === 0
+        ? []
+        : await this._loadChildren(row.id, libraryId);
       results.push({
         id: row.id,
         name: row.name,

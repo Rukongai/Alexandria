@@ -7,6 +7,7 @@ const committingSession: ImportSession = {
   id: '11111111-1111-4111-8111-111111111111',
   originalFilename: 'dragon-pack.zip',
   status: 'committing',
+  draftMetadata: null,
   detected: {
     modelCount: 1,
     fileCount: 4,
@@ -27,6 +28,7 @@ const committingSession: ImportSession = {
   },
   error: null,
   createdAt: '2026-07-22T12:00:00.000Z',
+  updatedAt: '2026-07-22T12:00:00.000Z',
 };
 
 const callbacks = {

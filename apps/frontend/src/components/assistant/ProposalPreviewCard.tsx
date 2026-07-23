@@ -34,6 +34,26 @@ function actionLines(change: AiChange, display?: AiChangePreviewDisplay): string
     );
   }
 
+  if (change.type === 'update_import_session') {
+    return Object.entries(change.patch).flatMap(([field, value]) => {
+      if (field === 'metadata' && value && typeof value === 'object' && !Array.isArray(value)) {
+        return Object.entries(value).map(
+          ([metadataField, metadataValue]) => `${metadataField}: ${displayValue(metadataValue)}`,
+        );
+      }
+      if (field === 'options' && value && typeof value === 'object' && !Array.isArray(value)) {
+        return Object.entries(value).map(
+          ([option, optionValue]) => `${option}: ${displayValue(optionValue)}`,
+        );
+      }
+      if (field === 'collectionId' && typeof value === 'string') {
+        return [`Collection: ${display?.collections[value]?.name ?? value}`];
+      }
+      if (field === 'newCollectionName') return [`New collection: ${displayValue(value)}`];
+      return [`${field}: ${displayValue(value)}`];
+    });
+  }
+
   return [
     ...change.addCollectionIds.map((id) => `Add to collection ${display?.collections[id]?.name ?? id}`),
     ...change.removeCollectionIds.map((id) => `Remove from collection ${display?.collections[id]?.name ?? id}`),
@@ -82,13 +102,22 @@ function ChangeIcon({ change }: { change: AiChange }) {
   const className = 'mt-0.5 h-4 w-4 shrink-0 text-primary';
   if (change.type === 'update_model') return <FilePenLine className={className} />;
   if (change.type === 'set_metadata') return <Tags className={className} />;
+  if (change.type === 'update_import_session') return <FilePenLine className={className} />;
   return <FolderInput className={className} />;
 }
 
 function changeLabel(change: AiChange): string {
   if (change.type === 'update_model') return `Update ${change.modelName}`;
   if (change.type === 'set_metadata') return `Set metadata on ${change.modelName}`;
+  if (change.type === 'update_import_session') return `Update upload ${change.originalFilename}`;
   return `Update collections for ${change.modelName}`;
+}
+
+function changeKey(change: AiChange, index: number): string {
+  const entityId = change.type === 'update_import_session'
+    ? change.importSessionId
+    : change.modelId;
+  return `${entityId}-${change.type}-${index}`;
 }
 
 export function ProposalPreviewCard({
@@ -123,7 +152,7 @@ export function ProposalPreviewCard({
         {proposal.changes.map((change, index) => {
           const lines = actionLines(change, proposal.display);
           return (
-            <div key={`${change.modelId}-${change.type}-${index}`} className="flex gap-2.5">
+            <div key={changeKey(change, index)} className="flex gap-2.5">
               <ChangeIcon change={change} />
               <div className="min-w-0">
                 <p className="text-xs font-semibold text-foreground">{changeLabel(change)}</p>

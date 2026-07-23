@@ -19,8 +19,12 @@ import { notFound, forbidden, validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 import { generateSlug } from '../utils/slug.js';
 import { formatDisplayValue } from '../utils/format.js';
+import { RE2 } from 're2-wasm';
 
 const logger = createLogger('MetadataService');
+const MAX_METADATA_STRING_LENGTH = 10_000;
+const MAX_METADATA_ARRAY_ITEMS = 100;
+const MAX_VALIDATION_PATTERN_LENGTH = 512;
 
 // Map a DB row to the API-facing MetadataFieldDetail shape.
 function toFieldDetail(row: MetadataFieldDefinitionRow): MetadataFieldDetail {
@@ -57,17 +61,99 @@ export class MetadataService {
     return value;
   }
 
+  /** Validate one metadata value against its configured field definition. */
+  validateFieldValue(field: MetadataFieldDefinitionRow, value: unknown): void {
+    if (value === null) return;
+    const config = (field.config as MetadataFieldConfig | null) ?? null;
+    const invalid = (message: string): never => {
+      throw validationError(message, field.slug);
+    };
+
+    if (typeof value === 'string' && value.length > MAX_METADATA_STRING_LENGTH) {
+      invalid(`Value must be at most ${MAX_METADATA_STRING_LENGTH} characters`);
+    }
+    if (Array.isArray(value)) {
+      if (value.length > MAX_METADATA_ARRAY_ITEMS) {
+        invalid(`Value must contain at most ${MAX_METADATA_ARRAY_ITEMS} items`);
+      }
+      if (value.some((item) => typeof item === 'string'
+        && item.length > MAX_METADATA_STRING_LENGTH)) {
+        invalid(`Each value must be at most ${MAX_METADATA_STRING_LENGTH} characters`);
+      }
+    }
+
+    if (field.type === 'number') {
+      if (typeof value !== 'number' || !Number.isFinite(value)) invalid('Value must be a finite number');
+      return;
+    }
+    if (field.type === 'boolean') {
+      if (typeof value !== 'boolean') invalid('Value must be a boolean');
+      return;
+    }
+    if (field.type === 'date') {
+      if (typeof value !== 'string' || value.trim() === '' || Number.isNaN(Date.parse(value))) {
+        invalid('Value must be a valid date');
+      }
+      return;
+    }
+    if (field.type === 'url') {
+      if (typeof value !== 'string') invalid('Value must be an HTTP or HTTPS URL');
+      const stringValue = value as string;
+      try {
+        const parsed = new URL(stringValue);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          invalid('Value must be an HTTP or HTTPS URL');
+        }
+      } catch {
+        invalid('Value must be an HTTP or HTTPS URL');
+      }
+      return;
+    }
+    if (field.type === 'multi_enum') {
+      if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+        invalid('Value must be an array of strings');
+      }
+      const values = value as string[];
+      if (config?.enumOptions && values.some((item) => !config.enumOptions!.includes(item))) {
+        invalid('Value contains an option that is not allowed');
+      }
+      return;
+    }
+    if (typeof value !== 'string') invalid('Value must be a string');
+    const stringValue = value as string;
+    if (field.type === 'enum' && config?.enumOptions && !config.enumOptions.includes(stringValue)) {
+      invalid('Value is not an allowed option');
+    }
+    if (field.type === 'text' && config?.validationPattern) {
+      if (config.validationPattern.length > MAX_VALIDATION_PATTERN_LENGTH) {
+        invalid('Metadata field validation pattern is too long');
+      }
+      let pattern: RE2 | null = null;
+      try {
+        // RE2 uses a non-backtracking engine, providing linear-time matching
+        // for user-configured patterns. Unsupported constructs such as
+        // backreferences and lookarounds are rejected instead of falling back
+        // to JavaScript's potentially exponential RegExp implementation.
+        pattern = new RE2(config.validationPattern, 'u');
+      } catch {
+        invalid('Metadata field has an invalid validation pattern');
+      }
+      if (!pattern || !pattern.test(stringValue)) invalid('Value does not match the required format');
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Field Definition CRUD
   // ---------------------------------------------------------------------------
 
-  async listFields(): Promise<MetadataFieldDetail[]> {
+  async listFields(params: { limit?: number } = {}): Promise<MetadataFieldDetail[]> {
     logger.debug({ service: 'MetadataService' }, 'Listing all metadata field definitions');
 
-    const rows = await db
+    const query = db
       .select()
       .from(metadataFieldDefinitions)
       .orderBy(metadataFieldDefinitions.sortOrder, metadataFieldDefinitions.createdAt);
+    const rows = params.limit === undefined ? await query : await query.limit(params.limit);
 
     return rows.map(toFieldDetail);
   }
@@ -268,9 +354,18 @@ export class MetadataService {
       'Setting metadata for model',
     );
 
+    const validatedEntries: Array<[
+      string,
+      string | string[] | number | boolean | null,
+      MetadataFieldDefinitionRow,
+    ]> = [];
     for (const [fieldSlug, rawValue] of Object.entries(data)) {
       const field = await this.getFieldBySlug(fieldSlug, executor);
+      this.validateFieldValue(field, rawValue);
+      validatedEntries.push([fieldSlug, rawValue, field]);
+    }
 
+    for (const [fieldSlug, rawValue, field] of validatedEntries) {
       if (rawValue === null) {
         // Remove metadata for this field
         if (this.isTagField(field)) {
@@ -373,7 +468,11 @@ export class MetadataService {
   // Value Listing
   // ---------------------------------------------------------------------------
 
-  async listFieldValues(slug: string, libraryId: string): Promise<MetadataFieldValue[]> {
+  async listFieldValues(
+    slug: string,
+    libraryId: string,
+    params: { limit?: number } = {},
+  ): Promise<MetadataFieldValue[]> {
     const field = await this.getFieldBySlug(slug);
 
     logger.debug(
@@ -384,7 +483,7 @@ export class MetadataService {
     if (this.isTagField(field)) {
       // Count models per tag, scoped to the current library.
       // Inner joins naturally exclude tags with zero models in this library.
-      const rows = await db
+      const query = db
         .select({
           value: tags.name,
           modelCount: sql<number>`cast(count(${modelTags.modelId}) as int)`,
@@ -395,12 +494,13 @@ export class MetadataService {
         .where(eq(models.libraryId, libraryId))
         .groupBy(tags.id, tags.name)
         .orderBy(desc(sql`count(${modelTags.modelId})`));
+      const rows = params.limit === undefined ? await query : await query.limit(params.limit);
 
       return rows.map((r) => ({ value: r.value, modelCount: r.modelCount }));
     }
 
     // Generic field — group by value in model_metadata, scoped to the current library.
-    const rows = await db
+    const query = db
       .select({
         value: modelMetadata.value,
         modelCount: sql<number>`cast(count(distinct ${modelMetadata.modelId}) as int)`,
@@ -415,6 +515,7 @@ export class MetadataService {
       )
       .groupBy(modelMetadata.value)
       .orderBy(desc(sql`count(distinct ${modelMetadata.modelId})`));
+    const rows = params.limit === undefined ? await query : await query.limit(params.limit);
 
     return rows.map((r) => ({ value: r.value, modelCount: r.modelCount }));
   }

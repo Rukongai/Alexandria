@@ -3,6 +3,7 @@
  */
 
 import type { FileType } from './model.js';
+import type { SetModelMetadataRequest } from './metadata.js';
 
 export interface UploadInitResponse {
   uploadId: string;
@@ -117,10 +118,13 @@ export interface ImportSession {
   originalFilename: string;
   status: ImportSessionStatus;
   detected: DetectedImportMetadata | null;
+  /** User/assistant-reviewed metadata staged for a later explicit commit. */
+  draftMetadata: BatchUploadMetadata | null;
   modelId: string | null;
   commitProgress: ImportCommitProgress | null;
   error: string | null;
   createdAt: string;
+  updatedAt: string;
 }
 
 /**
@@ -164,5 +168,7 @@ export interface BatchUploadMetadata {
   newCollectionName?: string;
   artist?: string;
   tags?: string[];
+  /** Values for configured metadata fields, keyed by field slug. */
+  metadata?: SetModelMetadataRequest;
   options?: UploadOptions;
 }
