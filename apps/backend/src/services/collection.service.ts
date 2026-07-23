@@ -117,6 +117,25 @@ export class CollectionService {
     }
   }
 
+  async lockOwnedCollection(
+    collectionId: string,
+    userId: string,
+    libraryId: string,
+    executor: DatabaseExecutor,
+  ): Promise<void> {
+    const [row] = await executor
+      .select({ id: collections.id })
+      .from(collections)
+      .where(and(
+        eq(collections.id, collectionId),
+        eq(collections.userId, userId),
+        eq(collections.libraryId, libraryId),
+      ))
+      .limit(1)
+      .for('update');
+    if (!row) throw notFound('Collection not found');
+  }
+
   /**
    * Verify a collection exists AND belongs to the active library. Throws
    * NOT_FOUND otherwise, so a stale deep link to a collection in another library
@@ -396,32 +415,57 @@ export class CollectionService {
     );
   }
 
+  /** Remove multiple models from a collection in one idempotent statement. */
+  async removeModelsFromCollection(
+    collectionId: string,
+    modelIds: string[],
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
+    await this._requireCollection(collectionId, executor);
+    if (modelIds.length === 0) return;
+
+    await executor
+      .delete(collectionModels)
+      .where(
+        and(
+          eq(collectionModels.collectionId, collectionId),
+          inArray(collectionModels.modelId, modelIds),
+        ),
+      );
+
+    logger.info(
+      { service: 'CollectionService', collectionId, count: modelIds.length },
+      'Models removed from collection',
+    );
+  }
+
   /**
    * Bulk add, remove, or move models to a collection.
    */
-  async bulkCollectionOperation(data: BulkCollectionRequest): Promise<void> {
+  async bulkCollectionOperation(
+    data: BulkCollectionRequest,
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
     if (data.action === 'add') {
-      await this.addModelsToCollection(data.collectionId, data.modelIds);
+      await this.addModelsToCollection(data.collectionId, data.modelIds, executor);
       return;
     }
 
-    await this._requireCollection(data.collectionId);
+    await this._requireCollection(data.collectionId, executor);
 
     if (data.modelIds.length === 0) {
       return;
     }
 
     if (data.action === 'move') {
-      await db.transaction(async (tx) => {
-        await tx
-          .delete(collectionModels)
-          .where(inArray(collectionModels.modelId, data.modelIds));
+      await executor
+        .delete(collectionModels)
+        .where(inArray(collectionModels.modelId, data.modelIds));
 
-        await tx
-          .insert(collectionModels)
-          .values(data.modelIds.map((modelId) => ({ collectionId: data.collectionId, modelId })))
-          .onConflictDoNothing();
-      });
+      await executor
+        .insert(collectionModels)
+        .values(data.modelIds.map((modelId) => ({ collectionId: data.collectionId, modelId })))
+        .onConflictDoNothing();
 
       logger.info(
         { service: 'CollectionService', collectionId: data.collectionId, count: data.modelIds.length },
@@ -430,7 +474,7 @@ export class CollectionService {
       return;
     }
 
-    await db
+    await executor
       .delete(collectionModels)
       .where(
         and(

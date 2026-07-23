@@ -45,4 +45,8 @@ describe('generateSlug', () => {
     expect(base).not.toMatch(/^-|-$/);
     expect(base).toBe('model');
   });
+
+  it('should keep generated slugs within varchar(255)', () => {
+    expect(generateSlug('x'.repeat(255))).toHaveLength(255);
+  });
 });

@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AiAssistantService, AiChatLimiter, parseFilenameHint, SYSTEM_PROMPT } from './ai-assistant.service.js';
 import { notFound } from '../utils/errors.js';
-import { aiChangeSetSchema, aiChatSchema } from '@alexandria/shared';
+import {
+  aiBulkChangeSetSchema,
+  aiChangeSetSchema,
+  aiChatSchema,
+  bulkCollectionSchema,
+  bulkDeleteSchema,
+  bulkMetadataSchema,
+} from '@alexandria/shared';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const LIBRARY_ID = '22222222-2222-4222-8222-222222222222';
 const MODEL_ID = '33333333-3333-4333-8333-333333333333';
+const COLLECTION_ID = '66666666-6666-4666-8666-666666666666';
 const IMPORT_SESSION_ID = '77777777-7777-4777-8777-777777777777';
 const connection = {
   id: '44444444-4444-4444-8444-444444444444',
@@ -20,7 +28,7 @@ function makeDependencies() {
       resolveConnection: vi.fn().mockResolvedValue(connection),
       createChatCompletion: vi.fn(),
     },
-    proposals: { createPreview: vi.fn() },
+    proposals: { createPreview: vi.fn(), createBulkPreview: vi.fn() },
     models: {
       requireOwnedModel: vi.fn().mockResolvedValue({ id: MODEL_ID }),
       getModelFiles: vi.fn().mockResolvedValue([{ id: 'file-1', filename: 'dragon.stl', relativePath: 'dragon.stl', fileType: 'stl', sizeBytes: 1 }]),
@@ -113,6 +121,9 @@ describe('AiAssistantService tool-loop safety', () => {
     expect(SYSTEM_PROMPT).toContain("Lust's Source is Fullmetal Alchemist");
     expect(SYSTEM_PROMPT).toContain("Aqua's Source is Konosuba");
     expect(SYSTEM_PROMPT).toContain('does not commit');
+    expect(SYSTEM_PROMPT).toContain('preview_bulk_changes');
+    expect(SYSTEM_PROMPT).toContain('at most 8 tool calls in one provider response');
+    expect(SYSTEM_PROMPT).toContain('at most 12 tool calls across the entire user request');
     expect(parseFilenameHint('Maker - 2024-05 - Dragon Bust.tar.gz')).toEqual({
       artistName: 'Maker', date: '2024-05', modelName: 'Dragon Bust',
     });
@@ -164,6 +175,122 @@ describe('AiAssistantService tool-loop safety', () => {
         newCollectionName: 'New',
       } }],
     }).success).toBe(false);
+  });
+
+  it('should validate typed bulk metadata and collection operations', () => {
+    expect(aiBulkChangeSetSchema.safeParse({
+      summary: 'Organize every current model',
+      target: { scope: 'current_models' },
+      metadataOperations: [
+        { fieldSlug: 'tags', action: 'add', value: ['terrain'] },
+        { fieldSlug: 'artist', action: 'remove' },
+      ],
+      collectionOperations: [{ collectionId: COLLECTION_ID, action: 'add' }],
+    }).success).toBe(true);
+
+    for (const input of [
+      {
+        summary: 'No changes',
+        target: { scope: 'active_library' },
+      },
+      {
+        summary: 'Missing add value',
+        target: { scope: 'active_library' },
+        metadataOperations: [{ fieldSlug: 'tags', action: 'add' }],
+      },
+      {
+        summary: 'Ambiguous duplicate metadata',
+        target: { scope: 'active_library' },
+        metadataOperations: [
+          { fieldSlug: 'tags', action: 'add', value: ['terrain'] },
+          { fieldSlug: 'tags', action: 'remove' },
+        ],
+      },
+      {
+        summary: 'Ambiguous duplicate collection',
+        target: { scope: 'active_library' },
+        collectionOperations: [
+          { collectionId: COLLECTION_ID, action: 'add' },
+          { collectionId: COLLECTION_ID, action: 'remove' },
+        ],
+      },
+    ]) {
+      expect(aiBulkChangeSetSchema.safeParse(input).success).toBe(false);
+    }
+  });
+
+  it('should enforce unique frozen bulk model snapshots of at most 500 models', () => {
+    const modelIds = Array.from({ length: 500 }, (_, index) =>
+      `90000000-0000-4000-8000-${String(index).padStart(12, '0')}`);
+    const changeSet = (ids: string[]) => ({
+      summary: 'Tag models',
+      changes: [{
+        type: 'bulk_metadata',
+        modelIds: ids,
+        operations: [{ fieldSlug: 'tags', action: 'add', value: ['terrain'] }],
+      }],
+    });
+
+    expect(aiChangeSetSchema.safeParse(changeSet(modelIds)).success).toBe(true);
+    expect(aiChangeSetSchema.safeParse(changeSet([])).success).toBe(false);
+    expect(aiChangeSetSchema.safeParse(
+      changeSet([...modelIds.slice(0, 499), modelIds[0]]),
+    ).success).toBe(false);
+    expect(aiChangeSetSchema.safeParse(changeSet([...modelIds, MODEL_ID])).success).toBe(false);
+  });
+
+  it('should cap public bulk requests at 500 models and 25 metadata operations', () => {
+    const modelIds = Array.from({ length: 500 }, (_, index) =>
+      `b0000000-0000-4000-8000-${String(index).padStart(12, '0')}`);
+    const operations = Array.from({ length: 25 }, (_, index) => ({
+      fieldSlug: `field-${index}`,
+      action: 'set' as const,
+      value: `value-${index}`,
+    }));
+
+    expect(bulkMetadataSchema.safeParse({ modelIds, operations }).success).toBe(true);
+    expect(bulkCollectionSchema.safeParse({
+      modelIds,
+      action: 'add',
+      collectionId: COLLECTION_ID,
+    }).success).toBe(true);
+    expect(bulkDeleteSchema.safeParse({ modelIds }).success).toBe(true);
+
+    const tooManyModelIds = [...modelIds, MODEL_ID];
+    expect(bulkMetadataSchema.safeParse({ modelIds: tooManyModelIds, operations }).success)
+      .toBe(false);
+    expect(bulkCollectionSchema.safeParse({
+      modelIds: tooManyModelIds,
+      action: 'add',
+      collectionId: COLLECTION_ID,
+    }).success).toBe(false);
+    expect(bulkDeleteSchema.safeParse({ modelIds: tooManyModelIds }).success).toBe(false);
+    expect(bulkMetadataSchema.safeParse({
+      modelIds,
+      operations: [...operations, { fieldSlug: 'extra', action: 'remove' }],
+    }).success).toBe(false);
+  });
+
+  it('should reject invalid tag additions and normalize valid tag names in bulk schemas', () => {
+    const publicRequest = (value: unknown) => ({
+      modelIds: [MODEL_ID],
+      operations: [{ fieldSlug: 'tags', action: 'add', value }],
+    });
+    const aiRequest = (value: unknown) => ({
+      summary: 'Add tags',
+      target: { scope: 'current_models' },
+      metadataOperations: [{ fieldSlug: 'tags', action: 'add', value }],
+    });
+
+    for (const value of [[], [''], ['   '], ['x'.repeat(256)]]) {
+      expect(bulkMetadataSchema.safeParse(publicRequest(value)).success).toBe(false);
+      expect(aiBulkChangeSetSchema.safeParse(aiRequest(value)).success).toBe(false);
+    }
+
+    expect(bulkMetadataSchema.safeParse(publicRequest([' terrain ', 'buildings'])).success)
+      .toBe(true);
+    expect(aiBulkChangeSetSchema.safeParse(aiRequest([' terrain ', 'buildings'])).success)
+      .toBe(true);
   });
 
   it('checks model ownership and active library before sending model context externally', async () => {
@@ -287,6 +414,56 @@ describe('AiAssistantService tool-loop safety', () => {
       .toHaveBeenCalledWith(USER_ID, LIBRARY_ID, { limit: 101 });
     expect(deps.importSessions.getOwnedActiveSession)
       .toHaveBeenCalledWith(IMPORT_SESSION_ID, USER_ID, LIBRARY_ID);
+  });
+
+  it('should create one bulk preview for all validated current model targets', async () => {
+    const deps = makeDependencies();
+    const bulkInput = {
+      summary: 'Tag all current models',
+      target: { scope: 'current_models' },
+      metadataOperations: [{ fieldSlug: 'tags', action: 'add', value: ['terrain'] }],
+    };
+    const preview = {
+      proposalId: '99999999-9999-4999-8999-999999999999',
+      summary: bulkInput.summary,
+      changes: [{
+        type: 'bulk_metadata',
+        modelIds: [MODEL_ID],
+        operations: bulkInput.metadataOperations,
+      }],
+      expiresAt: '2026-07-21T12:15:00.000Z',
+    };
+    deps.proposals.createBulkPreview.mockResolvedValue(preview);
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [{
+        id: 'bulk-preview',
+        function: { name: 'preview_bulk_changes', arguments: JSON.stringify(bulkInput) },
+      }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Ready for review.' } }] });
+
+    const result = await serviceWith(deps).chat({
+      message: 'Add terrain to all models here',
+      context: { modelIds: [MODEL_ID] },
+    }, USER_ID, LIBRARY_ID);
+
+    expect(deps.models.requireOwnedModel).toHaveBeenCalledWith(MODEL_ID, USER_ID, LIBRARY_ID);
+    expect(deps.proposals.createBulkPreview).toHaveBeenCalledWith(
+      USER_ID,
+      LIBRARY_ID,
+      bulkInput,
+      [MODEL_ID],
+      expect.objectContaining({ deadline: expect.any(Number) }),
+    );
+    expect(deps.proposals.createPreview).not.toHaveBeenCalled();
+    expect(result.proposal).toEqual(preview);
+
+    const firstPayload = deps.providers.createChatCompletion.mock.calls[0][1];
+    const bulkTool = firstPayload.tools.find(
+      (tool: { function: { name: string } }) => tool.function.name === 'preview_bulk_changes',
+    );
+    expect(bulkTool.function.description).toContain('server resolves and freezes the exact model IDs');
+    expect(bulkTool.function.parameters.properties.target.properties.scope.enum)
+      .toEqual(['current_models', 'active_library']);
   });
 
   it('hard-caps list tool output and reports additional rows', async () => {
@@ -496,7 +673,81 @@ describe('AiAssistantService tool-loop safety', () => {
     }
   });
 
-  it('enforces a cumulative tool-call budget across provider turns', async () => {
+  it('should repair one oversized tool batch without executing its calls', async () => {
+    const deps = makeDependencies();
+    const calls = (count: number, prefix: string) => Array.from({ length: count }, (_, index) => ({
+      id: `${prefix}-${index}`,
+      type: 'function',
+      function: { name: 'search_library', arguments: JSON.stringify({ query: 'dragon' }) },
+    }));
+    const bulkInput = {
+      summary: 'Tag the active library',
+      target: { scope: 'active_library' },
+      metadataOperations: [{ fieldSlug: 'tags', action: 'add', value: ['terrain'] }],
+    };
+    const preview = {
+      proposalId: '99999999-9999-4999-8999-999999999999',
+      summary: bulkInput.summary,
+      changes: [{
+        type: 'bulk_metadata', modelIds: [MODEL_ID], operations: bulkInput.metadataOperations,
+      }],
+      expiresAt: '2026-07-21T12:15:00.000Z',
+    };
+    deps.proposals.createBulkPreview.mockResolvedValue(preview);
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(9, 'invalid') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [{
+        id: 'bulk',
+        type: 'function',
+        function: { name: 'preview_bulk_changes', arguments: JSON.stringify(bulkInput) },
+      }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Ready for review.' } }] });
+
+    const result = await serviceWith(deps).chat(
+      { message: 'Add terrain to every model' },
+      USER_ID,
+      LIBRARY_ID,
+    );
+
+    expect(deps.search.searchModels).not.toHaveBeenCalled();
+    expect(deps.proposals.createBulkPreview)
+      .toHaveBeenCalledWith(
+        USER_ID,
+        LIBRARY_ID,
+        bulkInput,
+        [],
+        expect.objectContaining({ deadline: expect.any(Number) }),
+      );
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(3);
+    const repairPayload = deps.providers.createChatCompletion.mock.calls[1][1];
+    const repairInstruction = repairPayload.messages.at(-1);
+    expect(repairInstruction).toMatchObject({ role: 'system' });
+    expect(repairInstruction.content).toContain('9 tool calls, so none were executed');
+    expect(repairInstruction.content).toContain('at most 8 tool calls');
+    expect(repairInstruction.content).toContain('preview_bulk_changes');
+    expect(result.proposal).toEqual(preview);
+  });
+
+  it('should fail after exactly one oversized tool-batch repair attempt', async () => {
+    const deps = makeDependencies();
+    const calls = (prefix: string) => Array.from({ length: 9 }, (_, index) => ({
+      id: `${prefix}-${index}`,
+      type: 'function',
+      function: { name: 'search_library', arguments: JSON.stringify({ query: 'dragon' }) },
+    }));
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls('first') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls('repair') } }] });
+
+    await expect(serviceWith(deps).chat({ message: 'Search broadly' }, USER_ID, LIBRARY_ID))
+      .rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(deps.search.searchModels).not.toHaveBeenCalled();
+    expect(deps.proposals.createPreview).not.toHaveBeenCalled();
+    expect(deps.proposals.createBulkPreview).not.toHaveBeenCalled();
+  });
+
+  it('should communicate and enforce the remaining cumulative tool budget during repair', async () => {
     const deps = makeDependencies();
     const calls = (count: number, prefix: string) => Array.from({ length: count }, (_, index) => ({
       id: `${prefix}-${index}`,
@@ -504,13 +755,45 @@ describe('AiAssistantService tool-loop safety', () => {
       function: { name: 'search_library', arguments: JSON.stringify({ query: 'dragon' }) },
     }));
     deps.providers.createChatCompletion
-      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(8, 'a') } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(5, 'b') } }] });
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(8, 'first') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(5, 'overflow') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(4, 'repair') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(1, 'past-total') } }] });
     deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
 
     await expect(serviceWith(deps).chat({ message: 'Search broadly' }, USER_ID, LIBRARY_ID))
       .rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
-    expect(deps.search.searchModels).toHaveBeenCalledTimes(8);
-    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(deps.search.searchModels).toHaveBeenCalledTimes(12);
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(4);
+    const repairInstruction = deps.providers.createChatCompletion.mock.calls[2][1].messages.at(-1);
+    expect(repairInstruction.content).toContain('at most 4 tool calls');
+  });
+
+  it('should count a repair request within the six-request provider ceiling', async () => {
+    const deps = makeDependencies();
+    const oneCall = (index: number) => [{
+      id: `valid-${index}`,
+      type: 'function',
+      function: { name: 'search_library', arguments: JSON.stringify({ query: 'dragon' }) },
+    }];
+    const oversized = Array.from({ length: 8 }, (_, index) => ({
+      id: `oversized-${index}`,
+      type: 'function',
+      function: { name: 'search_library', arguments: JSON.stringify({ query: 'dragon' }) },
+    }));
+    for (let index = 0; index < 5; index += 1) {
+      deps.providers.createChatCompletion.mockResolvedValueOnce({
+        choices: [{ message: { content: null, tool_calls: oneCall(index) } }],
+      });
+    }
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: oversized } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'This seventh request is forbidden.' } }] });
+    deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
+
+    await expect(serviceWith(deps).chat({ message: 'Search repeatedly' }, USER_ID, LIBRARY_ID))
+      .rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(6);
+    expect(deps.search.searchModels).toHaveBeenCalledTimes(5);
   });
 });

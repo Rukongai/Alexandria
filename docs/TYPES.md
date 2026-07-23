@@ -339,7 +339,7 @@ type ImportSessionStatus =
 
 ### AI Provider and Change Proposal
 
-`AiProvider` is a user-owned OpenAI-compatible endpoint configuration. The database row stores the API key encrypted; the public response never includes it. `AiChangeProposal` is server-owned preview state scoped to a user and library. Its exact `changes` payload is applied once or expires.
+`AiProvider` is a user-owned OpenAI-compatible endpoint configuration. The database row stores the API key encrypted; the public response never includes it. `AiChangeProposal` is server-owned preview state scoped to a user and library. Its exact `changes` payload is applied once or expires. A bulk preview resolves its symbolic scope on the server and stores canonical changes containing the frozen model IDs; the provider does not supply those IDs.
 
 ```typescript
 interface AiProvider {
@@ -369,7 +369,22 @@ type AiChange =
       originalFilename: string; // identity guard captured at preview time
       expectedUpdatedAt: string; // optimistic stale-state guard from ImportSession.updatedAt
       patch: BatchUploadMetadata; // non-empty; nested metadata/options merge on apply
+    }
+  | {
+      type: 'bulk_metadata';
+      modelIds: string[]; // 1–500 sorted, unique, owned IDs frozen at preview time
+      operations: BulkMetadataOperation[]; // 1–25 operations on distinct field slugs
+    }
+  | {
+      type: 'bulk_collections';
+      modelIds: string[]; // same frozen snapshot used by every bulk change in the proposal
+      operations: AiBulkCollectionOperation[]; // 1–50 distinct collection IDs
     };
+
+interface AiBulkCollectionOperation {
+  collectionId: string;
+  action: 'add' | 'remove';
+}
 
 interface AiChangePreview {
   proposalId: string;
@@ -382,8 +397,15 @@ interface AiChangePreview {
 interface AiChangePreviewDisplay {
   collections: Record<string, { name: string }>;
   images: Record<string, { filename: string; thumbnailUrl: string | null }>;
+  bulkTarget?: {
+    scope: 'current_models' | 'active_library';
+    modelCount: number;
+    sampleModelNames: string[]; // server-derived; at most five names
+  };
 }
 ```
+
+The internal `preview_bulk_changes` tool accepts `{ summary, target, metadataOperations?, collectionOperations? }`, where `target.scope` is `current_models` or `active_library`. At least one operation array is required. The server resolves the target into 1–500 models, rejects an over-limit active library without truncation, and persists `bulk_metadata` and/or `bulk_collections` members of `AiChange`. It derives `display.bulkTarget` from that validated snapshot; the frontend shows its scope, count, up to five names, and an “N more” remainder without rendering `modelIds`. Metadata operations use `set`, `add`, or `remove`; `add` is limited to the default Tags field. Added tag names are trimmed, validated at 1–255 characters, and deduplicated case-insensitively. This tool input is not a public REST request type.
 
 ---
 
@@ -946,26 +968,28 @@ interface UpdateProfileRequest {
 
 ```typescript
 interface BulkMetadataRequest {
-  modelIds: string[];
-  operations: BulkMetadataOperation[];
+  modelIds: string[]; // 1–500 unique IDs; all owned and in the active library
+  operations: BulkMetadataOperation[]; // 1–25
 }
 
 interface BulkMetadataOperation {
-  fieldSlug: string;
-  action: 'set' | 'remove';
+  fieldSlug: string; // trimmed; 1–255 characters
+  action: 'set' | 'add' | 'remove'; // add is supported only for Tags
   value?: string | string[] | number | boolean;
 }
 
 interface BulkCollectionRequest {
-  modelIds: string[];
+  modelIds: string[]; // 1–500 unique IDs; all owned and in the active library
   action: 'add' | 'remove' | 'move'; // move replaces every existing collection membership
-  collectionId: string;
+  collectionId: string; // collection must be owned and in the active library
 }
 
 interface BulkDeleteRequest {
-  modelIds: string[];
+  modelIds: string[]; // 1–500 unique IDs; all owned and in the active library
 }
 ```
+
+For `BulkMetadataOperation`, `add` accepts one tag name or an array and requires at least one value. Names are trimmed, must be 1–255 characters after trimming, and are case-insensitively deduplicated before insertion. Public bulk routes resolve the active library through `requireLibrary` and validate every referenced model before mutation.
 
 ### Staged Upload Requests
 

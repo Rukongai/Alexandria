@@ -296,6 +296,43 @@ export class ModelService {
     return row;
   }
 
+  async listOwnedModelIds(
+    userId: string,
+    libraryId: string,
+    limit: number,
+    executor: DatabaseExecutor = db,
+  ): Promise<string[]> {
+    const rows = await executor
+      .select({ id: models.id })
+      .from(models)
+      .where(and(eq(models.userId, userId), eq(models.libraryId, libraryId)))
+      .orderBy(asc(models.id))
+      .limit(limit);
+    return rows.map((row) => row.id);
+  }
+
+  async requireOwnedModels(
+    ids: string[],
+    userId: string,
+    libraryId: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<Model[]> {
+    const uniqueIds = [...new Set(ids)].sort();
+    const rows = await executor
+      .select()
+      .from(models)
+      .where(and(
+        inArray(models.id, uniqueIds),
+        eq(models.userId, userId),
+        eq(models.libraryId, libraryId),
+      ))
+      .orderBy(asc(models.id));
+    if (rows.length !== uniqueIds.length) {
+      throw notFound('One or more models were not found');
+    }
+    return rows;
+  }
+
   async lockOwnedModels(
     ids: string[],
     userId: string,
@@ -383,6 +420,19 @@ export class ModelService {
       .from(modelFiles)
       .where(eq(modelFiles.modelId, modelId))
       .orderBy(asc(modelFiles.relativePath));
+  }
+
+  async listModelStoragePaths(
+    modelIds: string[],
+    executor: DatabaseExecutor = db,
+  ): Promise<string[]> {
+    if (modelIds.length === 0) return [];
+    const rows = await executor
+      .select({ storagePath: modelFiles.storagePath })
+      .from(modelFiles)
+      .where(inArray(modelFiles.modelId, modelIds))
+      .orderBy(asc(modelFiles.storagePath));
+    return rows.map((row) => row.storagePath);
   }
 
   async getModelFolders(modelId: string): Promise<Array<typeof modelFolders.$inferSelect>> {
@@ -901,16 +951,16 @@ export class ModelService {
     await db.delete(models).where(eq(models.id, id));
   }
 
-  async deleteModels(ids: string[]): Promise<string[]> {
-    const deleted: string[] = [];
-    for (const id of ids) {
-      const [row] = await db.select({ id: models.id }).from(models).where(eq(models.id, id)).limit(1);
-      if (row) {
-        await db.delete(models).where(eq(models.id, id));
-        deleted.push(id);
-      }
-    }
-    return deleted;
+  async deleteModels(
+    ids: string[],
+    executor: DatabaseExecutor = db,
+  ): Promise<string[]> {
+    if (ids.length === 0) return [];
+    const deleted = await executor
+      .delete(models)
+      .where(inArray(models.id, ids))
+      .returning({ id: models.id });
+    return deleted.map((row) => row.id);
   }
 }
 

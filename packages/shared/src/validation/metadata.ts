@@ -46,12 +46,39 @@ export const setModelMetadataSchema = z.record(
 );
 
 const bulkMetadataOperationSchema = z.object({
-  fieldSlug: z.string().min(1),
+  fieldSlug: z.string().trim().min(1).max(255),
   action: z.enum(['set', 'add', 'remove']),
   value: nonNullMetadataValueSchema.optional(),
+}).superRefine((operation, context) => {
+  if (operation.action !== 'add') return;
+  const values = typeof operation.value === 'string'
+    ? [operation.value]
+    : operation.value;
+  if (!Array.isArray(values) || values.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['value'],
+      message: 'Add operations require one or more tag names',
+    });
+    return;
+  }
+  values.forEach((value, index) => {
+    if (typeof value !== 'string' || value.trim().length === 0 || value.trim().length > 255) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['value', index],
+        message: 'Tag names must be between 1 and 255 characters after trimming',
+      });
+    }
+  });
 });
 
 export const bulkMetadataSchema = z.object({
-  modelIds: z.array(z.string().uuid()).min(1, 'At least one model ID is required'),
-  operations: z.array(bulkMetadataOperationSchema).min(1, 'At least one operation is required'),
+  modelIds: z.array(z.string().uuid()).min(1, 'At least one model ID is required').max(500)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'Model IDs must be unique',
+    }),
+  operations: z.array(bulkMetadataOperationSchema)
+    .min(1, 'At least one operation is required')
+    .max(25),
 });

@@ -24,7 +24,7 @@ Several decisions were made during the architecture phase and are treated as set
 
 **Cursor-based pagination everywhere.** No offset-based pagination. Cursor pagination is stable under concurrent mutations and performs better on large libraries.
 
-**Assistant changes are staged and reviewable.** The assistant can inspect models, collections, configured metadata and known values, and uploads waiting for review in the active library. It uses the current model, page selection, or upload review as its target. For simple metadata cleanup it can parse filenames written as `{Artist} - {Date} - {Model}`, infer a character's Source as the originating series or work when supported, and suggest existing tags and collections. Every change is an immutable preview that requires a separate apply action. Applying an upload proposal updates only its review draft; committing the upload remains an explicit human action.
+**Assistant changes are staged and reviewable.** The assistant can inspect models, collections, configured metadata and known values, and uploads waiting for review in the active library. It uses the current model, page selection, or upload review as its ordinary target. For a uniform request such as adding the same tags to every model, it creates one bulk preview targeting the current models or active library rather than one AI call per model. The server resolves and freezes the exact owned model set, with a current limit of 500 models, and rejects larger scopes instead of partially applying them. The review shows the resolved scope, exact count, up to five model names, and how many more are affected without displaying internal IDs. For simple metadata cleanup it can parse filenames written as `{Artist} - {Date} - {Model}`, infer a character's Source as the originating series or work when supported, and suggest existing tags and collections. Every individual or bulk change is an immutable preview that requires a separate, atomic apply action. Applying an upload proposal updates only its review draft; committing the upload remains an explicit human action. Per-model AI enrichment and background batch jobs remain outside this feature.
 
 **Auto-seed on startup.** The backend automatically runs database migrations and seeds default data (admin account, default metadata fields) on every startup before accepting traffic. Seeding is idempotent — it uses conflict-safe upserts and never overwrites existing data. Seed failures are non-fatal: the backend logs a warning and continues.
 
@@ -47,13 +47,14 @@ The backend is organized around focused services. Each service owns a coherent s
 - **MetadataService** — field definitions and metadata values, with internal routing for optimized field types (tags)
 - **SearchService** — all query execution: full-text search, metadata filtering, sorting, cursor pagination
 - **CollectionService** — collection CRUD, nesting, and model membership
+- **BulkService** — validates user/library scope and atomically coordinates public bulk metadata, collection, and database-delete operations; storage cleanup follows deletion best-effort
 - **SmartCollectionService** — validates rule trees and resolves dynamic model sets
 - **LibraryService** — resolves user-owned libraries and default-library selection
 - **AuthService** — single-user email/password auth with argon2 hashing and signed HTTP-only session cookies
 - **PresenterService** — assembles API response payloads from domain data
 - **AiProviderService** — stores encrypted OpenAI-compatible BYOK provider credentials, discovers models, and enforces outbound network policy
 - **AiAssistantService** — runs the bounded, library-scoped assistant tool loop across current model and staged-upload targets
-- **AiProposalService** — validates immutable change previews and atomically applies approved model changes or staged-upload draft updates
+- **AiProposalService** — resolves and freezes individual or bulk preview targets, validates immutable change previews, and atomically applies approved model changes or staged-upload draft updates
 - **WebSearchService** — researches public metadata and image candidates without mutating the library
 
 Route handlers are thin: validate input, call a service, return the response envelope. All business logic lives in services. All response shaping lives in PresenterService. Services throw typed `AppError` instances for expected failures; the global error handler formats these as envelope responses.
@@ -70,6 +71,6 @@ Default credentials (`admin@alexandria.local` / `changeme`) are applied by the a
 
 ## Current Status
 
-Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, the React frontend, the in-browser STL viewer, and the preview-first assistant — is implemented and reviewed. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent complete archives or uploading one complete supported split archive, including a modern `<base>.partN.rar` set, into a single review session and model. The assistant can now read collections and metadata knowledge, act on current single or multi-model page targets, and stage metadata for pre-commit uploads without committing them.
+Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, the React frontend, the in-browser STL viewer, and the preview-first assistant — is implemented and reviewed. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent complete archives or uploading one complete supported split archive, including a modern `<base>.partN.rar` set, into a single review session and model. The assistant can now read collections and metadata knowledge, act on current single or multi-model page targets, stage uniform metadata or collection operations across as many as 500 server-resolved models, and stage metadata for pre-commit uploads without committing them.
 
 Planned but not yet implemented: multi-user support and print job tracking.

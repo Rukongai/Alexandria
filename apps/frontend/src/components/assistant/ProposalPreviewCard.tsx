@@ -11,11 +11,26 @@ interface ProposalPreviewCardProps {
   onDismiss: () => void;
 }
 
+const MAX_BULK_TARGET_SAMPLE_NAMES = 5;
+
 function displayValue(value: unknown): string {
   if (value === null) return 'Clear value';
   if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : 'Clear value';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   return String(value);
+}
+
+function fieldLabel(fieldSlug: string): string {
+  const label = fieldSlug.replace(/[-_]+/g, ' ');
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function modelCountLabel(count: number): string {
+  return `${new Intl.NumberFormat('en-US').format(count)} ${count === 1 ? 'model' : 'models'}`;
+}
+
+function affectedModelsLabel(modelIds: string[]): string {
+  return modelCountLabel(modelIds.length);
 }
 
 function actionLines(change: AiChange, display?: AiChangePreviewDisplay): string[] {
@@ -32,6 +47,19 @@ function actionLines(change: AiChange, display?: AiChangePreviewDisplay): string
     return Object.entries(change.values).map(
       ([field, value]) => `${field}: ${displayValue(value)}`,
     );
+  }
+
+  if (change.type === 'bulk_metadata') {
+    return change.operations.map((operation) => {
+      const field = fieldLabel(operation.fieldSlug);
+      if (operation.action === 'remove' || operation.value === undefined) {
+        return `Clear ${field}`;
+      }
+      if (operation.action === 'add') {
+        return `Add ${displayValue(operation.value)} to ${field}`;
+      }
+      return `Set ${field} to ${displayValue(operation.value)}`;
+    });
   }
 
   if (change.type === 'update_import_session') {
@@ -51,6 +79,16 @@ function actionLines(change: AiChange, display?: AiChangePreviewDisplay): string
       }
       if (field === 'newCollectionName') return [`New collection: ${displayValue(value)}`];
       return [`${field}: ${displayValue(value)}`];
+    });
+  }
+
+  if (change.type === 'bulk_collections') {
+    return change.operations.map((operation) => {
+      const collectionName = display?.collections[operation.collectionId]?.name
+        ?? operation.collectionId;
+      return operation.action === 'add'
+        ? `Add to collection ${collectionName}`
+        : `Remove from collection ${collectionName}`;
     });
   }
 
@@ -98,25 +136,72 @@ function CoverImagePreview({
   );
 }
 
+function BulkTargetSummary({ display }: { display?: AiChangePreviewDisplay }) {
+  const target = display?.bulkTarget;
+  if (!target) return null;
+
+  const sampleModelNames = target.sampleModelNames.slice(0, MAX_BULK_TARGET_SAMPLE_NAMES);
+  const remainingCount = Math.max(target.modelCount - sampleModelNames.length, 0);
+
+  return (
+    <div className="mt-2 rounded-lg border bg-background/70 px-2.5 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+        <span className="font-medium text-foreground">
+          {target.scope === 'active_library' ? 'Entire active library' : 'Selected models'}
+        </span>
+        <span className="text-muted-foreground" aria-hidden="true">·</span>
+        <span className="text-muted-foreground">{modelCountLabel(target.modelCount)} affected</span>
+      </div>
+      {sampleModelNames.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-1 text-muted-foreground">
+          <span className="break-words">{sampleModelNames.join(', ')}</span>
+          {remainingCount > 0 && (
+            <span className="whitespace-nowrap font-medium text-foreground">
+              {new Intl.NumberFormat('en-US').format(remainingCount)} more
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChangeIcon({ change }: { change: AiChange }) {
   const className = 'mt-0.5 h-4 w-4 shrink-0 text-primary';
   if (change.type === 'update_model') return <FilePenLine className={className} />;
-  if (change.type === 'set_metadata') return <Tags className={className} />;
+  if (change.type === 'set_metadata' || change.type === 'bulk_metadata') {
+    return <Tags className={className} />;
+  }
   if (change.type === 'update_import_session') return <FilePenLine className={className} />;
   return <FolderInput className={className} />;
 }
 
-function changeLabel(change: AiChange): string {
+function changeLabel(change: AiChange, display?: AiChangePreviewDisplay): string {
   if (change.type === 'update_model') return `Update ${change.modelName}`;
   if (change.type === 'set_metadata') return `Set metadata on ${change.modelName}`;
+  if (change.type === 'bulk_metadata') {
+    return display?.bulkTarget
+      ? 'Update metadata'
+      : `Update metadata on ${affectedModelsLabel(change.modelIds)}`;
+  }
   if (change.type === 'update_import_session') return `Update upload ${change.originalFilename}`;
+  if (change.type === 'bulk_collections') {
+    return display?.bulkTarget
+      ? 'Update collections'
+      : `Update collections for ${affectedModelsLabel(change.modelIds)}`;
+  }
   return `Update collections for ${change.modelName}`;
 }
 
 function changeKey(change: AiChange, index: number): string {
-  const entityId = change.type === 'update_import_session'
-    ? change.importSessionId
-    : change.modelId;
+  let entityId: string;
+  if (change.type === 'update_import_session') {
+    entityId = change.importSessionId;
+  } else if (change.type === 'bulk_metadata' || change.type === 'bulk_collections') {
+    entityId = change.modelIds[0];
+  } else {
+    entityId = change.modelId;
+  }
   return `${entityId}-${change.type}-${index}`;
 }
 
@@ -155,7 +240,12 @@ export function ProposalPreviewCard({
             <div key={changeKey(change, index)} className="flex gap-2.5">
               <ChangeIcon change={change} />
               <div className="min-w-0">
-                <p className="text-xs font-semibold text-foreground">{changeLabel(change)}</p>
+                <p className="text-xs font-semibold text-foreground">
+                  {changeLabel(change, proposal.display)}
+                </p>
+                {(change.type === 'bulk_metadata' || change.type === 'bulk_collections') && (
+                  <BulkTargetSummary display={proposal.display} />
+                )}
                 {lines.length > 0 ? (
                   <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
                     {lines.map((line, lineIndex) => (
