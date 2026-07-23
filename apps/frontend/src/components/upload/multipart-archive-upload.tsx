@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Archive,
   Files,
@@ -156,20 +156,33 @@ export function validateMultipartSelection(
 }
 
 interface MultipartArchiveUploadProps {
-  onSessionCreated: (sessionId: string) => void;
+  currentLibraryId: string | null;
+  onSessionCreated: (sessionId: string, originLibraryId: string | null) => void;
 }
 
-export function MultipartArchiveUpload({ onSessionCreated }: MultipartArchiveUploadProps) {
+type MultipartUploadPhase = 'idle' | 'uploading' | 'finalizing';
+
+export function MultipartArchiveUpload({
+  currentLibraryId,
+  onSessionCreated,
+}: MultipartArchiveUploadProps) {
   const [mode, setMode] = useState<MultipartArchiveMode>('combine');
   const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [progress, setProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadPhase, setUploadPhase] = useState<MultipartUploadPhase>('idle');
+  const [announcement, setAnnouncement] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const activeControllerRef = useRef<AbortController | null>(null);
+  const uploadPhaseRef = useRef<MultipartUploadPhase>('idle');
   const startMultipartScan = useStartMultipartScan();
-  const isUploading = startMultipartScan.isPending;
+  const isUploading = uploadPhase !== 'idle';
+  const isFinalizing = uploadPhase === 'finalizing';
   const validationError = validateMultipartSelection(files, mode);
   const selectedBytes = files.reduce((sum, file) => sum + file.size, 0);
+
+  useEffect(() => () => activeControllerRef.current?.abort(), []);
 
   const addFiles = (selected: File[]) => {
     if (isUploading || selected.length === 0) return;
@@ -196,23 +209,63 @@ export function MultipartArchiveUpload({ onSessionCreated }: MultipartArchiveUpl
 
   const submit = async () => {
     if (validationError || isUploading) return;
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
+    uploadPhaseRef.current = 'uploading';
+    setUploadPhase('uploading');
     setProgress(0);
     setUploadError(null);
+    setAnnouncement('');
     try {
       const result = await startMultipartScan.mutateAsync({
         files,
         mode,
-        onProgress: setProgress,
+        signal: controller.signal,
+        currentLibraryId,
+        onProgress: (pct) => {
+          if (!controller.signal.aborted && activeControllerRef.current === controller) {
+            setProgress(pct);
+          }
+        },
+        onFinalizing: () => {
+          if (controller.signal.aborted || activeControllerRef.current !== controller) return;
+          uploadPhaseRef.current = 'finalizing';
+          setUploadPhase('finalizing');
+        },
       });
+      if (controller.signal.aborted || activeControllerRef.current !== controller) return;
+      activeControllerRef.current = null;
+      uploadPhaseRef.current = 'idle';
+      setUploadPhase('idle');
       clearSelection();
-      onSessionCreated(result.sessionId);
+      onSessionCreated(result.sessionId, currentLibraryId);
     } catch (error) {
+      if (controller.signal.aborted || activeControllerRef.current !== controller) return;
       setUploadError(error instanceof Error ? error.message : 'Multipart upload failed.');
+    } finally {
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+        uploadPhaseRef.current = 'idle';
+        setUploadPhase('idle');
+      }
     }
+  };
+
+  const cancelUpload = () => {
+    const controller = activeControllerRef.current;
+    if (!controller || uploadPhaseRef.current !== 'uploading') return;
+    activeControllerRef.current = null;
+    uploadPhaseRef.current = 'idle';
+    controller.abort();
+    setUploadPhase('idle');
+    setProgress(0);
+    setUploadError(null);
+    setAnnouncement('Grouped upload cancelled.');
   };
 
   return (
     <div className="max-w-3xl mx-auto px-7 py-6 space-y-6">
+      <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
       <div className="space-y-2">
         <h1 className="text-xl font-bold" style={{ color: 'var(--ax-fg)' }}>
           Create one model from several files
@@ -374,7 +427,24 @@ export function MultipartArchiveUpload({ onSessionCreated }: MultipartArchiveUpl
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Uploading {files.length} files as one group…
             </span>
-            <span className="ax-mono">{progress}%</span>
+            <div className="flex items-center gap-3">
+              <span className="ax-mono">{progress}%</span>
+              {isFinalizing ? (
+                <span className="ax-mono text-[11px]" style={{ color: 'var(--ax-fg-muted)' }}>
+                  Finalizing
+                </span>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={cancelUpload}
+                  aria-label="Cancel grouped upload"
+                >
+                  Cancel
+                </Button>
+              )}
+            </div>
           </div>
           <div
             className="h-2 overflow-hidden rounded-full"

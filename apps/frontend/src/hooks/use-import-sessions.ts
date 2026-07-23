@@ -65,10 +65,16 @@ export function useStartScan() {
     mutationFn: ({
       file,
       onProgress,
+      signal,
+      onFinalizing,
+      currentLibraryId,
     }: {
       file: File;
       onProgress?: (pct: number) => void;
-    }) => scanUpload(file, onProgress),
+      signal?: AbortSignal;
+      onFinalizing?: () => void;
+      currentLibraryId: string | null;
+    }) => scanUpload(file, onProgress, signal, onFinalizing, currentLibraryId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['import-sessions'] });
     },
@@ -86,11 +92,24 @@ export function useStartMultipartScan() {
       files,
       mode,
       onProgress,
+      signal,
+      onFinalizing,
+      currentLibraryId,
     }: {
       files: File[];
       mode: MultipartArchiveMode;
       onProgress?: (pct: number) => void;
-    }) => scanMultipartUpload(files, mode, onProgress),
+      signal?: AbortSignal;
+      onFinalizing?: () => void;
+      currentLibraryId: string | null;
+    }) => scanMultipartUpload(
+      files,
+      mode,
+      onProgress,
+      signal,
+      onFinalizing,
+      currentLibraryId,
+    ),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['import-sessions'] });
     },

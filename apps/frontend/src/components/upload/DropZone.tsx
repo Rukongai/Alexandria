@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { UploadCloud, FolderOpen } from 'lucide-react';
 import { SUPPORTED_ARCHIVE_EXTENSIONS } from '@alexandria/shared';
 import { useStartScan } from '../../hooks/use-import-sessions';
@@ -6,22 +6,34 @@ import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
 
 interface FileUploadState {
+  id: number;
   file: File;
   pct: number;
   error: string | null;
+  controller: AbortController;
+  phase: 'uploading' | 'finalizing';
 }
 
 interface DropZoneProps {
+  currentLibraryId: string | null;
   /** When true, render the compact "drop more" banner instead of the full drop zone */
   compact?: boolean;
   onBrowseFolder?: () => void;
 }
 
-export function DropZone({ compact = false, onBrowseFolder }: DropZoneProps) {
+export function DropZone({ currentLibraryId, compact = false, onBrowseFolder }: DropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState<FileUploadState[]>([]);
+  const [announcement, setAnnouncement] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const nextUploadIdRef = useRef(0);
+  const controllersRef = useRef(new Map<number, AbortController>());
   const startScan = useStartScan();
+
+  useEffect(() => () => {
+    controllersRef.current.forEach((controller) => controller.abort());
+    controllersRef.current.clear();
+  }, []);
 
   const isValidArchive = (file: File) => {
     const lower = file.name.toLowerCase();
@@ -32,37 +44,67 @@ export function DropZone({ compact = false, onBrowseFolder }: DropZoneProps) {
     (file: File) => {
       if (!isValidArchive(file)) return;
 
-      const entry: FileUploadState = { file, pct: 0, error: null };
+      setAnnouncement('');
+      const id = nextUploadIdRef.current++;
+      const controller = new AbortController();
+      const entry: FileUploadState = {
+        id,
+        file,
+        pct: 0,
+        error: null,
+        controller,
+        phase: 'uploading',
+      };
+      controllersRef.current.set(id, controller);
       setUploading((prev) => [...prev, entry]);
 
-      startScan.mutate(
-        {
-          file,
-          onProgress: (pct) => {
-            setUploading((prev) =>
-              prev.map((e) => (e.file === file ? { ...e, pct } : e))
-            );
-          },
-        },
-        {
-          onError: (err) => {
-            const msg = err instanceof Error ? err.message : 'Upload failed';
-            setUploading((prev) =>
-              prev.map((e) =>
-                e.file === file ? { ...e, error: msg } : e
-              )
-            );
-          },
-          onSuccess: () => {
-            // Remove from local uploading list once session exists in the queue
-            setUploading((prev) => prev.filter((e) => e.file !== file));
-          },
+      void (async () => {
+        try {
+          await startScan.mutateAsync({
+            file,
+            signal: controller.signal,
+            currentLibraryId,
+            onProgress: (pct) => {
+              if (controller.signal.aborted) return;
+              setUploading((prev) =>
+                prev.map((e) => (e.id === id ? { ...e, pct } : e))
+              );
+            },
+            onFinalizing: () => {
+              if (controller.signal.aborted) return;
+              controllersRef.current.delete(id);
+              setUploading((prev) =>
+                prev.map((e) => e.id === id ? { ...e, phase: 'finalizing' } : e)
+              );
+            },
+          });
+          if (controller.signal.aborted) return;
+          // Remove from local uploading list once session exists in the queue
+          setUploading((prev) => prev.filter((e) => e.id !== id));
+        } catch (err) {
+          if (controller.signal.aborted) {
+            setUploading((prev) => prev.filter((e) => e.id !== id));
+            return;
+          }
+          const msg = err instanceof Error ? err.message : 'Upload failed';
+          setUploading((prev) =>
+            prev.map((e) => e.id === id ? { ...e, error: msg } : e)
+          );
+        } finally {
+          controllersRef.current.delete(id);
         }
-      );
+      })();
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [startScan]
+    [currentLibraryId, startScan]
   );
+
+  const cancelUpload = useCallback((entry: FileUploadState) => {
+    if (entry.phase !== 'uploading') return;
+    entry.controller.abort();
+    controllersRef.current.delete(entry.id);
+    setUploading((prev) => prev.filter((upload) => upload.id !== entry.id));
+    setAnnouncement(`${entry.file.name} upload cancelled.`);
+  }, []);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -87,66 +129,70 @@ export function DropZone({ compact = false, onBrowseFolder }: DropZoneProps) {
 
   if (compact) {
     return (
-      <div
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        className={cn(
-          'flex items-center gap-3.5 rounded-xl p-3.5 mx-7 mt-4 transition-colors',
-          isDragging && 'ring-2 ring-[var(--ax-amber)]'
-        )}
-        style={{
-          background: 'var(--ax-bg-elev)',
-          border: '1px dashed var(--ax-border-strong)',
-        }}
-      >
+      <div className="mx-7 mt-4 space-y-2">
+        <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
         <div
-          className="flex items-center justify-center rounded-xl flex-shrink-0"
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          className={cn(
+            'flex items-center gap-3.5 rounded-xl p-3.5 transition-colors',
+            isDragging && 'ring-2 ring-[var(--ax-amber)]'
+          )}
           style={{
-            width: 38,
-            height: 38,
-            background: 'var(--ax-amber-tint)',
-            color: 'var(--ax-amber-tint-fg)',
+            background: 'var(--ax-bg-elev)',
+            border: '1px dashed var(--ax-border-strong)',
           }}
         >
-          <UploadCloud className="h-[18px] w-[18px]" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-[13px] font-semibold" style={{ color: 'var(--ax-fg)' }}>
-            Drop more archives anywhere
-          </p>
-          <p className="text-[12px]" style={{ color: 'var(--ax-fg-muted)' }}>
-            .zip, .rar, .7z, .tar.gz — multiple files OK
-          </p>
-        </div>
-        <div className="flex gap-2 flex-shrink-0">
-          <button
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            className="ax-chip hover:opacity-80 transition-opacity cursor-pointer"
+          <div
+            className="flex items-center justify-center rounded-xl flex-shrink-0"
+            style={{
+              width: 38,
+              height: 38,
+              background: 'var(--ax-amber-tint)',
+              color: 'var(--ax-amber-tint-fg)',
+            }}
           >
-            Browse files
-          </button>
-          {onBrowseFolder && (
+            <UploadCloud className="h-[18px] w-[18px]" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-semibold" style={{ color: 'var(--ax-fg)' }}>
+              Drop more archives anywhere
+            </p>
+            <p className="text-[12px]" style={{ color: 'var(--ax-fg-muted)' }}>
+              .zip, .rar, .7z, .tar.gz — multiple files OK
+            </p>
+          </div>
+          <div className="flex gap-2 flex-shrink-0">
             <button
               type="button"
-              onClick={onBrowseFolder}
-              className="ax-chip hover:opacity-80 transition-opacity cursor-pointer flex items-center gap-1"
+              onClick={() => inputRef.current?.click()}
+              className="ax-chip hover:opacity-80 transition-opacity cursor-pointer"
             >
-              <FolderOpen className="w-3 h-3" />
-              Server folder
+              Browse files
             </button>
-          )}
+            {onBrowseFolder && (
+              <button
+                type="button"
+                onClick={onBrowseFolder}
+                className="ax-chip hover:opacity-80 transition-opacity cursor-pointer flex items-center gap-1"
+              >
+                <FolderOpen className="w-3 h-3" />
+                Server folder
+              </button>
+            )}
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            accept=".zip,.rar,.7z,.tar.gz,.tgz"
+            className="sr-only"
+            onChange={handleInputChange}
+            tabIndex={-1}
+          />
         </div>
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept=".zip,.rar,.7z,.tar.gz,.tgz"
-          className="sr-only"
-          onChange={handleInputChange}
-          tabIndex={-1}
-        />
+        <UploadRows uploading={uploading} onCancel={cancelUpload} />
       </div>
     );
   }
@@ -154,6 +200,7 @@ export function DropZone({ compact = false, onBrowseFolder }: DropZoneProps) {
   // Full drop zone (when no sessions yet)
   return (
     <div className="space-y-3">
+      <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
       <div
         onDrop={handleDrop}
         onDragOver={handleDragOver}
@@ -197,17 +244,36 @@ export function DropZone({ compact = false, onBrowseFolder }: DropZoneProps) {
 
       {/* In-flight upload progress rows */}
       {uploading.length > 0 && (
-        <div className="space-y-2">
-          {uploading.map((entry, i) => (
-            <UploadRow key={i} entry={entry} />
-          ))}
-        </div>
+        <UploadRows uploading={uploading} onCancel={cancelUpload} />
       )}
     </div>
   );
 }
 
-function UploadRow({ entry }: { entry: FileUploadState }) {
+function UploadRows({
+  uploading,
+  onCancel,
+}: {
+  uploading: FileUploadState[];
+  onCancel: (entry: FileUploadState) => void;
+}) {
+  if (uploading.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      {uploading.map((entry) => (
+        <UploadRow key={entry.id} entry={entry} onCancel={onCancel} />
+      ))}
+    </div>
+  );
+}
+
+function UploadRow({
+  entry,
+  onCancel,
+}: {
+  entry: FileUploadState;
+  onCancel: (entry: FileUploadState) => void;
+}) {
   return (
     <div
       className="rounded-lg px-4 py-3 space-y-2"
@@ -225,9 +291,24 @@ function UploadRow({ entry }: { entry: FileUploadState }) {
         >
           {entry.file.name}
         </span>
-        <span className="ax-mono text-[11px] flex-shrink-0" style={{ color: 'var(--ax-fg-muted)' }}>
+        <span className="ax-mono ml-auto text-[11px] flex-shrink-0" style={{ color: 'var(--ax-fg-muted)' }}>
           {formatFileSize(entry.file.size)}
         </span>
+        {!entry.error && entry.phase === 'uploading' && (
+          <button
+            type="button"
+            className="ax-chip shrink-0 cursor-pointer transition-opacity hover:opacity-80"
+            aria-label={`Cancel upload of ${entry.file.name}`}
+            onClick={() => onCancel(entry)}
+          >
+            Cancel
+          </button>
+        )}
+        {!entry.error && entry.phase === 'finalizing' && (
+          <span className="ax-mono shrink-0 text-[11px]" style={{ color: 'var(--ax-fg-muted)' }}>
+            Finalizing
+          </span>
+        )}
       </div>
       {entry.error ? (
         <p className="text-[11.5px]" style={{ color: 'var(--ax-danger)' }}>
@@ -238,6 +319,11 @@ function UploadRow({ entry }: { entry: FileUploadState }) {
           <div
             className="flex-1 h-1.5 rounded-full overflow-hidden"
             style={{ background: 'var(--ax-bg-sunk)' }}
+            role="progressbar"
+            aria-label={`Upload progress for ${entry.file.name}`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={entry.pct}
           >
             <div
               className="h-full rounded-full transition-all duration-200"

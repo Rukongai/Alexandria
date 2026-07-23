@@ -36,6 +36,8 @@ export function UploadPage() {
   const [tab, setTab] = useState<Tab>('queue');
   const [fileTargetId, setFileTargetId] = useState<string | null>(null);
   const [addFilesProgress, setAddFilesProgress] = useState(0);
+  const currentLibraryIdRef = useRef(currentLibraryId);
+  currentLibraryIdRef.current = currentLibraryId;
   const selectionLibraryIdRef = useRef(currentLibraryId);
   const isCurrentLibrarySelection = selectionLibraryIdRef.current === currentLibraryId;
   const scopedActiveId = isCurrentLibrarySelection ? activeId : null;
@@ -235,96 +237,101 @@ export function UploadPage() {
           </button>
         </div>
 
-        {tab === 'folder' ? (
-          <div
-            id="upload-panel-folder"
-            role="tabpanel"
-            aria-labelledby="upload-tab-folder"
-            className="flex-1 overflow-y-auto"
-          >
-            <div className="max-w-2xl mx-auto px-7 py-6">
-              <div className="space-y-2 mb-6">
+        <div
+          id="upload-panel-folder"
+          role="tabpanel"
+          aria-labelledby="upload-tab-folder"
+          className={cn('flex-1 overflow-y-auto', tab !== 'folder' && 'hidden')}
+          hidden={tab !== 'folder'}
+        >
+          <div className="max-w-2xl mx-auto px-7 py-6">
+            <div className="space-y-2 mb-6">
+              <h1 className="text-xl font-bold" style={{ color: 'var(--ax-fg)' }}>
+                Import from server folder
+              </h1>
+              <p className="text-[13px]" style={{ color: 'var(--ax-fg-muted)' }}>
+                Point at a folder on the server and define how its hierarchy maps to
+                collections and metadata.
+              </p>
+            </div>
+            <FolderImport />
+          </div>
+        </div>
+
+        <div
+          id="upload-panel-multipart"
+          role="tabpanel"
+          aria-labelledby="upload-tab-multipart"
+          className={cn('flex-1 overflow-y-auto ax-scroll', tab !== 'multipart' && 'hidden')}
+          hidden={tab !== 'multipart'}
+        >
+          <MultipartArchiveUpload
+            currentLibraryId={currentLibraryId}
+            onSessionCreated={(sessionId, originLibraryId) => {
+              if (originLibraryId !== currentLibraryIdRef.current) return;
+              setActiveId(sessionId);
+              setTab('queue');
+              toast({ title: 'Archive group added to the review queue' });
+            }}
+          />
+        </div>
+
+        <div
+          id="upload-panel-archive"
+          role="tabpanel"
+          aria-labelledby="upload-tab-archive"
+          className={cn('flex-1 overflow-hidden flex flex-col', tab !== 'queue' && 'hidden')}
+          hidden={tab !== 'queue'}
+        >
+          {/* Keep one DropZone mounted so active uploads survive full → compact changes. */}
+          <div className={scopedSessions.length > 0 ? undefined : 'px-7 pt-6'}>
+            {scopedSessions.length === 0 && (
+              <div className="space-y-2 mb-4">
                 <h1 className="text-xl font-bold" style={{ color: 'var(--ax-fg)' }}>
-                  Import from server folder
+                  Add models
                 </h1>
                 <p className="text-[13px]" style={{ color: 'var(--ax-fg-muted)' }}>
-                  Point at a folder on the server and define how its hierarchy maps to
-                  collections and metadata.
+                  Drop archives to scan, then review detected metadata before importing.
                 </p>
               </div>
-              <FolderImport />
-            </div>
-          </div>
-        ) : tab === 'multipart' ? (
-          <div
-            id="upload-panel-multipart"
-            role="tabpanel"
-            aria-labelledby="upload-tab-multipart"
-            className="flex-1 overflow-y-auto ax-scroll"
-          >
-            <MultipartArchiveUpload
-              onSessionCreated={(sessionId) => {
-                setActiveId(sessionId);
-                setTab('queue');
-                toast({ title: 'Archive group added to the review queue' });
-              }}
+            )}
+            <DropZone
+              currentLibraryId={currentLibraryId}
+              compact={scopedSessions.length > 0}
+              onBrowseFolder={() => setTab('folder')}
             />
           </div>
-        ) : (
-          <div
-            id="upload-panel-archive"
-            role="tabpanel"
-            aria-labelledby="upload-tab-archive"
-            className="flex-1 overflow-hidden flex flex-col"
-          >
-            {/* Drop zone — compact when sessions exist, full when empty */}
-            {scopedSessions.length > 0 ? (
-              <DropZone compact onBrowseFolder={() => setTab('folder')} />
+
+          {/* Review pane or empty state */}
+          <div className="flex-1 overflow-y-auto ax-scroll px-7 py-5">
+            {activeSession ? (
+              <ReviewPane
+                session={activeSession}
+                onCommitted={handleCommitted}
+                onDiscard={() => void handleDiscard(activeSession.id)}
+                onRetry={() => void handleDiscard(activeSession.id)}
+                isDiscarding={discardingId === activeSession.id}
+                onAddFiles={() => chooseFilesForSession(activeSession.id)}
+                isAddingFiles={addingFilesId === activeSession.id}
+                addFilesProgress={addFilesProgress}
+              />
+            ) : scopedSessions.length === 0 ? (
+              <div className="space-y-4 mt-4">
+                <h2 className="text-base font-semibold" style={{ color: 'var(--ax-fg)' }}>
+                  Recent models
+                </h2>
+                <RecentUploads />
+              </div>
             ) : (
-              <div className="px-7 pt-6">
-                <div className="space-y-2 mb-4">
-                  <h1 className="text-xl font-bold" style={{ color: 'var(--ax-fg)' }}>
-                    Add models
-                  </h1>
-                  <p className="text-[13px]" style={{ color: 'var(--ax-fg-muted)' }}>
-                    Drop archives to scan, then review detected metadata before importing.
-                  </p>
-                </div>
-                <DropZone />
+              <div
+                className="flex flex-col items-center justify-center py-16 text-[13px]"
+                style={{ color: 'var(--ax-fg-muted)' }}
+              >
+                Select a session from the queue to review it.
               </div>
             )}
-
-            {/* Review pane or empty state */}
-            <div className="flex-1 overflow-y-auto ax-scroll px-7 py-5">
-              {activeSession ? (
-                <ReviewPane
-                  session={activeSession}
-                  onCommitted={handleCommitted}
-                  onDiscard={() => void handleDiscard(activeSession.id)}
-                  onRetry={() => void handleDiscard(activeSession.id)}
-                  isDiscarding={discardingId === activeSession.id}
-                  onAddFiles={() => chooseFilesForSession(activeSession.id)}
-                  isAddingFiles={addingFilesId === activeSession.id}
-                  addFilesProgress={addFilesProgress}
-                />
-              ) : scopedSessions.length === 0 ? (
-                <div className="space-y-4 mt-4">
-                  <h2 className="text-base font-semibold" style={{ color: 'var(--ax-fg)' }}>
-                    Recent models
-                  </h2>
-                  <RecentUploads />
-                </div>
-              ) : (
-                <div
-                  className="flex flex-col items-center justify-center py-16 text-[13px]"
-                  style={{ color: 'var(--ax-fg-muted)' }}
-                >
-                  Select a session from the queue to review it.
-                </div>
-              )}
-            </div>
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

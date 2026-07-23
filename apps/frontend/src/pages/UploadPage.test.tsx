@@ -24,6 +24,7 @@ vi.mock('../api/models', async (importOriginal) => {
     getImportSession: vi.fn(),
     getModelStatus: vi.fn(),
     scanMultipartUpload: vi.fn(),
+    scanUpload: vi.fn(),
     discardImportSession: vi.fn(),
     uploadImportSessionFiles: vi.fn(),
   };
@@ -43,6 +44,7 @@ import {
   getModelStatus,
   listImportSessions,
   scanMultipartUpload,
+  scanUpload,
   uploadImportSessionFiles,
 } from '../api/models';
 import { useAssistantTarget } from '../hooks/use-assistant-context';
@@ -201,12 +203,140 @@ describe('UploadPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Upload as one model' }));
 
     await waitFor(() => {
-      expect(scanMultipartUpload).toHaveBeenCalledWith(files, 'combine', expect.any(Function));
+      expect(scanMultipartUpload).toHaveBeenCalledWith(
+        files,
+        'combine',
+        expect.any(Function),
+        expect.any(AbortSignal),
+        expect.any(Function),
+        null,
+      );
       expect(screen.getByRole('tab', { name: 'Archive upload' }))
         .toHaveAttribute('aria-selected', 'true');
       expect(screen.getByTestId('upload-review-grid')).toBeVisible();
       expect(screen.getByText('group-first.zip')).toBeVisible();
     });
+  });
+
+  it('keeps concurrent upload rows mounted when the first session makes the drop zone compact', async () => {
+    vi.mocked(listImportSessions)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([scanningSession]);
+    vi.mocked(scanUpload).mockImplementation((file) => (
+      file.name === 'first.zip'
+        ? Promise.resolve({ sessionId: scanningSession.id })
+        : new Promise(() => {})
+    ));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+    const input = container.querySelector<HTMLInputElement>(
+      '#upload-panel-archive input[accept*=".zip"]',
+    );
+
+    fireEvent.change(input!, {
+      target: {
+        files: [
+          new File(['one'], 'first.zip'),
+          new File(['two'], 'second.zip'),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Drop more archives anywhere')).toBeVisible();
+      expect(screen.getByText('second.zip')).toBeVisible();
+      expect(screen.getByRole('button', {
+        name: 'Cancel upload of second.zip',
+      })).toBeVisible();
+    });
+  });
+
+  it('keeps ordinary and multipart upload controllers alive across upload-method tabs', async () => {
+    vi.mocked(listImportSessions).mockResolvedValue([]);
+    vi.mocked(scanUpload).mockImplementation(() => new Promise(() => {}));
+    vi.mocked(scanMultipartUpload).mockImplementation(() => new Promise(() => {}));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+    const ordinaryInput = container.querySelector<HTMLInputElement>(
+      '#upload-panel-archive input[accept*=".zip"]',
+    );
+
+    fireEvent.change(ordinaryInput!, {
+      target: { files: [new File(['ordinary'], 'ordinary.zip')] },
+    });
+    await waitFor(() => expect(scanUpload).toHaveBeenCalledOnce());
+    const ordinarySignal = vi.mocked(scanUpload).mock.calls[0][2]!;
+    fireEvent.click(screen.getByRole('tab', { name: 'Multi-part archive' }));
+
+    expect(ordinarySignal.aborted).toBe(false);
+    const multipartFiles = [
+      new File(['one'], 'one.zip'),
+      new File(['two'], 'two.zip'),
+    ];
+    fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
+      target: { files: multipartFiles },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Upload as one model' }));
+    await waitFor(() => expect(scanMultipartUpload).toHaveBeenCalledOnce());
+    const multipartSignal = vi.mocked(scanMultipartUpload).mock.calls[0][3]!;
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Server folder import' }));
+    expect(ordinarySignal.aborted).toBe(false);
+    expect(multipartSignal.aborted).toBe(false);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Archive upload' }));
+    expect(screen.getByRole('button', { name: 'Cancel upload of ordinary.zip' })).toBeVisible();
+    fireEvent.click(screen.getByRole('tab', { name: 'Multi-part archive' }));
+    expect(screen.getByRole('button', { name: 'Cancel grouped upload' })).toBeVisible();
+  });
+
+  it('does not select a multipart session that completed in the previous library', async () => {
+    libraryState.currentLibraryId = 'library-a';
+    vi.mocked(listImportSessions).mockResolvedValue([]);
+    let resolveUpload: ((result: { sessionId: string }) => void) | undefined;
+    vi.mocked(scanMultipartUpload).mockImplementation(() => new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Multi-part archive' }));
+    fireEvent.change(screen.getByLabelText('Select multipart archive files'), {
+      target: {
+        files: [
+          new File(['one'], 'one.zip'),
+          new File(['two'], 'two.zip'),
+        ],
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Upload as one model' }));
+    await waitFor(() => expect(scanMultipartUpload).toHaveBeenCalledOnce());
+
+    libraryState.currentLibraryId = 'library-b';
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <UploadPage />
+      </QueryClientProvider>,
+    );
+    await act(async () => resolveUpload?.({ sessionId: 'origin-session' }));
+
+    expect(screen.getByRole('tab', { name: 'Multi-part archive' }))
+      .toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Archive upload' }))
+      .toHaveAttribute('aria-selected', 'false');
+    expect(screen.queryByText('origin-session')).toBeNull();
   });
 
   it('deletes a failed upload and removes it from the queue', async () => {

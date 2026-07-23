@@ -3,14 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./client', () => ({
   get: vi.fn(),
   post: vi.fn(),
+  postForLibrary: vi.fn(),
   patch: vi.fn(),
   del: vi.fn(),
   putRaw: vi.fn(),
   postForm: vi.fn(),
 }));
 
-import { del, post, putRaw } from './client';
-import { scanMultipartUpload } from './models';
+import { del, post, postForLibrary, putRaw } from './client';
+import { scanMultipartUpload, scanUpload } from './models';
 
 const envelope = <T,>(data: T) => ({ data, meta: null, errors: null });
 
@@ -46,18 +47,22 @@ describe('scanMultipartUpload', () => {
       onChunkProgress?.(100);
       return envelope({ received: 4 });
     });
+    vi.mocked(postForLibrary).mockImplementation(async () => {
+      events.push('complete');
+      return envelope({ sessionId: 'session-1' });
+    });
 
     const result = await scanMultipartUpload(files, 'combine', (pct) => progress.push(pct));
 
     expect(result).toEqual({ sessionId: 'session-1' });
     expect(vi.mocked(post).mock.calls).toEqual([
-      ['/models/upload/multipart/init', { filename: 'one.zip', totalSize: 4, totalChunks: 1 }],
-      ['/models/upload/multipart/init', { filename: 'two.zip', totalSize: 4, totalChunks: 1 }],
-      ['/models/upload/multipart/complete', {
-        uploadIds: ['upload-1', 'upload-2'],
-        mode: 'combine',
-      }],
+      ['/models/upload/multipart/init', { filename: 'one.zip', totalSize: 4, totalChunks: 1 }, undefined],
+      ['/models/upload/multipart/init', { filename: 'two.zip', totalSize: 4, totalChunks: 1 }, undefined],
     ]);
+    expect(postForLibrary).toHaveBeenCalledWith('/models/upload/multipart/complete', {
+      uploadIds: ['upload-1', 'upload-2'],
+      mode: 'combine',
+    }, null);
     expect(vi.mocked(putRaw).mock.calls.map(([path]) => path)).toEqual([
       '/models/upload/upload-1/chunk/0',
       '/models/upload/upload-2/chunk/0',
@@ -86,8 +91,8 @@ describe('scanMultipartUpload', () => {
       .mockResolvedValueOnce(envelope({
         uploadId: 'part-2',
         expiresAt: '2026-07-22T12:00:00.000Z',
-      }))
-      .mockResolvedValueOnce(envelope({ sessionId: 'split-session' }));
+      }));
+    vi.mocked(postForLibrary).mockResolvedValue(envelope({ sessionId: 'split-session' }));
     vi.mocked(putRaw).mockResolvedValue(envelope({ received: 1 }));
 
     await expect(scanMultipartUpload([
@@ -95,10 +100,10 @@ describe('scanMultipartUpload', () => {
       new File(['b'], 'dragon.zip'),
     ], 'split')).resolves.toEqual({ sessionId: 'split-session' });
 
-    expect(post).toHaveBeenLastCalledWith('/models/upload/multipart/complete', {
+    expect(postForLibrary).toHaveBeenLastCalledWith('/models/upload/multipart/complete', {
       uploadIds: ['part-1', 'part-2'],
       mode: 'split',
-    });
+    }, null);
   });
 
   it('should reject groups above 100 files and empty members before making API requests', async () => {
@@ -186,8 +191,8 @@ describe('scanMultipartUpload', () => {
       .mockResolvedValueOnce(envelope({
         uploadId: 'initialized-2',
         expiresAt: '2026-07-22T12:00:00.000Z',
-      }))
-      .mockRejectedValueOnce(originalError);
+      }));
+    vi.mocked(postForLibrary).mockRejectedValueOnce(originalError);
     vi.mocked(putRaw).mockResolvedValue(envelope({ received: 1 }));
     vi.mocked(del)
       .mockResolvedValueOnce(envelope(null))
@@ -202,5 +207,154 @@ describe('scanMultipartUpload', () => {
       ['/models/upload/initialized-1'],
       ['/models/upload/initialized-2'],
     ]);
+  });
+});
+
+describe('scanUpload cancellation', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('should abort the active chunk, skip retries, and clean up server state', async () => {
+    const controller = new AbortController();
+    const progress: number[] = [];
+    let reportChunkProgress: ((pct: number) => void) | undefined;
+    vi.mocked(post).mockResolvedValue(envelope({
+      uploadId: 'stalled-upload',
+      expiresAt: '2026-07-22T12:00:00.000Z',
+    }));
+    vi.mocked(putRaw).mockImplementation((_path, _chunk, onProgress, signal) => {
+      reportChunkProgress = onProgress;
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('Request aborted', 'AbortError'));
+        }, { once: true });
+      });
+    });
+    vi.mocked(del).mockResolvedValue(envelope(null));
+
+    const upload = scanUpload(
+      new File(['archive'], 'stalled.zip'),
+      (pct) => progress.push(pct),
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(putRaw).toHaveBeenCalledOnce());
+
+    reportChunkProgress?.(10);
+    controller.abort();
+    reportChunkProgress?.(80);
+
+    await expect(upload).rejects.toMatchObject({ name: 'AbortError' });
+    expect(putRaw).toHaveBeenCalledOnce();
+    expect(del).toHaveBeenCalledWith('/models/upload/stalled-upload');
+    expect(progress).toEqual([10]);
+    expect(vi.mocked(putRaw).mock.calls[0][3]).toBe(controller.signal);
+  });
+
+  it('should cancel retry backoff without starting another chunk request', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    vi.mocked(post).mockResolvedValue(envelope({
+      uploadId: 'backoff-upload',
+      expiresAt: '2026-07-22T12:00:00.000Z',
+    }));
+    vi.mocked(putRaw).mockRejectedValue(new Error('temporary chunk failure'));
+    vi.mocked(del).mockResolvedValue(envelope(null));
+
+    try {
+      const upload = scanUpload(
+        new File(['archive'], 'backoff.zip'),
+        undefined,
+        controller.signal,
+      );
+      const rejection = expect(upload).rejects.toMatchObject({ name: 'AbortError' });
+
+      await vi.waitFor(() => expect(putRaw).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(0);
+      controller.abort();
+
+      await rejection;
+      expect(putRaw).toHaveBeenCalledOnce();
+      expect(del).toHaveBeenCalledWith('/models/upload/backoff-upload');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should clean up an initialized upload when completion fails', async () => {
+    const completionError = new Error('complete failed');
+    vi.mocked(post)
+      .mockResolvedValueOnce(envelope({
+        uploadId: 'single-upload',
+        expiresAt: '2026-07-22T12:00:00.000Z',
+      }));
+    vi.mocked(postForLibrary).mockRejectedValueOnce(completionError);
+    vi.mocked(putRaw).mockResolvedValue(envelope({ received: 7 }));
+    vi.mocked(del).mockResolvedValue(envelope(null));
+
+    await expect(scanUpload(new File(['archive'], 'single.zip')))
+      .rejects.toBe(completionError);
+
+    expect(del).toHaveBeenCalledOnce();
+    expect(del).toHaveBeenCalledWith('/models/upload/single-upload');
+  });
+
+  it('should finalize an ordinary upload in its starting library without an abort signal', async () => {
+    const controller = new AbortController();
+    const onFinalizing = vi.fn(() => controller.abort());
+    vi.mocked(post).mockResolvedValue(envelope({
+      uploadId: 'library-upload',
+      expiresAt: '2026-07-22T12:00:00.000Z',
+    }));
+    vi.mocked(putRaw).mockResolvedValue(envelope({ received: 7 }));
+    vi.mocked(postForLibrary).mockResolvedValue(envelope({ sessionId: 'session-a' }));
+
+    await expect(scanUpload(
+      new File(['archive'], 'library.zip'),
+      undefined,
+      controller.signal,
+      onFinalizing,
+      'library-a',
+    )).resolves.toEqual({ sessionId: 'session-a' });
+
+    expect(onFinalizing).toHaveBeenCalledOnce();
+    expect(controller.signal.aborted).toBe(true);
+    expect(postForLibrary).toHaveBeenCalledWith(
+      '/models/upload/library-upload/complete',
+      undefined,
+      'library-a',
+    );
+  });
+});
+
+describe('scanMultipartUpload finalization', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('should finalize a multipart upload in its starting library after cancellation closes', async () => {
+    const controller = new AbortController();
+    const onFinalizing = vi.fn(() => controller.abort());
+    vi.mocked(post)
+      .mockResolvedValueOnce(envelope({ uploadId: 'part-a', expiresAt: '2026-07-22T12:00:00.000Z' }))
+      .mockResolvedValueOnce(envelope({ uploadId: 'part-b', expiresAt: '2026-07-22T12:00:00.000Z' }));
+    vi.mocked(putRaw).mockResolvedValue(envelope({ received: 1 }));
+    vi.mocked(postForLibrary).mockResolvedValue(envelope({ sessionId: 'multipart-session' }));
+
+    await expect(scanMultipartUpload(
+      [new File(['a'], 'one.zip'), new File(['b'], 'two.zip')],
+      'combine',
+      undefined,
+      controller.signal,
+      onFinalizing,
+      'library-a',
+    )).resolves.toEqual({ sessionId: 'multipart-session' });
+
+    expect(onFinalizing).toHaveBeenCalledOnce();
+    expect(controller.signal.aborted).toBe(true);
+    expect(postForLibrary).toHaveBeenCalledWith('/models/upload/multipart/complete', {
+      uploadIds: ['part-a', 'part-b'],
+      mode: 'combine',
+    }, 'library-a');
   });
 });

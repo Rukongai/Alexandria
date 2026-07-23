@@ -57,6 +57,8 @@ Both upload paths now use the staged ingestion workflow. They return a `sessionI
 
 To create one model from several archives, use the multipart protocol exposed in the frontend's dedicated **Multi-part archive** tab. Initiate each of 2–100 members through `POST /models/upload/multipart/init`, upload its chunks through the existing chunk endpoint, then submit all upload IDs together to `POST /models/upload/multipart/complete`. The 5 GB limit applies to each member; there is no separate aggregate-size field in the multipart request. Multipart `combine` mode accepts independent complete archives. `split` mode accepts one complete classic `.z01` … `.zip` set, numbered `.zip.001` … set, or modern `<base>.part1.rar` … `<base>.partN.rar` set. A multipart group creates one import session and therefore one model. Ordinary multi-select under Archive upload continues to create a separate session for each archive.
 
+The bundled frontend makes each ordinary archive upload independently cancellable and exposes one Cancel control for an active multipart group. It passes an `AbortSignal` through initialization, chunk transfer, and retry backoff, suppressing stale progress and error handling after cancellation. Immediately before either completion endpoint, it checks for cancellation and enters a non-cancellable **Finalizing** phase; the completion request uses the library ID captured when the upload started rather than mutable current-library state. Cancellation or errors before or around completion trigger best-effort `DELETE /models/upload/:uploadId` cleanup for every initialized ID the client knows about, although completion may already have consumed an ID. Multipart cancellation retains the selected files and mode for retry. All upload-method panels remain mounted while hidden, so switching tabs does not stop an active transfer, and ordinary upload rows also survive the drop zone's full-to-compact transition.
+
 ---
 
 ## Error Format
@@ -775,7 +777,7 @@ The backend streams the request into a uniquely named pending file and bounds th
 
 ### DELETE /models/upload/:uploadId
 
-Abort an initialized chunked upload session. This deletes its temporary chunk directory and removes the in-memory session. Abort is serialized with chunk receipt and completion: exactly one lifecycle operation claims the session, and a request that reaches an already consumed or aborted session receives `NOT_FOUND`. The frontend calls this endpoint on a best-effort basis for every multipart upload ID it initialized when any later upload or completion step fails.
+Abort an initialized chunked upload session. This deletes its temporary chunk directory and removes the in-memory session. Abort is serialized with chunk receipt and completion: exactly one lifecycle operation claims the session, and a request that reaches an already consumed or aborted session receives `NOT_FOUND`. The frontend calls this endpoint on a best-effort basis for every ordinary or multipart upload ID it initialized when the user cancels or a later upload or completion step fails. Cleanup failures do not replace the original cancellation or upload error.
 
 **Auth required:** Yes
 
