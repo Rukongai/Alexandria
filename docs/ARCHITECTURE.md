@@ -478,6 +478,8 @@ The Model Detail page (`pages/ModelDetailPage.tsx`) was fully redesigned in P2. 
 
 `components/models/ModelDetailPanel.tsx` is the tabbed right panel. `components/models/PanelTabs.tsx` is the generic full-width segmented control it uses. `PanelTabs` is typed with a string union for tab values and accepts icon components typed as `React.ComponentType<{ className?: string }>` (see the gotcha note in the Conventions doc).
 
+The Collections tab lists the model's current manual-collection memberships and can add the model to one or more additional collections without removing existing memberships. The browse bulk-action bar makes the same distinction explicit: **Add to collection** preserves existing memberships, while **Move** replaces them.
+
 ### 3D Viewer
 
 The 3D viewer is an in-browser STL renderer built on `three` + `@react-three/fiber` + `@react-three/drei`. It is composed of two layers:
@@ -606,7 +608,7 @@ All provider routes apply `requireAuth` and enforce provider ownership in `AiPro
 | Method | Route | Purpose | Service Chain |
 |--------|-------|---------|---------------|
 | POST | /bulk/metadata | Metadata changes on multiple models | MetadataService |
-| POST | /bulk/collection | Add/remove models from collections | CollectionService |
+| POST | /bulk/collection | Add/remove models or move them by replacing all existing collection memberships | CollectionService |
 | POST | /bulk/delete | Delete multiple models | ModelService → StorageService |
 
 ---

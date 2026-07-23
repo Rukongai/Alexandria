@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, AlertTriangle, Download, GitMerge, Loader2, Upload, X } from 'lucide-react';
 import type { ModelCard, ModelDetail } from '@alexandria/shared';
+import { addModelsToCollection, getCollections } from '../api/collections';
 import {
   createModelFolder,
   deleteModelFile,
@@ -88,6 +89,52 @@ export function ModelDetailPage() {
     queryKey: ['model-files', id],
     queryFn: () => getModelFiles(id!),
     enabled: Boolean(id),
+  });
+
+  const collectionsQuery = useQuery({
+    queryKey: ['collections'],
+    queryFn: () => getCollections().then((response) => response.data),
+    enabled: Boolean(model),
+  });
+
+  const addToCollectionsMutation = useMutation({
+    mutationFn: async (collectionIds: string[]) => {
+      if (!id) throw new Error('Model id is required');
+      const results = await Promise.allSettled(
+        collectionIds.map((collectionId) => addModelsToCollection(collectionId, [id])),
+      );
+      const failureCount = results.filter((result) => result.status === 'rejected').length;
+      if (failureCount > 0) {
+        throw new Error(
+          `${failureCount} of ${collectionIds.length} collection update${collectionIds.length === 1 ? '' : 's'} failed.`,
+        );
+      }
+    },
+    onSuccess: (_, collectionIds) => {
+      toast({
+        title: `Added to ${collectionIds.length} collection${collectionIds.length === 1 ? '' : 's'}`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Could not add to collections',
+        description: error instanceof Error ? error.message : undefined,
+        variant: 'destructive',
+      });
+    },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['model', id] }),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['collections'] }),
+        queryClient.invalidateQueries({ queryKey: ['collection'] }),
+        queryClient.invalidateQueries({ queryKey: ['collection-models'] }),
+        queryClient.invalidateQueries({ queryKey: ['search'] }),
+        queryClient.invalidateQueries({ queryKey: ['smart-collection'] }),
+        queryClient.invalidateQueries({ queryKey: ['smart-collections'] }),
+        queryClient.invalidateQueries({ queryKey: ['smart-preview'] }),
+      ]);
+    },
   });
 
   const isLoading = modelLoading || filesLoading;
@@ -308,6 +355,14 @@ export function ModelDetailPage() {
               onRenameFolder={(path, name) => fileMutation.mutate({ type: 'rename-folder', path, name })}
               onMoveFolder={(path, parentPath) => runFileAction({ type: 'move-folder', path, parentPath })}
               onDeleteFolder={(path, name) => fileMutation.mutate({ type: 'delete-folder', path, name })}
+              allCollections={collectionsQuery.data ?? []}
+              collectionsLoading={collectionsQuery.isLoading}
+              collectionsError={collectionsQuery.isError}
+              collectionAddPending={addToCollectionsMutation.isPending}
+              onRetryCollections={() => void collectionsQuery.refetch()}
+              onAddToCollections={(collectionIds) =>
+                addToCollectionsMutation.mutateAsync(collectionIds).then(() => undefined)
+              }
             />
           </div>
         </div>

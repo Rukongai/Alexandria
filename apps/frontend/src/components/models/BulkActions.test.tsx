@@ -11,6 +11,7 @@ vi.mock('../../api/bulk', () => ({
 }));
 
 vi.mock('../../api/collections', () => ({
+  addModelsToCollection: vi.fn(),
   getCollections: vi.fn(),
 }));
 
@@ -19,7 +20,7 @@ vi.mock('../../api/metadata', () => ({
 }));
 
 import { bulkCollection, bulkDelete, bulkMetadata } from '../../api/bulk';
-import { getCollections } from '../../api/collections';
+import { addModelsToCollection, getCollections } from '../../api/collections';
 import { getFieldValues } from '../../api/metadata';
 
 const target: CollectionDetail = {
@@ -124,6 +125,66 @@ describe('BulkActions', () => {
         collectionId: target.id,
       });
       expect(onComplete).toHaveBeenCalledOnce();
+    });
+  });
+
+  it('should add selected models while keeping their existing collection memberships', async () => {
+    vi.mocked(getCollections).mockResolvedValue({ data: [target], meta: null, errors: null });
+    vi.mocked(addModelsToCollection).mockResolvedValue(undefined);
+    const onComplete = vi.fn();
+
+    render(
+      <BulkActions
+        selectedIds={new Set(['model-1', 'model-2'])}
+        onClear={vi.fn()}
+        onComplete={onComplete}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add to collection' }));
+    expect(screen.getByText('Existing collection memberships will be kept.')).toBeInTheDocument();
+    const targetButton = await screen.findByRole('button', { name: 'Add to Print Queue' });
+    fireEvent.click(targetButton);
+
+    await waitFor(() => {
+      expect(addModelsToCollection).toHaveBeenCalledWith(target.id, ['model-1', 'model-2']);
+      expect(bulkCollection).not.toHaveBeenCalled();
+      expect(onComplete).toHaveBeenCalledOnce();
+    });
+  });
+
+  it('should expose picker state and restore trigger focus when Escape closes it', async () => {
+    vi.mocked(getCollections).mockResolvedValue({ data: [target], meta: null, errors: null });
+
+    render(
+      <BulkActions
+        selectedIds={new Set(['model-1'])}
+        onClear={vi.fn()}
+        onComplete={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Add to collection' });
+    expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(trigger);
+
+    const picker = await screen.findByRole('dialog', { name: 'Add models to collection' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(trigger).toHaveAttribute('aria-controls', picker.id);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Add to Print Queue' })).toHaveFocus();
+    });
+
+    fireEvent.keyDown(picker, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Add models to collection' })).not.toBeInTheDocument();
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(trigger).toHaveFocus();
     });
   });
 

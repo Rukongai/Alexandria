@@ -936,7 +936,7 @@ interface BulkMetadataOperation {
 
 interface BulkCollectionRequest {
   modelIds: string[];
-  action: 'add' | 'remove';
+  action: 'add' | 'remove' | 'move'; // move replaces every existing collection membership
   collectionId: string;
 }
 
