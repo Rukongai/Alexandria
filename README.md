@@ -19,8 +19,9 @@ A self-hosted personal library for managing 3D printing model collections. Think
 **Organization**
 - Flexible metadata system with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL, Source) and user-defined custom fields
 - Nestable collections — models can belong to multiple collections simultaneously
+- Library-scoped bulk metadata, collection, and delete operations validate up to 500 models and apply database changes atomically
 - Existing tag values are suggested during model editing, upload review, and bulk tagging; free-form tags remain supported
-- Tag normalization prevents case-variant duplicates
+- Tag normalization trims and validates names and prevents case-variant duplicates
 
 **Search and browse**
 - PostgreSQL full-text search across model names and descriptions
@@ -32,8 +33,9 @@ A self-hosted personal library for managing 3D printing model collections. Think
 - Connect user-owned, OpenAI-compatible providers; API keys are encrypted at rest and never returned by the API
 - Search models, collections, metadata fields and known values, and staged uploads in the active library; research public sources; and prepare reviewable model or upload-draft changes
 - Use the current detail, page selection, or upload review as context, with starter tasks for filling metadata and suggesting tags or collections
+- Preview one uniform metadata or collection operation across the current models or active library; the server freezes up to 500 owned targets and shows the resolved scope, count, and a bounded model-name sample
 - Try `{Artist Name} - {Date} - {Model Name}` filenames when filling metadata and infer Source as the character's originating work when evidence supports it
-- Enforce preview-before-apply with immutable, expiring, single-use proposals applied atomically; staged proposals update review metadata but never commit an upload
+- Enforce preview-before-apply with immutable, expiring, single-use individual and bulk proposals applied atomically; staged proposals update review metadata but never commit an upload
 
 **API**
 - Typed REST endpoints with a consistent `{ data, meta, errors }` envelope on every response

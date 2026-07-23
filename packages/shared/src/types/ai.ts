@@ -1,6 +1,7 @@
 import type { SetModelMetadataRequest } from './metadata.js';
 import type { UpdateModelRequest } from './model.js';
 import type { BatchUploadMetadata } from './upload.js';
+import type { BulkMetadataOperation } from './api.js';
 
 export interface AiProvider {
   id: string;
@@ -99,15 +100,41 @@ export interface AiUpdateImportSessionChange {
   patch: BatchUploadMetadata;
 }
 
+export interface AiBulkMetadataChange {
+  type: 'bulk_metadata';
+  /** Frozen, ownership-validated model IDs resolved when the preview is created. */
+  modelIds: string[];
+  operations: BulkMetadataOperation[];
+}
+
+export interface AiBulkCollectionOperation {
+  collectionId: string;
+  action: 'add' | 'remove';
+}
+
+export interface AiBulkCollectionsChange {
+  type: 'bulk_collections';
+  /** Frozen, ownership-validated model IDs resolved when the preview is created. */
+  modelIds: string[];
+  operations: AiBulkCollectionOperation[];
+}
+
 export type AiChange =
   | AiUpdateModelChange
   | AiSetMetadataChange
   | AiUpdateCollectionsChange
-  | AiUpdateImportSessionChange;
+  | AiUpdateImportSessionChange
+  | AiBulkMetadataChange
+  | AiBulkCollectionsChange;
 
 export interface AiChangePreviewDisplay {
   collections: Record<string, { name: string }>;
   images: Record<string, { filename: string; thumbnailUrl: string | null }>;
+  bulkTarget?: {
+    scope: 'current_models' | 'active_library';
+    modelCount: number;
+    sampleModelNames: string[];
+  };
 }
 
 export interface AiChangePreview {

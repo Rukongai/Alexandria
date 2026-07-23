@@ -99,6 +99,17 @@ describe('MetadataService – configured value validation', () => {
       .toThrow(/at most 100 items/);
     expect(() => service.validateFieldValue(field('number'), null)).not.toThrow();
   });
+
+  it('normalizes tag values and accepts the documented 255-character boundary', () => {
+    const tagsField = {
+      slug: 'tags', type: 'multi_enum', isDefault: true, config: null,
+    } as never;
+    expect(service.normalizeAndValidateFieldValue(tagsField, ' terrain ')).toEqual(['terrain']);
+    expect(service.normalizeAndValidateFieldValue(tagsField, ['x'.repeat(255)]))
+      .toEqual(['x'.repeat(255)]);
+    expect(() => service.normalizeAndValidateFieldValue(tagsField, ['   '])).toThrow();
+    expect(() => service.normalizeAndValidateFieldValue(tagsField, ['x'.repeat(256)])).toThrow();
+  });
 });
 
 // Track custom field IDs created during tests so we can clean them up.
@@ -1045,5 +1056,41 @@ describe('MetadataService – bulkSetMetadata()', () => {
       await db.delete(modelTags).where(eq(modelTags.modelId, secondModel.id));
       await db.delete(models).where(eq(models.id, secondModel.id));
     }
+  });
+
+  it.each([
+    ['an empty list', []],
+    ['a blank name', ['   ']],
+    ['an oversized name', ['x'.repeat(256)]],
+  ])('should reject tag add operations containing %s without writing tags', async (_label, value) => {
+    await expect(metadataService.bulkSetMetadata(
+      [testModelId],
+      [{ fieldSlug: DEFAULT_SLUG_TAGS, action: 'add', value }],
+    )).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    const rows = await db
+      .select()
+      .from(modelTags)
+      .where(eq(modelTags.modelId, testModelId));
+    expect(rows).toEqual([]);
+  });
+
+  it('should trim and de-duplicate valid tag additions before storage', async () => {
+    const tagName = `trimmed-tag-${Date.now()}`;
+    await metadataService.bulkSetMetadata(
+      [testModelId],
+      [{
+        fieldSlug: DEFAULT_SLUG_TAGS,
+        action: 'add',
+        value: [`  ${tagName}  `, tagName.toUpperCase()],
+      }],
+    );
+
+    const rows = await db
+      .select({ name: tags.name })
+      .from(modelTags)
+      .innerJoin(tags, eq(modelTags.tagId, tags.id))
+      .where(eq(modelTags.modelId, testModelId));
+    expect(rows).toEqual([{ name: tagName }]);
   });
 });

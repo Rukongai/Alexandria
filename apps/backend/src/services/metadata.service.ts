@@ -1,4 +1,4 @@
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import type {
   MetadataFieldDetail,
   MetadataFieldValue,
@@ -25,6 +25,9 @@ const logger = createLogger('MetadataService');
 const MAX_METADATA_STRING_LENGTH = 10_000;
 const MAX_METADATA_ARRAY_ITEMS = 100;
 const MAX_VALIDATION_PATTERN_LENGTH = 512;
+const MAX_TAG_NAME_LENGTH = 255;
+const MAX_BULK_MODELS = 500;
+const MAX_BULK_METADATA_OPERATIONS = 25;
 
 // Map a DB row to the API-facing MetadataFieldDetail shape.
 function toFieldDetail(row: MetadataFieldDefinitionRow): MetadataFieldDetail {
@@ -52,6 +55,38 @@ export class MetadataService {
       field.type === 'multi_enum' &&
       field.isDefault === true
     );
+  }
+
+  private normalizeTagNames(value: unknown, requireAtLeastOne: boolean): string[] {
+    const values = typeof value === 'string' ? [value] : value;
+    if (!Array.isArray(values) || values.some((item) => typeof item !== 'string')) {
+      throw validationError('Tags must be an array of strings');
+    }
+    if (requireAtLeastOne && values.length === 0) {
+      throw validationError('Add operations require one or more tag names');
+    }
+
+    const normalized: string[] = [];
+    const seen = new Set<string>();
+    for (const item of values) {
+      const name = (item as string).trim();
+      if (!name) throw validationError('Tag names cannot be blank');
+      if (name.length > MAX_TAG_NAME_LENGTH) {
+        throw validationError(`Tag names must be at most ${MAX_TAG_NAME_LENGTH} characters`);
+      }
+      if (generateSlug(name).length > MAX_TAG_NAME_LENGTH) {
+        throw validationError(`Generated tag slugs must be at most ${MAX_TAG_NAME_LENGTH} characters`);
+      }
+      const key = name.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        normalized.push(name);
+      }
+    }
+    if (requireAtLeastOne && normalized.length === 0) {
+      throw validationError('Add operations require one or more tag names');
+    }
+    return normalized;
   }
 
   private coerceToString(value: string | string[] | number | boolean): string {
@@ -140,6 +175,18 @@ export class MetadataService {
       }
       if (!pattern || !pattern.test(stringValue)) invalid('Value does not match the required format');
     }
+  }
+
+  /** Normalize special field values, then apply the same semantic validation used by writes. */
+  normalizeAndValidateFieldValue(
+    field: MetadataFieldDefinitionRow,
+    value: unknown,
+  ): string | string[] | number | boolean | null {
+    const normalizedValue = value !== null && this.isTagField(field)
+      ? this.normalizeTagNames(value, false)
+      : value;
+    this.validateFieldValue(field, normalizedValue);
+    return normalizedValue as string | string[] | number | boolean | null;
   }
 
   // ---------------------------------------------------------------------------
@@ -361,8 +408,8 @@ export class MetadataService {
     ]> = [];
     for (const [fieldSlug, rawValue] of Object.entries(data)) {
       const field = await this.getFieldBySlug(fieldSlug, executor);
-      this.validateFieldValue(field, rawValue);
-      validatedEntries.push([fieldSlug, rawValue, field]);
+      const normalizedValue = this.normalizeAndValidateFieldValue(field, rawValue);
+      validatedEntries.push([fieldSlug, normalizedValue, field]);
     }
 
     for (const [fieldSlug, rawValue, field] of validatedEntries) {
@@ -524,78 +571,146 @@ export class MetadataService {
   // Bulk Operations
   // ---------------------------------------------------------------------------
 
+  async validateBulkOperations(
+    operations: BulkMetadataOperation[],
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
+    if (operations.length === 0 || operations.length > MAX_BULK_METADATA_OPERATIONS) {
+      throw validationError(
+        `Bulk metadata requires between 1 and ${MAX_BULK_METADATA_OPERATIONS} operations`,
+      );
+    }
+    for (const operation of operations) {
+      const field = await this.getFieldBySlug(operation.fieldSlug, executor);
+      if (operation.action === 'remove') continue;
+      if (operation.action === 'add') {
+        if (!this.isTagField(field)) {
+          throw validationError("The 'add' bulk metadata action is only supported for tags");
+        }
+        const tagNames = this.normalizeTagNames(operation.value, true);
+        this.normalizeAndValidateFieldValue(field, tagNames);
+        continue;
+      }
+      if (operation.value !== undefined) {
+        this.normalizeAndValidateFieldValue(field, operation.value);
+      }
+    }
+  }
+
   async bulkSetMetadata(
     modelIds: string[],
     operations: BulkMetadataOperation[],
+    executor: DatabaseExecutor = db,
   ): Promise<void> {
+    if (modelIds.length === 0 || modelIds.length > MAX_BULK_MODELS) {
+      throw validationError(`Bulk metadata requires between 1 and ${MAX_BULK_MODELS} models`);
+    }
+    const uniqueModelIds = [...new Set(modelIds)];
+    if (uniqueModelIds.length !== modelIds.length) {
+      throw validationError('Bulk metadata model IDs must be unique');
+    }
     logger.info(
       {
         service: 'MetadataService',
-        modelCount: modelIds.length,
+        modelCount: uniqueModelIds.length,
         operationCount: operations.length,
       },
       'Starting bulk metadata update',
     );
 
-    for (const modelId of modelIds) {
-      for (const operation of operations) {
-        if (operation.action === 'remove') {
-          await this.setModelMetadata(modelId, { [operation.fieldSlug]: null });
-          continue;
+    if (uniqueModelIds.length === 0) return;
+    const existingModels = await executor
+      .select({ id: models.id })
+      .from(models)
+      .where(inArray(models.id, uniqueModelIds));
+    if (existingModels.length !== uniqueModelIds.length) {
+      throw notFound('One or more models were not found');
+    }
+
+    await this.validateBulkOperations(operations, executor);
+    const validatedOperations = [];
+    for (const operation of operations) {
+      const field = await this.getFieldBySlug(operation.fieldSlug, executor);
+      validatedOperations.push({ operation, field });
+    }
+
+    for (const { operation, field } of validatedOperations) {
+      const removesValue = operation.action === 'remove'
+        || (operation.action === 'set' && operation.value === undefined);
+      if (this.isTagField(field)) {
+        if (removesValue || operation.action === 'set') {
+          await executor
+            .delete(modelTags)
+            .where(inArray(modelTags.modelId, uniqueModelIds));
         }
+        if (removesValue) continue;
 
-        if (operation.action === 'set') {
-          await this.setModelMetadata(modelId, {
-            [operation.fieldSlug]:
-              operation.value !== undefined
-                ? (operation.value as string | string[] | number | boolean)
-                : null,
-          });
-          continue;
-        }
-
-        const field = await this.getFieldBySlug(operation.fieldSlug);
-        if (!this.isTagField(field)) {
-          throw validationError("The 'add' bulk metadata action is only supported for tags");
-        }
-
-        if (
-          typeof operation.value !== 'string' &&
-          !Array.isArray(operation.value)
-        ) {
-          throw validationError("The 'add' tag action requires one or more tag names");
-        }
-
-        const additions = Array.isArray(operation.value)
-          ? operation.value
-          : [operation.value];
-        const currentMetadata = await this.getModelMetadata(modelId);
-        const currentValue = currentMetadata.find(
-          (item) => item.fieldSlug === operation.fieldSlug,
-        )?.value;
-        const currentTags = Array.isArray(currentValue) ? currentValue : [];
-        const seen = new Set(currentTags.map((tag) => tag.toLowerCase()));
-        const mergedTags = [...currentTags];
-
-        for (const tag of additions) {
-          const trimmedTag = tag.trim();
-          const key = trimmedTag.toLowerCase();
-          if (trimmedTag && !seen.has(key)) {
-            seen.add(key);
-            mergedTags.push(trimmedTag);
+        const tagNames = this.normalizeTagNames(
+          operation.value,
+          operation.action === 'add',
+        );
+        const tagIds: string[] = [];
+        for (const tagName of tagNames) {
+          const [existingTag] = await executor
+            .select({ id: tags.id })
+            .from(tags)
+            .where(sql`lower(${tags.name}) = lower(${tagName})`)
+            .limit(1);
+          if (existingTag) {
+            tagIds.push(existingTag.id);
+          } else {
+            const [createdTag] = await executor
+              .insert(tags)
+              .values({ name: tagName, slug: generateSlug(tagName) })
+              .returning({ id: tags.id });
+            tagIds.push(createdTag.id);
           }
         }
-
-        await this.setModelMetadata(modelId, {
-          [operation.fieldSlug]: mergedTags,
-        });
+        if (tagIds.length > 0) {
+          const relationships = uniqueModelIds.flatMap((modelId) =>
+            tagIds.map((tagId) => ({ modelId, tagId })));
+          // Stay comfortably below PostgreSQL's parameter limit for the
+          // maximum 500-model/100-tag proposal.
+          for (let offset = 0; offset < relationships.length; offset += 5_000) {
+            await executor
+              .insert(modelTags)
+              .values(relationships.slice(offset, offset + 5_000))
+              .onConflictDoNothing();
+          }
+        }
+        continue;
       }
+
+      if (removesValue) {
+        await executor
+          .delete(modelMetadata)
+          .where(and(
+            inArray(modelMetadata.modelId, uniqueModelIds),
+            eq(modelMetadata.fieldDefinitionId, field.id),
+          ));
+        continue;
+      }
+
+      const stringValue = this.coerceToString(
+        operation.value as string | string[] | number | boolean,
+      );
+      await executor
+        .insert(modelMetadata)
+        .values(uniqueModelIds.map((modelId) => ({
+          modelId,
+          fieldDefinitionId: field.id,
+          value: stringValue,
+        })))
+        .onConflictDoUpdate({
+          target: [modelMetadata.modelId, modelMetadata.fieldDefinitionId],
+          set: { value: stringValue },
+        });
     }
 
     logger.info(
       {
         service: 'MetadataService',
-        modelCount: modelIds.length,
+        modelCount: uniqueModelIds.length,
         operationCount: operations.length,
       },
       'Bulk metadata update complete',

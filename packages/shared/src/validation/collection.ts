@@ -17,7 +17,10 @@ export const addModelsToCollectionSchema = z.object({
 });
 
 export const bulkCollectionSchema = z.object({
-  modelIds: z.array(z.string().uuid()).min(1),
+  modelIds: z.array(z.string().uuid()).min(1).max(500)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'Model IDs must be unique',
+    }),
   action: z.enum(['add', 'remove', 'move']),
   collectionId: z.string().uuid(),
 });

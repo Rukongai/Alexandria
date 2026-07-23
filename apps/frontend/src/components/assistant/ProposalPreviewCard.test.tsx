@@ -161,4 +161,151 @@ describe('ProposalPreviewCard', () => {
     expect(screen.getByText('markPreSupported: Yes')).toBeVisible();
     expect(screen.getByText('markNsfw: No')).toBeVisible();
   });
+
+  it('should summarize bulk metadata operations without rendering frozen model IDs', () => {
+    const modelIds = Array.from(
+      { length: 1000 },
+      (_, index) => `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`,
+    );
+
+    render(
+      <ProposalPreviewCard
+        proposal={{
+          proposalId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          summary: 'Standardize the library metadata',
+          expiresAt: '2026-07-21T12:15:00.000Z',
+          changes: [{
+            type: 'bulk_metadata',
+            modelIds,
+            operations: [
+              { fieldSlug: 'tags', action: 'add', value: ['terrain', 'fantasy'] },
+              { fieldSlug: 'print_quality', action: 'set', value: 'High' },
+              { fieldSlug: 'artist', action: 'remove' },
+            ],
+          }],
+        }}
+        isApplying={false}
+        isApplied={false}
+        onApply={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Update metadata on 1,000 models')).toBeVisible();
+    expect(screen.getByText('Add terrain, fantasy to Tags')).toBeVisible();
+    expect(screen.getByText('Set Print quality to High')).toBeVisible();
+    expect(screen.getByText('Clear Artist')).toBeVisible();
+    const preview = screen.getByRole('region', { name: /preview: standardize the library metadata/i });
+    expect(preview).not.toHaveTextContent(modelIds[0]);
+    expect(preview).not.toHaveTextContent(modelIds[999]);
+  });
+
+  it('should summarize bulk collection changes with server-resolved names', () => {
+    const modelIds = [
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2',
+    ];
+    const favoritesId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const reviewId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+    render(
+      <ProposalPreviewCard
+        proposal={{
+          proposalId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          summary: 'Reorganize selected models',
+          expiresAt: '2026-07-21T12:15:00.000Z',
+          display: {
+            collections: {
+              [favoritesId]: { name: 'Favorites' },
+              [reviewId]: { name: 'Needs Review' },
+            },
+            images: {},
+            bulkTarget: {
+              scope: 'current_models',
+              modelCount: 2,
+              sampleModelNames: ['Red Dragon', 'Blue Dragon'],
+            },
+          },
+          changes: [{
+            type: 'bulk_collections',
+            modelIds,
+            operations: [
+              { collectionId: favoritesId, action: 'add' },
+              { collectionId: reviewId, action: 'remove' },
+            ],
+          }],
+        }}
+        isApplying={false}
+        isApplied={false}
+        onApply={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Update collections')).toBeVisible();
+    expect(screen.getByText('Selected models')).toBeVisible();
+    expect(screen.getByText('2 models affected')).toBeVisible();
+    expect(screen.getByText('Red Dragon, Blue Dragon')).toBeVisible();
+    expect(screen.getByText('Add to collection Favorites')).toBeVisible();
+    expect(screen.getByText('Remove from collection Needs Review')).toBeVisible();
+    const preview = screen.getByRole('region', { name: /preview: reorganize selected models/i });
+    expect(preview).not.toHaveTextContent(modelIds[0]);
+    expect(preview).not.toHaveTextContent(modelIds[1]);
+  });
+
+  it('should bound the model-name sample for an active-library bulk proposal', () => {
+    const modelIds = Array.from(
+      { length: 1000 },
+      (_, index) => `ffffffff-ffff-4fff-8fff-${index.toString().padStart(12, '0')}`,
+    );
+
+    render(
+      <ProposalPreviewCard
+        proposal={{
+          proposalId: '12121212-1212-4212-8212-121212121212',
+          summary: 'Tag the entire library',
+          expiresAt: '2026-07-21T12:15:00.000Z',
+          display: {
+            collections: {},
+            images: {},
+            bulkTarget: {
+              scope: 'active_library',
+              modelCount: 1000,
+              sampleModelNames: [
+                'Red Dragon',
+                'Blue Dragon',
+                'Green Dragon',
+                'Gold Dragon',
+                'Silver Dragon',
+                'Hidden Dragon',
+                'Another Hidden Dragon',
+              ],
+            },
+          },
+          changes: [{
+            type: 'bulk_metadata',
+            modelIds,
+            operations: [{ fieldSlug: 'tags', action: 'add', value: 'library-wide' }],
+          }],
+        }}
+        isApplying={false}
+        isApplied={false}
+        onApply={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Update metadata')).toBeVisible();
+    expect(screen.getByText('Entire active library')).toBeVisible();
+    expect(screen.getByText('1,000 models affected')).toBeVisible();
+    expect(screen.getByText(
+      'Red Dragon, Blue Dragon, Green Dragon, Gold Dragon, Silver Dragon',
+    )).toBeVisible();
+    expect(screen.getByText('995 more')).toBeVisible();
+    expect(screen.queryByText('Hidden Dragon')).not.toBeInTheDocument();
+    expect(screen.queryByText('Another Hidden Dragon')).not.toBeInTheDocument();
+    const preview = screen.getByRole('region', { name: /preview: tag the entire library/i });
+    expect(preview).not.toHaveTextContent(modelIds[0]);
+    expect(preview).not.toHaveTextContent(modelIds[999]);
+  });
 });

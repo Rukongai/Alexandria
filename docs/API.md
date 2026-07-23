@@ -443,7 +443,7 @@ The upstream `owned_by` field is exposed as `ownedBy`; missing or non-string val
 
 ### POST /ai/chat
 
-Send one assistant turn through the selected provider. The assistant can search and inspect models, collections, configured metadata fields with library-scoped known values, and active staged import sessions. Model, collection, value, and import-session reads remain scoped to the active library. It may also use public lookup tools and can create one reviewable change proposal, but it cannot mutate library data during chat.
+Send one assistant turn through the selected provider. The assistant can search and inspect models, collections, configured metadata fields with library-scoped known values, and active staged import sessions. Model, collection, value, and import-session reads remain scoped to the active library. It may also use public lookup tools and can create one reviewable individual or bulk change proposal, but it cannot mutate library data during chat.
 
 **Auth required:** Yes
 
@@ -487,7 +487,7 @@ The backend does not persist chat transcripts. It sends the supplied message and
 
 The internal list tools for collections, metadata fields, known metadata values, and import sessions return at most 100 items and set `hasMore: true` when additional items exist. This bound applies only to data supplied through the provider tool loop and does not change the corresponding public REST endpoints.
 
-The frontend supplies context from the current page. A model detail page targets that model. The pivot workspace targets up to 25 selected models, or the first 25 visible results when nothing is selected. The upload page targets the active session when it is `ready_for_review`; otherwise it targets up to 25 ready-for-review sessions. The assistant is instructed to operate only on those explicit targets and not silently broaden the request. Changing the active library or exact target set aborts in-flight chat, clears the prior conversation and proposal UI, and ignores stale chat/apply completions so an answer prepared for one selection cannot appear against another.
+The frontend supplies context from the current page. A model detail page targets that model. The pivot workspace targets up to 25 selected models, or the first 25 visible results when nothing is selected. The upload page targets the active session when it is `ready_for_review`; otherwise it targets up to 25 ready-for-review sessions. Ordinary changes and a `current_models` bulk proposal remain limited to those explicit model targets. For an explicitly requested whole-library uniform edit, the provider may instead select the `active_library` bulk scope; the server resolves that scope rather than trusting provider-supplied model IDs. Changing the active library or exact target set aborts in-flight chat, clears the prior conversation and proposal UI, and ignores stale chat/apply completions so an answer prepared for one selection cannot appear against another.
 
 For a simple “fill metadata” task, the assistant inspects the target's archive/original filename, scan details or files, existing metadata, and configured fields. It first tries the exact `{Artist Name} - {Date} - {Model Name}` convention after stripping the archive extension, maps artist and model name to their relevant fields and the date to a configured date or year field when one exists, and treats the parse as an untrusted hint rather than a change. Source means the depicted character's originating intellectual property, franchise, series, game, film, or other work—not a download site or artist (for example, Fullmetal Alchemist for Lust or Konosuba for Aqua). The assistant should infer it only with reasonable evidence and may research when local evidence is insufficient. It reads known values before suggesting tags or an existing collection and uses only server-returned collection IDs. The assistant bubble exposes starter prompts for filling metadata, suggesting tags, and suggesting a collection.
 
@@ -534,15 +534,19 @@ For a simple “fill metadata” task, the assistant inspects the target's archi
 }
 ```
 
-`sources` contains unique source URLs gathered during this turn, up to 24. `snippet` and `imageUrl` are optional. `proposal` is `null` when the provider did not request a valid preview. When a proposal exists, `display.collections` maps referenced collection UUIDs to server-resolved names and `display.images` maps referenced model-file UUIDs to `{ filename, thumbnailUrl }`. These presentation maps let the review UI show human-readable targets while `changes` remains the exact immutable payload. The shared field is optional for compatibility; newly created previews populate it, using empty maps when no collection or image IDs need resolution.
+`sources` contains unique source URLs gathered during this turn, up to 24. `snippet` and `imageUrl` are optional. `proposal` is `null` when the provider did not request a valid preview. When a proposal exists, `display.collections` maps referenced collection UUIDs to server-resolved names and `display.images` maps referenced model-file UUIDs to `{ filename, thumbnailUrl }`. A bulk preview also includes `display.bulkTarget`, containing the server-derived `scope`, exact `modelCount`, and up to five server-derived `sampleModelNames`. These presentation fields let the review UI show a human-readable scope, count, bounded name sample, and “N more” remainder without rendering the frozen model UUID list; `changes` remains the exact immutable payload. The shared display fields are optional for compatibility.
 
 Public text lookup uses DuckDuckGo's Instant Answer API and returns at most eight abstract/related-topic sources; it is not a general crawl of arbitrary pages. Image lookup uses Wikimedia Commons and returns at most eight file-page and thumbnail candidates. Both services are keyless, use a 7-second timeout and 1 MiB response-body limit, and fail safely as an unavailable tool result so the assistant may still answer. Returned image URLs are research candidates only: the backend does not import them into managed storage, although the frontend may load a returned thumbnail to display its source card. An AI cover change can reference only an image file already belonging to the target model.
 
-The complete chat operation has a 45-second deadline; provider calls receive the remaining time under that same 45-second ceiling, while public-search calls are further limited to 7 seconds. If the client disconnects while chat is running, the cancellation signal is propagated to active provider and public-search fetches. Provider resolution, target-context reads, library/model/collection/metadata/import-session tools, and proposal creation are raced against the same cancellation/deadline boundary. Because PostgreSQL queries are not cancelled by that JavaScript race, the shared pool additionally enforces a 5-second connection-acquisition timeout, 45-second server statement timeout, and 50-second client query timeout so abandoned work cannot remain unbounded. Preview validation and insertion use one transaction with the operation deadline applied locally and cancellation/deadline checks around the insert, so an abandoned mutating tool cannot commit a late proposal. Each user may start at most 10 chats per rolling minute and run at most two chats concurrently; exceeding either limit returns `429 PROCESSING_FAILED`. The limiter is process-local, bounded to 10,000 tracked users, and resets when the backend restarts, which is appropriate for the current single-instance deployment but must be replaced by shared state before horizontally scaling the backend. The provider tool loop accepts at most one proposal per response and applies these resource limits: six provider turns, eight tool calls per turn, 12 tool calls total, 20,000 argument characters per call, 40,000 argument characters total, 12,000 result characters per tool, 48,000 result characters total, and 64,000 serialized provider-context characters. The returned assistant message is capped at 16,000 characters. Provider failures, invalid/empty responses, or exceeding a deadline, turn, tool, argument, result, or context budget return `422 PROCESSING_FAILED`; an overlong final message is truncated. Expected tool errors sent back through the provider loop are length-bounded, while unexpected internal and database errors are replaced with `Tool call failed` rather than exposing their messages to the provider.
+The complete chat operation has a 45-second deadline; provider calls receive the remaining time under that same 45-second ceiling, while public-search calls are further limited to 7 seconds. If the client disconnects while chat is running, the cancellation signal is propagated to active provider and public-search fetches. Provider resolution, target-context reads, library/model/collection/metadata/import-session tools, and proposal creation are raced against the same cancellation/deadline boundary. Because PostgreSQL queries are not cancelled by that JavaScript race, the shared pool additionally enforces a 5-second connection-acquisition timeout, 45-second server statement timeout, and 50-second client query timeout so abandoned work cannot remain unbounded. Preview validation and insertion use one transaction with the operation deadline applied locally and cancellation/deadline checks around the insert, so an abandoned mutating tool cannot commit a late proposal. Each user may start at most 10 chats per rolling minute and run at most two chats concurrently; exceeding either limit returns `429 PROCESSING_FAILED`. The limiter is process-local, bounded to 10,000 tracked users, and resets when the backend restarts, which is appropriate for the current single-instance deployment but must be replaced by shared state before horizontally scaling the backend.
+
+The provider tool loop accepts at most one proposal per response and applies these resource limits: six provider requests total, eight tool calls in one provider response, 12 tool calls total across the user request, 20,000 argument characters per call, 40,000 argument characters total, 12,000 result characters per tool, 48,000 result characters total, and 64,000 serialized provider-context characters. The provider receives the eight-call and 12-call budgets in its instructions. If it nevertheless returns more calls than the remaining per-response or total allowance, none of that oversized batch is executed. Alexandria may make one repair request telling the provider to combine uniform edits with `preview_bulk_changes` and stay within the remaining allowance, but that repair counts toward the six-request ceiling and is attempted only when a provider request remains. A second oversized response, or an oversized batch on the sixth request, returns `422 PROCESSING_FAILED`. The returned assistant message is capped at 16,000 characters. Provider failures, invalid/empty responses, or exceeding a deadline, provider-request, tool, argument, result, or context budget return `422 PROCESSING_FAILED`; an overlong final message is truncated. Expected tool errors sent back through the provider loop are length-bounded, while unexpected internal and database errors are replaced with `Tool call failed` rather than exposing their messages to the provider.
 
 #### Proposal validation
 
-There is intentionally no client-facing endpoint for creating a proposal. The provider's only change-capable tool is the internal `preview_changes` tool. Before storing a preview, the server validates a non-empty summary of at most 1,000 characters and 1–25 changes. Each model must belong to the authenticated user and active library, and `modelName` must exactly match its current name. Each referenced import session must be owned by the user, belong to the active library, remain `ready_for_review`, have the expected original filename, and have an `updatedAt` exactly matching the proposal's optimistic stale-state guard.
+There is intentionally no client-facing endpoint for creating a proposal. The provider has two internal, preview-only change tools. `preview_changes` accepts individualized model and upload-draft changes. `preview_bulk_changes` is preferred when the same metadata or collection operations apply uniformly to the current model targets or the whole active library. Neither tool applies domain changes.
+
+Before storing an individual preview, the server validates a non-empty summary of at most 1,000 characters and 1–25 changes. Each model must belong to the authenticated user and active library, and `modelName` must exactly match its current name. Each referenced import session must be owned by the user, belong to the active library, remain `ready_for_review`, have the expected original filename, and have an `updatedAt` exactly matching the proposal's optimistic stale-state guard.
 
 The supported changes are:
 
@@ -551,7 +555,11 @@ The supported changes are:
 - `update_collections`: `addCollectionIds` and `removeCollectionIds` are arrays of at most 50 UUIDs each. At least one ID is required, an ID cannot appear in both arrays, and every collection must belong to the user and active library.
 - `update_import_session`: `importSessionId`, the current `originalFilename`, the session's exact `updatedAt` copied into `expectedUpdatedAt`, and a non-empty `patch` are required. `originalFilename` guards identity; `expectedUpdatedAt` is an optimistic stale-state guard, so any intervening session or draft update makes the proposal invalid. The patch is a `BatchUploadMetadata` object and may include `modelName`, `description`, one of `collectionId` or `newCollectionName`, `artist`, `tags`, configured metadata values keyed by slug, and upload options. Existing collection IDs and configured metadata slugs/types are validated. Applying this change merges it into the persisted review draft; it never commits, enqueues, or otherwise processes the upload.
 
-The resulting proposal is immutable, server-owned, scoped to the user and active library, and expires 15 minutes after creation.
+`preview_bulk_changes` accepts a summary plus a symbolic target whose `scope` is `current_models` or `active_library`, and at least one of `metadataOperations` or `collectionOperations`. It does not accept model IDs from the provider. The server resolves `current_models` from the validated page context or queries the authenticated user's active library for `active_library`. It then deduplicates and sorts the IDs, verifies every model is owned and in scope, and stores them in canonical `bulk_metadata` and/or `bulk_collections` changes. This freezes the reviewed target set: later library membership changes do not widen or shrink the proposal.
+
+Bulk metadata accepts 1–25 operations on distinct field slugs. Each operation uses `set`, `add`, or `remove`; `set` and `add` require a value, `remove` forbids one, and `add` is supported only for the default Tags field. Added tag names are trimmed, must contain 1–255 characters after trimming, and are deduplicated case-insensitively before membership insertion. Bulk collections accepts 1–50 operations on distinct collection IDs, using `add` or `remove`; each referenced collection must be owned and in the active library. A bulk scope must resolve to 1–500 models. If `active_library` contains more than 500 models, preview creation fails instead of truncating the library, splitting it, or applying a partial result.
+
+The resulting proposal is immutable, server-owned, scoped to the user and active library, and expires 15 minutes after creation. Its display metadata includes the resolved scope, exact target count, and no more than five model names. The frontend renders those fields, an “N more” remainder when needed, and the operation labels; it does not render the frozen model UUID list. Individualized per-model enrichment and background AI batch jobs are not part of this API.
 
 ---
 
@@ -584,11 +592,11 @@ Apply the exact stored changes from a prior assistant preview. The request accep
 }
 ```
 
-Immediately before applying, the server reloads the stored payload and enters the mutation transaction. It locks every referenced model and ready-for-review import-session row `FOR UPDATE` in deterministic ID order, then revalidates names/filenames, ownership, active-library scope, metadata fields, image files, collections, and import-session status through that same transaction executor. Only after revalidation does it conditionally change the proposal from `pending` to `applying`; this atomic claim prevents concurrent requests from applying it twice, while the row locks prevent independently previewed stale proposals from overwriting the same entity. Apply-time expiry checks use the database clock.
+Immediately before applying, the server reloads the stored payload and enters the mutation transaction. It locks every referenced model—including every frozen bulk target—and ready-for-review import-session row `FOR UPDATE` in deterministic ID order, then revalidates names/filenames, ownership, active-library scope, metadata fields, image files, collections, and import-session status through that same transaction executor. Only after revalidation does it conditionally change the proposal from `pending` to `applying`; this atomic claim prevents concurrent requests from applying it twice, while the row locks prevent independently previewed stale proposals from overwriting the same entity. Apply-time expiry checks use the database clock.
 
 A proposal can be applied once successfully and only while its 15-minute review window is open. Expired proposals and non-pending proposals return `409 CONFLICT` and cannot be replayed. Expiry is enforced when applying; this endpoint does not expose or renew expired proposals.
 
-The conditional claim, all proposed model/metadata/collection/import-draft writes, and the final `applied` status run in one database transaction. If any operation fails or the process exits before commit, every domain change and the claim are rolled back together. The proposal remains `pending` and may be retried while unexpired and still valid; there is no committed `applying` state to strand.
+The conditional claim, all proposed model/metadata/collection/import-draft writes, and the final `applied` status run in one database transaction. This includes the complete frozen target set for a bulk proposal: there is no partial application. If any operation fails or the process exits before commit, every domain change and the claim are rolled back together. The proposal remains `pending` and may be retried while unexpired and still valid; there is no committed `applying` state to strand. Metadata set/add/remove and collection add/remove effects are idempotent, and a successfully applied proposal is single-use.
 
 An invalid proposal UUID returns `400 VALIDATION_ERROR`; a missing, un-owned, or wrong-library proposal returns `404 NOT_FOUND`. A stale live reference can return `404 NOT_FOUND` or `400 VALIDATION_ERROR` during revalidation. An invalid stored payload, expiry, prior use, or a concurrent claim returns `409 CONFLICT`.
 
@@ -2177,13 +2185,15 @@ Note: `.gif` is included in the MIME map above for file serving, but it is not i
 
 ## Bulk Operations
 
-Bulk endpoints apply operations across multiple models in a single request.
+Bulk endpoints apply operations across multiple models in a single request. All three routes require authentication and `requireLibrary`; `X-Library-Id` selects an owned library, or omission selects the user's default. Every supplied model ID must belong to the authenticated user and active library. The service locks and validates the complete unique target set before mutation, so a missing, un-owned, or wrong-library ID returns `404 NOT_FOUND` and applies nothing. All public bulk requests support at most 500 model IDs.
 
 ### POST /bulk/metadata
 
 Apply metadata operations to multiple models at once.
 
 **Auth required:** Yes
+
+**Library scope:** Required. All models must belong to the authenticated user and active library.
 
 **Request body:**
 
@@ -2200,16 +2210,18 @@ Apply metadata operations to multiple models at once.
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `modelIds` | UUID[] | Required; at least one |
-| `operations` | BulkMetadataOperation[] | Required; at least one |
+| `modelIds` | UUID[] | Required; 1–500 unique IDs |
+| `operations` | BulkMetadataOperation[] | Required; 1–25 operations |
 
 Each `BulkMetadataOperation`:
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `fieldSlug` | string | Required |
+| `fieldSlug` | string | Required; trimmed; 1–255 characters |
 | `action` | `set` \| `add` \| `remove` | Required; `add` appends tags without replacing existing tags |
-| `value` | string \| string[] \| number \| boolean (optional) | Required when `action` is `set` or `add` |
+| `value` | string \| string[] \| number \| boolean (optional) | Required for `add`; an omitted `set` value clears the field; ignored for `remove` |
+
+`add` is valid only for the default Tags field. It accepts one tag string or an array. Names are trimmed, must be 1–255 characters after trimming, and are deduplicated case-insensitively within the operation. Existing tags and memberships are reused without duplication. Model validation, metadata validation, and all metadata writes run in one database transaction.
 
 **Response (200):**
 
@@ -2229,6 +2241,8 @@ Add, remove, or move multiple models to a collection in a single request. Moving
 
 **Auth required:** Yes
 
+**Library scope:** Required. All models and the destination collection must belong to the authenticated user and active library.
+
 **Request body:**
 
 ```json
@@ -2241,7 +2255,7 @@ Add, remove, or move multiple models to a collection in a single request. Moving
 
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `modelIds` | UUID[] | Required; at least one |
+| `modelIds` | UUID[] | Required; 1–500 unique IDs |
 | `action` | `add` \| `remove` \| `move` | Required |
 | `collectionId` | UUID string | Required |
 
@@ -2255,13 +2269,17 @@ Add, remove, or move multiple models to a collection in a single request. Moving
 }
 ```
 
+The service locks and validates the complete model set and destination collection before changing membership. The add, remove, or move operation runs in the same transaction, so failure cannot leave a partially updated target set.
+
 ---
 
 ### POST /bulk/delete
 
-Delete multiple models and clean up their storage in a single request. Storage cleanup is best-effort — models are removed from the database first, then storage is cleaned up. Storage failures are logged but do not fail the request.
+Delete multiple models and clean up their storage in one coordinated operation. The database deletion is atomic; storage cleanup is best-effort after commit.
 
 **Auth required:** Yes
+
+**Library scope:** Required. All models must belong to the authenticated user and active library.
 
 **Request body:**
 
@@ -2271,7 +2289,7 @@ Delete multiple models and clean up their storage in a single request. Storage c
 }
 ```
 
-`modelIds` must be a non-empty array of model UUIDs.
+`modelIds` must contain 1–500 unique model UUIDs.
 
 **Response (200):**
 
@@ -2286,7 +2304,9 @@ Delete multiple models and clean up their storage in a single request. Storage c
 }
 ```
 
-`deletedIds` reflects the models that were actually removed from the database. Models that did not exist are silently skipped.
+Before deletion, the service locks and validates every model and captures only those models' managed-storage paths. It then deletes all database rows in one transaction. A missing, un-owned, or wrong-library model rejects the request before deletion; IDs are not silently skipped.
+
+After the database transaction commits, the service attempts to delete each captured managed-file storage object. Storage failures are logged but do not roll back the database deletion or fail the response, so orphaned objects may require later operational cleanup.
 
 ---
 

@@ -199,7 +199,7 @@ describe('AiProposalService real-database transaction', () => {
 
     const metadata = {
       getFieldBySlug: vi.fn().mockResolvedValue({ slug: 'artist', type: 'text' }),
-      validateFieldValue: vi.fn(),
+      normalizeAndValidateFieldValue: vi.fn((_field, value) => value),
       setModelMetadata: vi.fn().mockRejectedValue(new Error('forced later mutation failure')),
     };
     const service = new AiProposalService(

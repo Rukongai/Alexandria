@@ -121,16 +121,140 @@ const updateImportSessionChangeSchema = z.object({
   }),
 });
 
+const aiBulkModelIdsSchema = z.array(z.string().uuid()).min(1).max(500)
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: 'Bulk model IDs must be unique',
+  });
+
+const aiBulkMetadataOperationSchema = z.object({
+  fieldSlug: z.string().trim().min(1).max(255),
+  action: z.enum(['set', 'add', 'remove']),
+  value: z.union([
+    z.string().max(10_000),
+    z.array(z.string().max(10_000)).max(100),
+    z.number().finite(),
+    z.boolean(),
+  ]).optional(),
+}).superRefine((operation, context) => {
+  if (operation.action !== 'remove' && operation.value === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['value'],
+      message: `${operation.action} metadata operations require a value`,
+    });
+  }
+  if (operation.action === 'remove' && operation.value !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['value'],
+      message: 'remove metadata operations must not include a value',
+    });
+  }
+  if (operation.fieldSlug === 'tags' && operation.action !== 'remove') {
+    const values = typeof operation.value === 'string' ? [operation.value] : operation.value;
+    if (operation.action === 'add' && (!Array.isArray(values) || values.length === 0)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['value'],
+        message: 'Add operations require one or more tag names',
+      });
+      return;
+    }
+    if (Array.isArray(values)) {
+      values.forEach((value, index) => {
+        if (typeof value !== 'string' || value.trim().length === 0 || value.trim().length > 255) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['value', index],
+            message: 'Tag names must be between 1 and 255 characters after trimming',
+          });
+        }
+      });
+    }
+  }
+});
+
+const aiBulkCollectionOperationSchema = z.object({
+  collectionId: z.string().uuid(),
+  action: z.enum(['add', 'remove']),
+});
+
+const bulkMetadataChangeSchema = z.object({
+  type: z.literal('bulk_metadata'),
+  modelIds: aiBulkModelIdsSchema,
+  operations: z.array(aiBulkMetadataOperationSchema).min(1).max(25),
+}).superRefine((change, context) => {
+  const fieldSlugs = change.operations.map((operation) => operation.fieldSlug);
+  if (new Set(fieldSlugs).size !== fieldSlugs.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['operations'],
+      message: 'Bulk metadata operations must target distinct fields',
+    });
+  }
+});
+
+const bulkCollectionsChangeSchema = z.object({
+  type: z.literal('bulk_collections'),
+  modelIds: aiBulkModelIdsSchema,
+  operations: z.array(aiBulkCollectionOperationSchema).min(1).max(50),
+}).superRefine((change, context) => {
+  const collectionIds = change.operations.map((operation) => operation.collectionId);
+  if (new Set(collectionIds).size !== collectionIds.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['operations'],
+      message: 'Bulk collection operations must target distinct collections',
+    });
+  }
+});
+
 export const aiChangeSchema = z.union([
   updateModelChangeSchema,
   setMetadataChangeSchema,
   updateCollectionsChangeSchema,
   updateImportSessionChangeSchema,
+  bulkMetadataChangeSchema,
+  bulkCollectionsChangeSchema,
 ]);
 
 export const aiChangeSetSchema = z.object({
   summary: z.string().trim().min(1).max(1000),
   changes: z.array(aiChangeSchema).min(1).max(25),
+});
+
+export const aiBulkChangeSetSchema = z.object({
+  summary: z.string().trim().min(1).max(1000),
+  target: z.object({
+    scope: z.enum(['current_models', 'active_library']),
+  }),
+  metadataOperations: z.array(aiBulkMetadataOperationSchema).min(1).max(25).optional(),
+  collectionOperations: z.array(aiBulkCollectionOperationSchema).min(1).max(50).optional(),
+}).superRefine((value, context) => {
+  if (!value.metadataOperations && !value.collectionOperations) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['metadataOperations'],
+      message: 'At least one bulk operation is required',
+    });
+  }
+  const fieldSlugs = (value.metadataOperations ?? []).map((operation) => operation.fieldSlug);
+  if (new Set(fieldSlugs).size !== fieldSlugs.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['metadataOperations'],
+      message: 'Bulk metadata operations must target distinct fields',
+    });
+  }
+  const collectionIds = (value.collectionOperations ?? [])
+    .map((operation) => operation.collectionId);
+  if (new Set(collectionIds).size !== collectionIds.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['collectionOperations'],
+      message: 'Bulk collection operations must target distinct collections',
+    });
+  }
 });
 
 export const aiProposalIdParamsSchema = z.object({
