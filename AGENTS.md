@@ -130,14 +130,36 @@ Run `documentation` when a change alters an endpoint, a type contract, or the ar
 
 ---
 
+## Validation Scope
+
+Run the narrowest checks that cover the behavior changed by the task:
+
+- **Documentation-only changes**, including a merge conflict resolved only in Markdown: inspect
+  the combined text and run `git diff --check`. Run a documentation-specific checker if one
+  exists. Do **not** run `npm test`, `npm run lint`, or `npm run build` unless the edited document
+  is generated or validated by one of those commands.
+- **One workspace:** run that workspace's relevant tests. Add its build/typecheck when production
+  compilation or a TypeScript contract can be affected.
+- **Shared contracts, multiple workspaces, migrations, configuration, or broad source changes:**
+  run `npm test`; add `npm run lint` and `npm run build` when the change can affect those surfaces.
+- **Merging `main` into a task branch:** validate the conflict resolution and the task branch's
+  combined behavior. Incoming, already-reviewed code from `main` does not by itself require a full
+  repository test/build. Broaden validation only when conflicts or cross-branch interactions touch
+  source, configuration, dependencies, generated artifacts, migrations, or shared contracts.
+
+Passing CI on `main` is evidence for unchanged incoming code, not a reason to repeat every local
+check after a documentation-only conflict.
+
+---
+
 ## Task Flow
 
 1. If there's an issue: `gh issue view <number>`
 2. Branch from up-to-date `main`
 3. Read the relevant source and the doc sections that cover it
 4. Implement — directly, or delegated per the table above
-5. `npm test` (plus `npm run lint` / `npm run build` when the change is broad)
-6. `reviewer`, and `documentation` if docs are affected
+5. Validate according to **Validation Scope** above
+6. Run `reviewer` and `documentation` only at the thresholds described above
 7. `gh pr create`, with `Closes #<number>` when an issue exists
 
 ---
