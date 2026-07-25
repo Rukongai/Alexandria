@@ -12,12 +12,32 @@ import { config, type AppConfig } from '../config/index.js';
 import { storageError } from '../utils/errors.js';
 import { EtagCalculator } from '../utils/etag.js';
 import { S3StorageService } from './s3-storage.service.js';
+import { observeThrottling } from './s3-throttling.js';
 import { validateStorageKey } from './storage-key.js';
 
 /** Concurrent parts `@aws-sdk/lib-storage` keeps in flight per upload (its default). */
 const S3_MULTIPART_QUEUE_SIZE = 4;
 /** Spare sockets for reads, HEADs, and deletes running alongside uploads. */
 const S3_SOCKET_HEADROOM = 16;
+/**
+ * Retry strategy for the S3 client.
+ *
+ * `adaptive` is `standard` plus a client-side rate limiter that reacts to
+ * throttled responses by slowing the whole client down. Object stores that
+ * meter request rate — MEGA S4 serves 40-50 upload requests per second per
+ * account — ask clients to reduce concurrency on `SlowDown` rather than simply
+ * retry, and this is the SDK's implementation of that.
+ */
+const S3_RETRY_MODE = 'adaptive';
+/**
+ * Attempts per request, up from the SDK's default of 3.
+ *
+ * Under a rate limit a rejection is an expected, self-resolving condition
+ * rather than a fault, and the request should outlive a few of them. Throttled
+ * retries back off from 500 ms and are capped at 20 s by the SDK, so the extra
+ * attempts cost waiting, not hammering.
+ */
+const S3_MAX_ATTEMPTS = 6;
 
 export type StorageData = Buffer | Readable;
 export type StorageProgressCallback = (transferredBytes: number) => void;
@@ -323,11 +343,24 @@ export function createStorageService(appConfig: AppConfig = config): IStorageSer
     forcePathStyle: appConfig.s3.forcePathStyle,
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
+    // Adaptive adds a client-side rate limiter on top of the standard backoff:
+    // observing a throttled response slows every subsequent request, not just
+    // the retry of the one that was rejected. Standard mode retries the loser
+    // and lets the rest of the fan-out keep arriving at the same rate, which is
+    // how a burst of small files sustains throttling instead of easing out of
+    // it. Providers that meter request rate ask for exactly this behaviour.
+    retryMode: S3_RETRY_MODE,
+    maxAttempts: S3_MAX_ATTEMPTS,
     requestHandler: new NodeHttpHandler({
       httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets }),
       httpAgent: new HttpAgent({ keepAlive: true, maxSockets }),
     }),
   });
+
+  // The adaptive rate limiter reacts to throttling silently. Without this the
+  // only visible symptom is a slow import, with nothing to distinguish "the
+  // provider is metering us" from "the network is slow".
+  observeThrottling(client);
 
   return new S3StorageService({
     client,
