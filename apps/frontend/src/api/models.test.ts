@@ -13,12 +13,26 @@ vi.mock('./client', () => ({
 import { del, post, postForLibrary, putRaw } from './client';
 import {
   compressModelFolder,
+  deleteModelFiles,
   scanMultipartUpload,
   scanUpload,
   splitModelFolder,
 } from './models';
 
 const envelope = <T,>(data: T) => ({ data, meta: null, errors: null });
+
+describe('deleteModelFiles', () => {
+  it('posts all selected file IDs in one request', async () => {
+    const detail = { id: 'model-1' };
+    vi.mocked(post).mockResolvedValueOnce(envelope(detail));
+
+    await expect(deleteModelFiles('model-1', ['file-1', 'file-2'])).resolves.toEqual(detail);
+
+    expect(post).toHaveBeenCalledWith('/models/model-1/files/delete', {
+      fileIds: ['file-1', 'file-2'],
+    });
+  });
+});
 
 describe('splitModelFolder', () => {
   it('posts the folder path and new model name and unwraps the response', async () => {

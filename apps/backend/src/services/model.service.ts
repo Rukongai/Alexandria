@@ -11,6 +11,7 @@ import type {
   UpdateModelFileRequest,
   UpdateModelFolderRequest,
 } from '@alexandria/shared';
+import { MAX_MODEL_FILE_SELECTION_COUNT } from '@alexandria/shared';
 import { db } from '../db/index.js';
 import type { DatabaseExecutor } from '../db/index.js';
 import {
@@ -29,6 +30,9 @@ import { storageService } from './storage.service.js';
 import { generateSlug } from '../utils/slug.js';
 import { metadataService } from './metadata.service.js';
 import { duplicateScannerService } from './duplicate-scanner.service.js';
+import { createLogger } from '../utils/logger.js';
+
+const logger = createLogger('ModelService');
 
 export interface CreateModelData {
   id?: string;
@@ -236,7 +240,7 @@ export class ModelService {
     updates?: UpdateModelStatusData,
   ): Promise<void> {
     await db.transaction(async (tx) => {
-      const model = await this.getModelById(modelId, tx);
+      const model = await this.lockModelById(modelId, tx);
       await tx
         .update(models)
         .set({
@@ -256,7 +260,7 @@ export class ModelService {
   ): Promise<void> {
     if (!executor) {
       await db.transaction(async (tx) => {
-        const model = await this.getModelById(modelId, tx);
+        const model = await this.lockModelById(modelId, tx);
         await this.recalculateModelStats(modelId, tx);
         await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
       });
@@ -286,7 +290,7 @@ export class ModelService {
     file: CreateModelFileData,
   ): Promise<{ id: string }> {
     return db.transaction(async (tx) => {
-      const model = await this.getModelById(modelId, tx);
+      const model = await this.lockModelById(modelId, tx);
       const [created] = await this.createModelFiles(modelId, [file], tx);
       await this.recalculateModelStats(modelId, tx);
       await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
@@ -296,6 +300,20 @@ export class ModelService {
 
   async getModelById(id: string, executor: DatabaseExecutor = db): Promise<Model> {
     const [row] = await executor.select().from(models).where(eq(models.id, id)).limit(1);
+
+    if (!row) {
+      throw notFound(`Model not found: ${id}`);
+    }
+
+    return row;
+  }
+
+  private async lockModelById(id: string, executor: DatabaseExecutor): Promise<Model> {
+    const [row] = await executor
+      .select()
+      .from(models)
+      .where(eq(models.id, id))
+      .for('update');
 
     if (!row) {
       throw notFound(`Model not found: ${id}`);
@@ -817,33 +835,82 @@ export class ModelService {
   }
 
   async deleteModelFile(modelId: string, fileId: string): Promise<void> {
-    const [file] = await db
-      .select()
-      .from(modelFiles)
-      .where(and(eq(modelFiles.modelId, modelId), eq(modelFiles.id, fileId)))
-      .limit(1);
-    if (!file) {
-      throw notFound(`File not found: ${fileId}`);
+    await this.deleteModelFileSelection(modelId, [fileId], `File not found: ${fileId}`);
+  }
+
+  async deleteModelFiles(modelId: string, fileIds: string[]): Promise<void> {
+    await this.deleteModelFileSelection(
+      modelId,
+      fileIds,
+      'One or more selected files were not found',
+    );
+  }
+
+  private async deleteModelFileSelection(
+    modelId: string,
+    fileIds: string[],
+    missingMessage: string,
+  ): Promise<void> {
+    if (fileIds.length === 0 || fileIds.length > MAX_MODEL_FILE_SELECTION_COUNT) {
+      throw validationError(
+        `File selection must contain between 1 and ${MAX_MODEL_FILE_SELECTION_COUNT} IDs`,
+        'fileIds',
+      );
+    }
+    if (new Set(fileIds).size !== fileIds.length) {
+      throw validationError('File IDs must be unique', 'fileIds');
     }
 
-    await db.transaction(async (tx) => {
-      const model = await this.getModelById(modelId, tx);
-      const [deletedFile] = await tx
+    const storagePaths = await db.transaction(async (tx) => {
+      const model = await this.lockModelById(modelId, tx);
+      const selectedFiles = await tx
+        .select({ id: modelFiles.id })
+        .from(modelFiles)
+        .where(and(
+          eq(modelFiles.modelId, modelId),
+          inArray(modelFiles.id, fileIds),
+        ));
+      if (selectedFiles.length !== fileIds.length) {
+        throw notFound(missingMessage);
+      }
+
+      const selectedThumbnails = await tx
+        .select({ storagePath: thumbnails.storagePath })
+        .from(thumbnails)
+        .where(inArray(thumbnails.sourceFileId, fileIds));
+
+      const removedFiles = await tx
         .delete(modelFiles)
         .where(and(
-          eq(modelFiles.id, file.id),
           eq(modelFiles.modelId, modelId),
-          eq(modelFiles.relativePath, file.relativePath),
-          eq(modelFiles.storagePath, file.storagePath),
+          inArray(modelFiles.id, fileIds),
         ))
-        .returning({ id: modelFiles.id });
-      if (!deletedFile) {
-        throw conflict('File changed while it was being deleted; try again');
+        .returning({ id: modelFiles.id, storagePath: modelFiles.storagePath });
+      if (removedFiles.length !== fileIds.length) {
+        throw conflict('One or more files changed while they were being deleted; try again');
       }
       await this.recalculateModelStats(modelId, tx);
       await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
+      return [
+        ...removedFiles.map((file) => file.storagePath),
+        ...selectedThumbnails.map((thumbnail) => thumbnail.storagePath),
+      ];
     });
-    await storageService.delete(file.storagePath).catch(() => {});
+
+    try {
+      const failures = await storageService.deleteMany(storagePaths);
+      for (const failure of failures) {
+        logger.warn(
+          { modelId, storagePath: failure.filePath, err: failure.reason },
+          'Best-effort selected-file storage cleanup failed',
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        { modelId, err: error },
+        'Best-effort selected-file storage cleanup failed',
+      );
+    }
   }
 
   async deleteModelFolder(modelId: string, requestedPath: string): Promise<void> {
@@ -866,7 +933,7 @@ export class ModelService {
       ));
 
     await db.transaction(async (tx) => {
-      const model = await this.getModelById(modelId, tx);
+      const model = await this.lockModelById(modelId, tx);
       await tx
         .delete(modelFiles)
         .where(and(

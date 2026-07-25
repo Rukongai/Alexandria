@@ -360,5 +360,10 @@ describe('FileTree', () => {
       'title',
       'Select no more than 500 files to split',
     );
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveAttribute(
+      'title',
+      'Select no more than 500 files to delete',
+    );
   });
 });

@@ -90,6 +90,11 @@ export async function deleteModelFile(id: string, fileId: string): Promise<Model
   return response.data;
 }
 
+export async function deleteModelFiles(id: string, fileIds: string[]): Promise<ModelDetail> {
+  const response = await post<ModelDetail>(`/models/${id}/files/delete`, { fileIds });
+  return response.data;
+}
+
 export async function extractModelArchive(
   id: string,
   fileId: string,

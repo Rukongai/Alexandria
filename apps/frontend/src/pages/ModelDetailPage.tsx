@@ -8,6 +8,7 @@ import {
   compressModelFolder,
   createModelFolder,
   deleteModelFile,
+  deleteModelFiles,
   deleteModelFolder,
   extractModelArchive,
   getModel,
@@ -192,7 +193,7 @@ export function ModelDetailPage() {
           );
           return `${action.fileIds.length} file${action.fileIds.length === 1 ? '' : 's'} moved`;
         case 'delete-files':
-          await Promise.all(action.fileIds.map((fileId) => deleteModelFile(id, fileId)));
+          await deleteModelFiles(id, action.fileIds);
           return `${action.fileIds.length} file${action.fileIds.length === 1 ? '' : 's'} deleted`;
         case 'rename-folder':
           await updateModelFolder(id, { path: action.path, name: action.name });
@@ -215,6 +216,7 @@ export function ModelDetailPage() {
         queryClient.invalidateQueries({ queryKey: ['model', id] }),
         queryClient.invalidateQueries({ queryKey: ['model-files', id] }),
         queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['search'] }),
       ]);
       toast({ title });
     },

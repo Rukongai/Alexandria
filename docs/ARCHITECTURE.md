@@ -193,7 +193,7 @@ This index makes the enforcement race-safe: the database rejects a second `is_de
 
 Routes that apply `requireLibrary` (as of P5):
 
-- `GET /models`, `GET /models/:id`, `GET /models/:id/files`, `GET /models/:id/status`, `POST /models/:id/folders/compress`
+- `GET /models`, `GET /models/:id`, `GET /models/:id/files`, `GET /models/:id/status`, `POST /models/:id/files/delete`, `POST /models/:id/folders/compress`
 - `GET /collections`, `POST /collections`, `GET /collections/:id`, `GET /collections/:id/models`
 - `GET /metadata/fields/:slug/values`
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/upload/multipart/complete`, `POST /models/import`
@@ -368,6 +368,8 @@ File candidates are ordered by file creation time and file UUID, with owning-mod
 **Owns:** Model, ModelFile, and ModelFolder CRUD. Creating, reading, updating, and deleting Model records; managing file and persisted-folder relationships; and coordinating structural operations such as model merge and splitting one folder or a selected set of files into a new model.
 
 **Does not own:** Metadata CRUD (delegates to MetadataService), collection membership, ingestion pipeline, search, storage implementation, or thumbnail generation. Structural operations may copy existing metadata relationships as part of their transaction. Structural file operations use StorageService's backend-independent copy/delete interface.
+
+**Selected-file deletion behavior:** `deleteModelFiles` accepts 1–500 unique file IDs from an owned model in the active library. It locks the model to serialize file-membership aggregate updates, verifies the complete selection, captures file and thumbnail storage paths, deletes the file rows, recalculates model statistics, and reconciles duplicate-review flags in one transaction. A missing file aborts without deleting any of the selection, while a concurrent selection change produces a conflict and rolls back the transaction. After commit, batched deletion of the captured storage objects is best-effort, logs individual failures, and cannot change the successful database result.
 
 **Split behavior:** The split endpoint accepts exactly one selection from an owned, ready model in the active library. `splitModelFolder` accepts a folder containing at least one file. Its files become the root contents of a new ready, `manual` model; descendant paths are rebased by removing the selected folder prefix, while persisted nested folders, including empty descendants, are preserved. `splitModelFiles` accepts 1–500 unique file IDs from the source model, moves all selected files into the same new model, and preserves each file's relative path. Existing ModelFile IDs and thumbnail records remain attached to their files. If the source model's selected preview is among the moved files, its preview selection and crop values transfer to the new model and are cleared on the source. Both models' file count and total size are recalculated. The new model receives the requested name and only the populated metadata values selected by field slug. The special `tags` slug copies tag memberships. Copied metadata remains on the source model; collection memberships, description, and other source provenance are never copied.
 
@@ -689,10 +691,11 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | DELETE | /models/import-sessions/:id | Discard session + staged files | IngestionService | No (userId) |
 | GET | /models/:id/status | Processing status | ModelService | Yes |
 | PATCH | /models/:id | Update model | ModelService → PresenterService | No (userId) |
+| POST | /models/:id/files/delete | Atomically delete selected files, then best-effort clean captured storage objects | ModelService → PresenterService + StorageService | Yes |
 | POST | /models/:id/folders/split | Move one folder or selected files into a new model | ModelService → StorageService | Yes |
 | DELETE | /models/:id | Delete model + files | ModelService → StorageService | No (userId) |
 
-"Library-scoped" means the route applies the `requireLibrary` preHandler and scopes its read or write to `request.libraryId`. Routes marked `No (userId)` enforce ownership but do not use the active library. Read/detail model routes and the folder-compression mutation enforce active-library scope; the folder-split route does the same because it creates another model in that library. The top-level `PATCH` and `DELETE` model mutations remain owned by `userId` only.
+"Library-scoped" means the route applies the `requireLibrary` preHandler and scopes its read or write to `request.libraryId`. Routes marked `No (userId)` enforce ownership but do not use the active library. Read/detail model routes and the folder-compression mutation enforce active-library scope; selected-file deletion and folder splitting do the same for their source model. The top-level `PATCH` and `DELETE` model mutations remain owned by `userId` only.
 
 **Collections**
 | Method | Route | Purpose | Service Chain | Library-scoped |

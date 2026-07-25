@@ -22,6 +22,7 @@ vi.mock('../api/models', () => ({
   compressModelFolder: vi.fn(),
   createModelFolder: vi.fn(),
   deleteModelFile: vi.fn(),
+  deleteModelFiles: vi.fn(),
   deleteModelFolder: vi.fn(),
   extractModelArchive: vi.fn(),
   getModel: vi.fn(),
@@ -62,6 +63,7 @@ interface DetailPanelTestProps {
   fileActionsDisabled?: boolean;
   fileActionStatus?: string;
   onCompressFolder?: (path: string, name: string) => void;
+  onDeleteFiles?: (fileIds: string[]) => void;
 }
 
 vi.mock('../components/models/ModelDetailPanel', () => ({
@@ -71,6 +73,7 @@ vi.mock('../components/models/ModelDetailPanel', () => ({
     fileActionsDisabled,
     fileActionStatus,
     onCompressFolder,
+    onDeleteFiles,
     onSplitFolder,
     onSplitFiles,
   }: DetailPanelTestProps) => (
@@ -97,6 +100,13 @@ vi.mock('../components/models/ModelDetailPanel', () => ({
       >
         {fileActionStatus ?? 'Compress folder'}
       </button>
+      <button
+        type="button"
+        disabled={fileActionsDisabled}
+        onClick={() => onDeleteFiles?.(['file-1', 'file-2'])}
+      >
+        Delete selected files
+      </button>
     </>
   ),
 }));
@@ -104,6 +114,7 @@ vi.mock('../components/models/ModelDetailPanel', () => ({
 import { addModelsToCollection, getCollections } from '../api/collections';
 import {
   compressModelFolder,
+  deleteModelFiles,
   getModel,
   getModelFiles,
   splitModelFolder,
@@ -298,6 +309,31 @@ describe('ModelDetailPage mutations', () => {
         metadataFieldSlugs: [],
       });
     });
+  });
+
+  it('deletes selected files in one mutation request', async () => {
+    vi.mocked(deleteModelFiles).mockResolvedValue(model);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    renderPage(queryClient);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete selected files' }));
+
+    await waitFor(() => {
+      expect(deleteModelFiles).toHaveBeenCalledOnce();
+      expect(deleteModelFiles).toHaveBeenCalledWith('model-1', ['file-1', 'file-2']);
+      expect(mocks.toast).toHaveBeenCalledWith({ title: '2 files deleted' });
+    });
+    for (const queryKey of [
+      ['model', 'model-1'],
+      ['model-files', 'model-1'],
+      ['models'],
+      ['search'],
+    ]) {
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey });
+    }
   });
 
   it('should show compression progress, refresh model data, and name the created archive', async () => {
