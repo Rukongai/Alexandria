@@ -27,6 +27,7 @@ vi.mock('../api/models', () => ({
   getModelFiles: vi.fn(),
   getModels: vi.fn(),
   mergeModels: vi.fn(),
+  splitModelFolder: vi.fn(),
   updateModelFile: vi.fn(),
   updateModelFolder: vi.fn(),
   uploadModelFiles: vi.fn(),
@@ -55,24 +56,30 @@ vi.mock('../components/models/ModelDetailSkeleton', () => ({
 interface DetailPanelTestProps {
   collectionAddPending: boolean;
   onAddToCollections: (collectionIds: string[]) => Promise<void>;
+  onSplitFolder: (path: string, name: string) => void;
 }
 
 vi.mock('../components/models/ModelDetailPanel', () => ({
-  ModelDetailPanel: ({ collectionAddPending, onAddToCollections }: DetailPanelTestProps) => (
-    <button
-      type="button"
-      disabled={collectionAddPending}
-      onClick={() => {
-        void onAddToCollections(['collection-fails', 'collection-delayed']).catch(() => undefined);
-      }}
-    >
-      {collectionAddPending ? 'Adding collections' : 'Add collections'}
-    </button>
+  ModelDetailPanel: ({ collectionAddPending, onAddToCollections, onSplitFolder }: DetailPanelTestProps) => (
+    <>
+      <button
+        type="button"
+        disabled={collectionAddPending}
+        onClick={() => {
+          void onAddToCollections(['collection-fails', 'collection-delayed']).catch(() => undefined);
+        }}
+      >
+        {collectionAddPending ? 'Adding collections' : 'Add collections'}
+      </button>
+      <button type="button" onClick={() => onSplitFolder('variants/large', 'large')}>
+        Split folder
+      </button>
+    </>
   ),
 }));
 
 import { addModelsToCollection, getCollections } from '../api/collections';
-import { getModel, getModelFiles } from '../api/models';
+import { getModel, getModelFiles, splitModelFolder } from '../api/models';
 
 const model: ModelDetail = {
   id: 'model-1',
@@ -109,6 +116,7 @@ function renderPage(queryClient: QueryClient) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/models/model-1']}>
         <Routes>
+          <Route path="/models/model-new" element={<div>New model destination</div>} />
           <Route path="/models/:id" element={<ModelDetailPage />} />
         </Routes>
       </MemoryRouter>
@@ -173,6 +181,48 @@ describe('ModelDetailPage collection membership', () => {
       ['smart-collection'],
       ['smart-collections'],
       ['smart-preview'],
+    ]) {
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey });
+    }
+  });
+
+  it('splits a folder, refreshes source and discovery caches, then opens the new model', async () => {
+    vi.mocked(splitModelFolder).mockResolvedValue({
+      sourceModelId: 'model-1',
+      newModelId: 'model-new',
+      movedFileCount: 3,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    renderPage(queryClient);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Split folder' }));
+
+    expect(screen.getByLabelText('New model name')).toHaveValue('large');
+    fireEvent.change(screen.getByLabelText('New model name'), {
+      target: { value: 'Large Benchy' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Model' }));
+
+    await waitFor(() => {
+      expect(splitModelFolder).toHaveBeenCalledWith('model-1', {
+        path: 'variants/large',
+        name: 'Large Benchy',
+      });
+    });
+
+    expect(await screen.findByText('New model destination')).toBeInTheDocument();
+    expect(mocks.toast).toHaveBeenCalledWith({
+      title: 'Large Benchy created',
+      description: '3 files moved to the new model.',
+    });
+    for (const queryKey of [
+      ['model', 'model-1'],
+      ['model-files', 'model-1'],
+      ['models'],
+      ['search'],
     ]) {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey });
     }

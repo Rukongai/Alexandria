@@ -17,6 +17,8 @@ import type {
   CompleteMultipartUploadRequest,
   MergeModelsResponse,
   ExtractArchiveResponse,
+  SplitModelFolderRequest,
+  SplitModelFolderResponse,
 } from '@alexandria/shared';
 import { get, post, postForLibrary, patch, del, putRaw, postForm } from './client';
 import { buildQueryString } from '../lib/query';
@@ -105,6 +107,14 @@ export async function updateModelFolder(
 
 export async function deleteModelFolder(id: string, path: string): Promise<ModelDetail> {
   const response = await post<ModelDetail>(`/models/${id}/folders/delete`, { path });
+  return response.data;
+}
+
+export async function splitModelFolder(
+  id: string,
+  data: SplitModelFolderRequest,
+): Promise<SplitModelFolderResponse> {
+  const response = await post<SplitModelFolderResponse>(`/models/${id}/folders/split`, data);
   return response.data;
 }
 

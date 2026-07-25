@@ -116,6 +116,17 @@ export interface DeleteModelFolderRequest {
   path: string;
 }
 
+export interface SplitModelFolderRequest {
+  path: string;
+  name: string;
+}
+
+export interface SplitModelFolderResponse {
+  sourceModelId: string;
+  newModelId: string;
+  movedFileCount: number;
+}
+
 export interface ExtractArchiveResponse {
   addedFileCount: number;
   destinationPath: string;

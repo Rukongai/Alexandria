@@ -16,6 +16,7 @@ import {
   Trash2,
   PackageOpen,
   Loader2,
+  Scissors,
 } from 'lucide-react';
 import type { FileTreeNode, FileType } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
@@ -66,6 +67,7 @@ interface FileNodeProps {
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
   onDeleteFolder?: (path: string, name: string) => void;
+  onSplitFolder?: (path: string, name: string) => void;
   selectionMode: boolean;
   onRequestMove: (request: MoveRequest) => void;
 }
@@ -339,6 +341,7 @@ function FileNode({
   onRenameFolder,
   onMoveFolder,
   onDeleteFolder,
+  onSplitFolder,
   selectionMode,
   onRequestMove,
 }: FileNodeProps) {
@@ -393,7 +396,7 @@ function FileNode({
                 <MoreHorizontal className="h-4 w-4" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuItem
                 onClick={() => {
                   const name = promptName('Folder name');
@@ -419,6 +422,10 @@ function FileNode({
               >
                 <FolderInput className="mr-2 h-3.5 w-3.5" />
                 Move
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onSplitFolder?.(nodePath, node.name)}>
+                <Scissors className="mr-2 h-3.5 w-3.5" />
+                Split into new model…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -459,6 +466,7 @@ function FileNode({
                 onRenameFolder={onRenameFolder}
                 onMoveFolder={onMoveFolder}
                 onDeleteFolder={onDeleteFolder}
+                onSplitFolder={onSplitFolder}
                 selectionMode={selectionMode}
                 onRequestMove={onRequestMove}
               />
@@ -702,6 +710,7 @@ interface FileTreeProps {
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
   onDeleteFolder?: (path: string, name: string) => void;
+  onSplitFolder?: (path: string, name: string) => void;
 }
 
 export function FileTree({
@@ -723,6 +732,7 @@ export function FileTree({
   onRenameFolder,
   onMoveFolder,
   onDeleteFolder,
+  onSplitFolder,
 }: FileTreeProps) {
   const totalFiles = countFiles(tree);
   const allFiles = React.useMemo(() => collectFileTargets(tree), [tree]);
@@ -1007,6 +1017,7 @@ export function FileTree({
               onRenameFolder={onRenameFolder}
               onMoveFolder={onMoveFolder}
               onDeleteFolder={onDeleteFolder}
+              onSplitFolder={onSplitFolder}
               selectionMode={selectionMode}
               onRequestMove={setMoveRequest}
             />

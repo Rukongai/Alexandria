@@ -50,3 +50,8 @@ export const updateModelFolderSchema = z
 export const deleteModelFolderSchema = z.object({
   path: relativePathSchema,
 });
+
+export const splitModelFolderSchema = z.object({
+  path: relativePathSchema,
+  name: z.string().trim().min(1).max(255),
+});

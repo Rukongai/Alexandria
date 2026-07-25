@@ -210,4 +210,32 @@ describe('FileTree', () => {
       expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Move' })).toBeEnabled();
     });
   });
+
+  it('requests a split with the full nested folder path and folder basename', () => {
+    const onSplitFolder = vi.fn();
+    render(
+      <FileTree
+        tree={[
+          {
+            name: 'variants',
+            type: 'directory',
+            children: [
+              {
+                name: 'large',
+                type: 'directory',
+                children: [{ name: 'body.stl', type: 'file', fileType: 'stl', id: 's1' }],
+              },
+            ],
+          },
+        ]}
+        modelId="m1"
+        onSplitFolder={onSplitFolder}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for folder large' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split into new model…' }));
+
+    expect(onSplitFolder).toHaveBeenCalledWith('variants/large', 'large');
+  });
 });

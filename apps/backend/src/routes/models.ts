@@ -15,12 +15,14 @@ import type {
   UpdateModelFileRequest,
   UpdateModelFolderRequest,
   DeleteModelFolderRequest,
+  SplitModelFolderRequest,
   ExtractImportSessionArchiveRequest,
   CompleteMultipartUploadRequest,
 } from '@alexandria/shared';
 import {
   createModelFolderSchema,
   deleteModelFolderSchema,
+  splitModelFolderSchema,
   importConfigSchema,
   modelSearchParamsSchema,
   mergeModelsSchema,
@@ -673,6 +675,25 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const detail = await presenterService.buildModelDetail(id);
 
       return reply.status(200).send({ data: detail, meta: null, errors: null });
+    },
+  );
+
+  // POST /:id/folders/split — move a folder's contents into a new model
+  app.post(
+    '/:id/folders/split',
+    { preHandler: [requireAuth, requireLibrary, validate(splitModelFolderSchema)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as SplitModelFolderRequest;
+      const result = await modelService.splitModelFolder(
+        id,
+        body.path,
+        body.name,
+        request.user!.id,
+        request.libraryId!,
+      );
+
+      return reply.status(201).send({ data: result, meta: null, errors: null });
     },
   );
 
