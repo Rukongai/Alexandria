@@ -4,6 +4,7 @@ export interface AppConfig {
   port: number;
   host: string;
   databaseUrl: string;
+  databasePoolMax: number;
   redisUrl: string;
   storageBackend: StorageBackend;
   storagePath: string;
@@ -23,6 +24,8 @@ export interface AppConfig {
 const nodeEnv = process.env.NODE_ENV || 'development';
 const sessionSecret = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
 
+export const DEFAULT_DATABASE_POOL_MAX = 10;
+
 function parseStorageBackend(value: string | undefined): StorageBackend {
   const backend = value || 'local';
   if (backend !== 'local' && backend !== 's3') {
@@ -36,6 +39,19 @@ function parseBoolean(value: string | undefined, name: string): boolean {
   if (value === 'true') return true;
   if (value === 'false') return false;
   throw new Error(`${name} must be either "true" or "false"`);
+}
+
+export function resolveDatabasePoolMax(value: string | undefined): number {
+  if (value === undefined || value === '') return DEFAULT_DATABASE_POOL_MAX;
+  if (!/^\d+$/.test(value)) {
+    throw new Error('DATABASE_POOL_MAX must be a positive integer');
+  }
+
+  const poolMax = Number(value);
+  if (!Number.isSafeInteger(poolMax) || poolMax < 1) {
+    throw new Error('DATABASE_POOL_MAX must be a positive integer');
+  }
+  return poolMax;
 }
 
 export function resolveAiEncryptionKey(
@@ -78,6 +94,7 @@ export const config: AppConfig = {
   databaseUrl:
     process.env.DATABASE_URL ||
     'postgresql://alexandria:alexandria@localhost:5432/alexandria',
+  databasePoolMax: resolveDatabasePoolMax(process.env.DATABASE_POOL_MAX),
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   storageBackend: parseStorageBackend(process.env.STORAGE_BACKEND),
   storagePath: process.env.STORAGE_PATH || './data/storage',

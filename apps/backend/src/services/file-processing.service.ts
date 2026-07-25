@@ -7,7 +7,7 @@ import yauzl from 'yauzl';
 import * as tar from 'tar';
 import { createExtractorFromFile } from 'node-unrar-js';
 import Seven from 'node-7z';
-import { path7za } from '7zip-bin';
+import { path7z } from '7zip-bin-full';
 import type {
   FileType,
   ImportCommitProgress,
@@ -398,7 +398,7 @@ export class FileProcessingService {
     files: MultipartArchiveFile[],
     extractDir: string,
   ): Promise<FileManifest> {
-    const { kind, entryFilename } = validateSplitArchiveSet(files);
+    const { entryFilename } = validateSplitArchiveSet(files);
     const partsDir = await fsPromises.mkdtemp(path.join(path.dirname(extractDir), 'split-archive-'));
 
     try {
@@ -409,9 +409,10 @@ export class FileProcessingService {
         await fsPromises.copyFile(file.tempFilePath, path.join(partsDir, basename));
       }));
       const entryPath = path.join(partsDir, entryFilename);
-      return kind === 'rar'
-        ? await this.processRar(entryPath, extractDir)
-        : await this.process7z(entryPath, extractDir);
+      // node-unrar-js explicitly does not support volume archives. Use the
+      // bundled 7-Zip extractor for every split format so it can resolve the
+      // colocated RAR volumes from part 1.
+      return await this.process7z(entryPath, extractDir);
     } finally {
       await fsPromises.rm(partsDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -646,7 +647,7 @@ export class FileProcessingService {
 
   private preflight7z(archivePath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const stream = Seven.list(archivePath, { $bin: path7za, techInfo: true });
+      const stream = Seven.list(archivePath, { $bin: path7z, techInfo: true });
       let rejected = false;
       stream.on('data', (entry: SevenZipListEntry) => {
         if (rejected) return;
@@ -672,7 +673,7 @@ export class FileProcessingService {
 
     return new Promise((resolve, reject) => {
       const stream = Seven.extractFull(archivePath, extractDir, {
-        $bin: path7za,
+        $bin: path7z,
         recursive: true,
       });
 

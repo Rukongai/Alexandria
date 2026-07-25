@@ -15,6 +15,7 @@ A self-hosted personal library for managing 3D printing model collections. Think
 - Async processing pipeline with thumbnail generation (WebP at multiple sizes)
 - Import existing library folders with pattern-based hierarchy parsing (e.g. `{artist}/{year}/{name}`) using hardlink, copy, or move strategies
 - Store managed files on the local filesystem or in a private S3-compatible bucket, including MEGA S4
+- Run against the bundled PostgreSQL container or a hosted PostgreSQL service
 
 **Organization**
 - Flexible metadata system with default fields (Artist, Year, Tags, NSFW, Pre-supported, URL, Source) and user-defined custom fields
@@ -88,7 +89,18 @@ docker compose up -d --build --wait
 
 On first startup, the backend automatically runs database migrations and seeds the default admin account and metadata fields. No manual seeding step is required.
 
-Services are available at:
+To use hosted PostgreSQL instead of the bundled database, set `DATABASE_URL` and start Compose with the hosted-database override:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.hosted-db.yml \
+  up -d
+```
+
+The override disables the local Postgres service and defaults the application pool to five connections. See [`docs/HOSTED_DATABASE.md`](docs/HOSTED_DATABASE.md) for generic provider configuration, verified TLS, and Supabase-specific guidance.
+
+With the default local-database stack, services are available at:
 
 - Frontend: http://localhost:80
 - Backend API: http://localhost:3001
@@ -150,6 +162,8 @@ npm run db:seed       # Seed default user and metadata fields
 
 For local development outside Docker, the backend connects to `postgresql://alexandria:alexandria@localhost:5432/alexandria` by default. Override with `DATABASE_URL`.
 
+Alexandria accepts a standard PostgreSQL connection URL, including provider TLS parameters. It runs migrations during every backend startup, so the configured database user must own the Alexandria schema and be allowed to create and alter its objects.
+
 ---
 
 ## Project Structure
@@ -185,6 +199,7 @@ alexandria/
 │
 ├── docker/
 │   ├── docker-compose.yml
+│   ├── docker-compose.hosted-db.yml
 │   ├── Dockerfile.backend
 │   └── Dockerfile.frontend
 │
@@ -204,6 +219,7 @@ All backend variables have development defaults and can be set in the environmen
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `postgresql://alexandria:alexandria@localhost:5432/alexandria` | Postgres connection string |
+| `DATABASE_POOL_MAX` | `10` (`5` in the hosted Compose override) | Maximum connections in each backend process's shared Postgres pool |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection string |
 | `STORAGE_BACKEND` | `local` | Managed storage provider: `local` or `s3` |
 | `STORAGE_PATH` | `./data/storage` | Local managed-storage root; also the migration source when using S3 |
@@ -246,6 +262,8 @@ S3 credentials are resolved through the AWS SDK default credential chain. For a 
 
 See [`docs/STORAGE.md`](docs/STORAGE.md) for provider configuration, MEGA S4 compatibility, private-object delivery, and local-to-S3 migration.
 
+See [`docs/HOSTED_DATABASE.md`](docs/HOSTED_DATABASE.md) for hosted PostgreSQL deployment, TLS, pool sizing, and Supabase setup. A hosted database stores Alexandria's metadata and application state only. Model files and thumbnails remain in the configured storage backend; deployments that need to move between hosts should use S3-compatible storage. Alexandria currently assumes one backend process and does not support horizontal scaling.
+
 ---
 
 ## Testing
@@ -276,6 +294,7 @@ docker compose up -d postgres redis --wait
 - `docs/CONVENTIONS.md` — naming, patterns, and coding standards
 - `docs/DEPLOYMENT.md` — Docker Compose deployment, upgrades, and production considerations
 - `docs/STORAGE.md` — local and S3-compatible storage configuration and migration
+- `docs/HOSTED_DATABASE.md` — hosted PostgreSQL and Supabase deployment
 - `docs/PROJECT-BRIEF.md` — project overview and rationale
 
 ---
