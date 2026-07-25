@@ -16,6 +16,7 @@ class MediaRef:
     kind: MediaKind
     caption: str | None = None
     size: int = 0
+    media_identity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

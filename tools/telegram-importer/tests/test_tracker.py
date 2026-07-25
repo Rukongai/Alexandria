@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
-from alexandria_telegram_importer.tracker import ImportTracker
+
+from alexandria_telegram_importer.tracker import ImportRecord, ImportTracker
 
 
-def discover_record(tracker: ImportTracker, *, import_key: str = "stable-key"):
+def discover_record(
+    tracker: ImportTracker,
+    *,
+    import_key: str = "stable-key",
+    telegram_signature: str | None = None,
+):
     return tracker.discover(
         import_key=import_key,
         source_channel_id=-100123,
@@ -12,6 +20,7 @@ def discover_record(tracker: ImportTracker, *, import_key: str = "stable-key"):
         upload_filename="tg-100123-stable-dragon.zip",
         model_message_ids=(11, 12),
         attachment_message_ids=(9, 10),
+        telegram_signature=telegram_signature,
     )
 
 
@@ -95,3 +104,193 @@ def test_should_reject_a_concurrent_process_using_the_same_state_file(tmp_path) 
             ImportTracker(database_path)
     finally:
         first.close()
+
+
+def test_should_migrate_legacy_schema_and_backfill_signature_on_rediscovery(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        """
+        CREATE TABLE imports (
+            import_key TEXT PRIMARY KEY,
+            source_channel_id INTEGER NOT NULL,
+            logical_filename TEXT NOT NULL,
+            upload_filename TEXT NOT NULL,
+            model_message_ids TEXT NOT NULL,
+            attachment_message_ids TEXT NOT NULL,
+            status TEXT NOT NULL,
+            session_id TEXT,
+            model_id TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO imports VALUES (
+            'stable-key', -100123, 'dragon.zip', 'upload.zip', '[11, 12]', '[9]',
+            'completed', 'session-1', 'model-1', NULL,
+            '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00'
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    tracker = ImportTracker(database_path)
+    try:
+        migrated = tracker.get("stable-key")
+        assert migrated is not None
+        assert migrated.telegram_signature is None
+        assert migrated.content_signature is None
+        assert migrated.duplicate_of_import_key is None
+
+        backfilled = discover_record(
+            tracker,
+            telegram_signature="telegram-signature",
+        )
+
+        assert backfilled.status == "completed"
+        assert backfilled.model_id == "model-1"
+        assert backfilled.telegram_signature == "telegram-signature"
+    finally:
+        tracker.close()
+
+
+@pytest.mark.parametrize(
+    ("signature_type", "signature"),
+    [
+        ("telegram_signature", "same-telegram-media"),
+        ("content_signature", "same-content"),
+    ],
+)
+def test_should_find_only_completed_modeled_records_by_signature(
+    tmp_path,
+    signature_type: str,
+    signature: str,
+) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        discover_record(
+            tracker,
+            import_key="original",
+            telegram_signature=signature
+            if signature_type == "telegram_signature"
+            else None,
+        )
+        if signature_type == "content_signature":
+            tracker.set_content_signature("original", signature)
+        original = tracker.update("original", "completed", model_id="model-1")
+
+        discover_record(
+            tracker,
+            import_key="unfinished",
+            telegram_signature=signature
+            if signature_type == "telegram_signature"
+            else None,
+        )
+        if signature_type == "content_signature":
+            tracker.set_content_signature("unfinished", signature)
+        discover_record(
+            tracker,
+            import_key="completed-without-model",
+            telegram_signature=signature
+            if signature_type == "telegram_signature"
+            else None,
+        )
+        if signature_type == "content_signature":
+            tracker.set_content_signature("completed-without-model", signature)
+        tracker.update("completed-without-model", "completed")
+
+        matches = tracker.completed_by_signature(
+            signature_type,
+            signature,
+            exclude_import_key="new-key",
+        )
+
+        assert matches == (original,)
+        assert (
+            tracker.completed_by_signature(
+                signature_type,
+                signature,
+                exclude_import_key="original",
+            )
+            == ()
+        )
+    finally:
+        tracker.close()
+
+
+def test_should_mark_duplicate_as_completed_with_original_model(tmp_path) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        discover_record(tracker, import_key="original")
+        original = tracker.update("original", "completed", model_id="model-1")
+        discover_record(tracker, import_key="duplicate")
+        tracker.update("duplicate", "failed", error="temporary failure")
+
+        duplicate = tracker.mark_duplicate("duplicate", original)
+
+        assert duplicate.status == "completed"
+        assert duplicate.model_id == "model-1"
+        assert duplicate.duplicate_of_import_key == "original"
+        assert duplicate.error is None
+    finally:
+        tracker.close()
+
+
+def test_should_refresh_changed_telegram_signature_for_unfinished_import(
+    tmp_path,
+) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        discover_record(tracker, telegram_signature="old-media")
+        tracker.update("stable-key", "failed", error="download failed")
+
+        refreshed = discover_record(tracker, telegram_signature="replacement-media")
+
+        assert refreshed.status == "failed"
+        assert refreshed.telegram_signature == "replacement-media"
+    finally:
+        tracker.close()
+
+
+def test_should_refuse_to_mark_an_import_with_a_session_as_duplicate(tmp_path) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        discover_record(tracker, import_key="original")
+        original = tracker.update("original", "completed", model_id="model-1")
+        discover_record(tracker, import_key="in-progress")
+        tracker.update("in-progress", "scanning", session_id="session-2")
+
+        with pytest.raises(ValueError, match="Alexandria progress"):
+            tracker.mark_duplicate("in-progress", original)
+    finally:
+        tracker.close()
+
+
+def test_should_reject_duplicate_source_without_model(tmp_path) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        discover_record(tracker, import_key="duplicate")
+        invalid_original = ImportRecord(
+            import_key="original",
+            source_channel_id=-100123,
+            logical_filename="dragon.zip",
+            upload_filename="upload.zip",
+            model_message_ids=(1,),
+            attachment_message_ids=(),
+            status="completed",
+            session_id=None,
+            model_id=None,
+            error=None,
+        )
+
+        with pytest.raises(ValueError, match="must reference an Alexandria model"):
+            tracker.mark_duplicate("duplicate", invalid_original)
+    finally:
+        tracker.close()

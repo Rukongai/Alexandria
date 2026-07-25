@@ -101,8 +101,25 @@ Telegram channel history with Telethon and drives Alexandria exclusively through
 authenticated staged-upload API. It is not part of the backend runtime and does not write to the
 database or storage adapter directly. Complete archives use the normal chunked upload path, split
 ZIP/RAR sets use multipart `split` mode, and preceding Telegram media is appended to the staged
-session before commit. The utility owns its SQLite restart state and short-lived local downloads;
-Alexandria continues to own all committed files through its configured local or S3 storage backend.
+session before commit. The utility owns its SQLite restart and duplicate state and short-lived local
+downloads; Alexandria continues to own all committed files through its configured local or S3
+storage backend.
+
+Duplicate detection is local to the utility's state database and has two layers. Before download, a
+signature over the complete logical model's Telegram document/photo IDs and reported sizes
+can match media already associated with a completed import. After download, a signature over the
+SHA-256 hashes of every model file or split-archive part catches byte-identical media with a
+different Telegram identity. A match is honored only when its persisted Alexandria model ID still
+resolves as `ready`; the duplicate record is then completed against that existing model. Telegram
+identity is not a content hash, and the SHA-256 layer compares archive bytes rather than extracted
+contents, so recompressed or repartitioned archives are distinct. Attachments are excluded from both
+signatures and remain scoped to the model selected by Telegram grouping. Multipart signatures bind
+each identity or hash to its canonical split-archive role, preventing swapped part contents from
+matching while remaining independent of Telegram message order. For multipart uploads, the
+content decision occurs only after every part is hashed; if prior parts were already initialized,
+the utility requests a best-effort abort for all of their upload IDs before recording the duplicate
+and removes its local part files. On startup, the SQLite tracker adds missing nullable signature and
+duplicate-link columns and creates lookup indexes, so existing state files migrate in place.
 
 ---
 

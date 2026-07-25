@@ -77,6 +77,15 @@ class TelegramSource:
             return f"document_{message.id}{extension}"
         return None
 
+    @staticmethod
+    def _media_identity(message: Any) -> str | None:
+        size = message.file.size if message.file and message.file.size else 0
+        if message.document:
+            return f"document:{message.document.id}:{size}"
+        if message.photo:
+            return f"photo:{message.photo.id}:{size}"
+        return None
+
     async def collect_media(self, *, min_message_id: int = 0) -> list[MediaRef]:
         refs: list[MediaRef] = []
         async for message in self._client.iter_messages(
@@ -98,6 +107,7 @@ class TelegramSource:
                     ),
                     caption=message.message.strip() if message.message else None,
                     size=message.file.size if message.file and message.file.size else 0,
+                    media_identity=self._media_identity(message),
                 ),
             )
         return refs

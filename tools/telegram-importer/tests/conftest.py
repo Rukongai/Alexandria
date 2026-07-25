@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from alexandria_telegram_importer.models import MediaKind, MediaRef
 
 
@@ -13,6 +14,7 @@ def media_ref():
         kind: MediaKind = MediaKind.MODEL,
         caption: str | None = None,
         size: int = 0,
+        media_identity: str | None = None,
     ) -> MediaRef:
         return MediaRef(
             message_id=message_id,
@@ -20,6 +22,7 @@ def media_ref():
             kind=kind,
             caption=caption,
             size=size,
+            media_identity=media_identity,
         )
 
     return make

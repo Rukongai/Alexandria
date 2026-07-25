@@ -77,7 +77,7 @@ uv run alexandria-telegram-import \
 
 `--from-message-id N` considers only Telegram messages with IDs greater than `N`. `--poll-interval` changes the default two-second Alexandria session polling interval. Run `uv run alexandria-telegram-import --help` for all options.
 
-During a real run, the importer processes models sequentially. It downloads a model, starts an Alexandria scan, waits for `ready_for_review`, appends the assigned attachments, commits the session with a derived name and Telegram-source description, and waits for `committed` before moving to the next model. The commit sets only that name and description; the importer does not assign a collection or map Telegram content into artist, tags, or custom metadata. A failure is recorded and the run continues with later models. The command exits with status 1 when the state database contains failed imports after the run.
+During a real run, the importer processes models sequentially. It downloads a model, starts an Alexandria scan, waits for `ready_for_review`, appends the assigned attachments, commits the session with a derived name and Telegram-source description, and waits for `committed` before moving to the next model. The commit sets only that name and description; the importer does not assign a collection or map Telegram content into artist, tags, or custom metadata. A failure is recorded and the run continues with later models. The command exits with status 1 when the state database contains failed or completion-uncertain imports after the run.
 
 ## Exact grouping rules
 
@@ -101,15 +101,34 @@ A standalone model file such as an STL is wrapped in a temporary ZIP before uplo
 
 The committed model name comes from the logical filename with its recognized extension removed and underscores and hyphens changed to spaces. Its description contains unique captions from the assigned attachments and the model's own message or parts, the related-model note when applicable, the channel ID and model message IDs, and a `t.me` source link when the channel has a public username. Descriptions are limited to Alexandria's 2,000-character request limit.
 
+## Duplicate detection
+
+In addition to skipping an already completed import key, the importer uses two signatures to avoid importing the same model from different Telegram messages:
+
+1. Before downloading, it builds a Telegram-media signature from each model item's Telegram document/photo ID and reported byte size. A match against a completed record can skip a forwarded or otherwise Telegram-identical model without transferring it.
+2. After downloading, it verifies the reported size and calculates SHA-256 over the downloaded bytes. A content-signature match catches byte-for-byte identical media even when Telegram assigned a different document or photo ID.
+
+For both layers, a single-file model's signature represents that one file. A multipart model's signature binds every Telegram identity or SHA-256 hash to its canonical split role, such as RAR part 1, numbered ZIP part 2, or the terminal classic ZIP member. Deduplication is therefore independent of Telegram message order without treating swapped part contents as equivalent. It is whole-set only: one matching part does not cause the importer to skip a different set, and every part must have an identity for the pre-download check. Different part boundaries also produce a different signature even if extraction would yield the same files.
+
+The importer checks only completed records in its local SQLite state whose stored Alexandria model ID still resolves to a `ready` model in the selected library. On a match, it does not create another Alexandria model. Instead, it marks the new local import record completed, points it to the existing model ID, and records which import key it duplicates. A dry run does not open the state database and therefore reports grouping only, not duplicate decisions.
+
+Split archives are downloaded, hashed, and uploaded one part at a time. The SHA-256 decision cannot be made until the final part has been hashed, so earlier parts may already have initialized Alexandria uploads when the whole set proves to be a duplicate. In that case the importer aborts every upload ID initialized for the set and removes the local part files. Server abort is best-effort if Alexandria becomes unreachable; its normal upload expiry remains the fallback.
+
+These signatures deliberately exclude attachments. Attachments remain scoped to the logical model selected by the grouping rules and are appended only when that model is actually imported. If a model is skipped as a duplicate, differently grouped or newly added attachments are not appended to the existing Alexandria model.
+
+The pre-download Telegram signature is an optimization, not a cryptographic content hash: it trusts Telegram's media identity and reported size. The SHA-256 layer compares the downloaded container bytes, not extracted contents. Renaming byte-identical media still matches, but recompressing an archive, changing archive metadata, or repartitioning a split archive changes its hashes and may produce a separate Alexandria model even when the extracted files are equivalent.
+
 ## Reruns, recovery, and limitations
 
-The SQLite state database makes normal reruns idempotent. Each logical model has a key derived from the Telegram channel ID and its sorted model message IDs. A completed key is skipped. For an interrupted import, the importer first resumes the recorded Alexandria session; if that reference is unavailable, it searches active sessions for the deterministic upload filename before starting another upload. It can continue sessions in `scanning`, `ready_for_review`, or `committing`, and marks an already committed session complete.
+The SQLite state database makes normal reruns idempotent. Each logical model has a key derived from the Telegram channel ID and its sorted model message IDs. A completed key is skipped. The database also persists Telegram signatures, content signatures, and duplicate-to-original relationships, with indexes used for later channel scans. Existing state databases are migrated in place on startup by adding any missing nullable signature and relationship columns; no manual migration command is required. Older completed rows gain a Telegram signature when their original messages are encountered again. Their content signature remains null because completed rows are not downloaded again. For unfinished rows, rediscovery replaces the stored Telegram signature so an in-place Telegram media replacement cannot reuse a stale identity. Rows that already reference an Alexandria session or model are resumed and verified before duplicate matching; deduplication never replaces their recorded Alexandria progress.
+
+For an interrupted import, the importer first resumes the recorded Alexandria session; if that reference is unavailable, it searches active sessions for the deterministic upload filename before starting another upload. It can continue sessions in `scanning`, `ready_for_review`, or `committing`, and marks an already committed session complete.
 
 This state is local coordination, not a global exactly-once guarantee:
 
 - Deleting, replacing, or pointing `--state` at a different database can duplicate models after Alexandria no longer exposes the original import session.
 - Editing a caption or adding an attachment does not change a completed model's key, so a rerun does not update that model. Changing which model-message IDs form a split set does change the key.
-- The importer does not search Alexandria's finished model catalog for duplicates; recovery is based on its SQLite record and staged import sessions.
+- Duplicate discovery does not scan Alexandria's finished model catalog. It compares local SQLite signatures, then asks Alexandria only whether the candidate record's stored model ID is still ready.
 - An Alexandria error session without a model is discarded and may be retried on the next run. If the error session already has a model ID, the importer records the failure but cannot automatically roll back or recreate that model.
 - The importer holds an exclusive operating-system lock for its state file. A concurrent process using the same state exits instead of racing the same Telegram models. Separate state databases use separate work roots.
 - If a recorded session disappears after Alexandria returned a model ID, the importer verifies that model's status. It marks a ready model complete, but records `completion_uncertain` and refuses to upload again when it cannot prove the prior model is ready.

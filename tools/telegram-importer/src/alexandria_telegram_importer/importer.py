@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +15,7 @@ from .grouping import (
     ARCHIVE_EXTENSIONS,
     build_bundles,
     model_name_from_filename,
+    multipart_part_role,
     safe_filename,
     validate_logical_model,
 )
@@ -24,6 +28,13 @@ log = logging.getLogger(__name__)
 
 class CompletionUncertain(AlexandriaError):
     pass
+
+
+class DuplicateModelFound(Exception):
+    def __init__(self, original: ImportRecord, signature_type: str) -> None:
+        super().__init__(f"duplicate of {original.import_key} by {signature_type}")
+        self.original = original
+        self.signature_type = signature_type
 
 
 def _upload_prefix(channel_id: int, unit: LogicalModel) -> str:
@@ -51,6 +62,50 @@ def part_upload_names(channel_id: int, unit: LogicalModel) -> tuple[str, ...]:
 
 def attachment_upload_name(ref: MediaRef) -> str:
     return f"telegram-{ref.message_id}-{safe_filename(ref.filename, 'media')}"
+
+
+def telegram_media_signature(unit: LogicalModel) -> str | None:
+    identities = [part.media_identity for part in unit.parts]
+    if not identities or any(identity is None for identity in identities):
+        return None
+    return _model_signature(
+        unit,
+        (identity for identity in identities if identity is not None),
+    )
+
+
+def content_signature(unit: LogicalModel, hashes: Iterable[str]) -> str:
+    hashes = tuple(hashes)
+    if not hashes:
+        raise ValueError("At least one content hash is required")
+    return _model_signature(unit, hashes)
+
+
+def _model_signature(unit: LogicalModel, values: Iterable[str]) -> str:
+    values = tuple(values)
+    if len(values) != len(unit.parts):
+        raise ValueError("Every model part must have one signature value")
+    if not unit.multipart:
+        return _signature(values)
+    return _signature(
+        f"{multipart_part_role(part.filename)}\0{value}"
+        for part, value in zip(unit.parts, values, strict=True)
+    )
+
+
+def _signature(values: Iterable[str]) -> str:
+    payload = "\n".join(sorted(values))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _hash_file(path: Path) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 def build_description(
@@ -133,6 +188,7 @@ class ChannelImporter:
             upload_filename=expected_upload_filename,
             model_message_ids=tuple(part.message_id for part in unit.parts),
             attachment_message_ids=tuple(item.message_id for item in attachments),
+            telegram_signature=telegram_media_signature(unit),
         )
         if record.status == "completed":
             log.info("Skipping completed model %s", unit.logical_filename)
@@ -141,6 +197,20 @@ class ChannelImporter:
         log.info("Importing %s", unit.logical_filename)
         try:
             validate_logical_model(unit)
+            dedupe_eligible = (
+                record.status in {"discovered", "failed", "downloading", "uploading"}
+                and record.session_id is None
+                and record.model_id is None
+            )
+            if dedupe_eligible and record.telegram_signature:
+                duplicate = await self._find_ready_duplicate(
+                    "telegram_signature",
+                    record.telegram_signature,
+                    exclude_import_key=unit.key,
+                )
+                if duplicate:
+                    self._record_duplicate(unit, duplicate, "Telegram media identity")
+                    return
             with tempfile.TemporaryDirectory(
                 prefix=f"alexandria-tg-{unit.key[:8]}-",
                 dir=self.work_root,
@@ -152,6 +222,8 @@ class ChannelImporter:
                     record,
                     Path(temp),
                 )
+        except DuplicateModelFound as duplicate:
+            self._record_duplicate(unit, duplicate.original, duplicate.signature_type)
         except CompletionUncertain as error:
             self.tracker.update(unit.key, "completion_uncertain", error=str(error))
             log.error(
@@ -163,6 +235,45 @@ class ChannelImporter:
         except Exception as error:  # noqa: BLE001
             self.tracker.update(unit.key, "failed", error=str(error))
             log.error("Failed to import %s: %s", unit.logical_filename, error)
+
+    def _record_duplicate(
+        self,
+        unit: LogicalModel,
+        original: ImportRecord,
+        signature_type: str,
+    ) -> None:
+        self.tracker.mark_duplicate(unit.key, original)
+        log.info(
+            "Skipped duplicate %s by %s; reusing Alexandria model %s",
+            unit.logical_filename,
+            signature_type,
+            original.model_id,
+        )
+
+    async def _find_ready_duplicate(
+        self,
+        signature_type: str,
+        signature: str,
+        *,
+        exclude_import_key: str,
+    ) -> ImportRecord | None:
+        candidates = self.tracker.completed_by_signature(
+            signature_type,
+            signature,
+            exclude_import_key=exclude_import_key,
+        )
+        for candidate in candidates:
+            if not candidate.model_id:
+                continue
+            try:
+                status = await self.alexandria.get_model_status(candidate.model_id)
+            except AlexandriaError as error:
+                if error.status_code == 404:
+                    continue
+                raise
+            if status.get("status") == "ready":
+                return candidate
+        return None
 
     def _cleanup_stale_work(self) -> None:
         if self.work_root is None:
@@ -330,12 +441,32 @@ class ChannelImporter:
         multipart = unit.multipart
         names = part_upload_names(self.telegram.channel_id, unit)
         upload_ids: list[str] = []
+        content_hashes: list[str] = []
         try:
             for part, name in zip(unit.parts, names, strict=True):
                 downloaded = await self.telegram.download(part, work_dir)
                 upload_path = downloaded
                 upload_name = name
                 try:
+                    part_hash, actual_size = await asyncio.to_thread(
+                        _hash_file, downloaded
+                    )
+                    if part.size and actual_size != part.size:
+                        raise RuntimeError(
+                            f"Telegram download size mismatch for {part.filename}: "
+                            f"expected {part.size}, received {actual_size}",
+                        )
+                    content_hashes.append(part_hash)
+                    if len(content_hashes) == len(unit.parts):
+                        signature = content_signature(unit, content_hashes)
+                        self.tracker.set_content_signature(unit.key, signature)
+                        duplicate = await self._find_ready_duplicate(
+                            "content_signature",
+                            signature,
+                            exclude_import_key=unit.key,
+                        )
+                        if duplicate:
+                            raise DuplicateModelFound(duplicate, "SHA-256")
                     if not multipart and not unit.logical_filename.lower().endswith(
                         ARCHIVE_EXTENSIONS
                     ):

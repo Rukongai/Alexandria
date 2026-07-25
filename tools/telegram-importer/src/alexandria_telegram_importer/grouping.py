@@ -44,6 +44,18 @@ def is_model_filename(filename: str) -> bool:
     )
 
 
+def multipart_part_role(filename: str) -> str:
+    if match := _RAR_PART_RE.match(filename):
+        return f"rar:{int(match.group('part'))}"
+    if match := _CLASSIC_PART_RE.match(filename):
+        return f"classic-zip:{int(match.group('part'))}"
+    if match := _NUMBERED_ZIP_RE.match(filename):
+        return f"numbered-zip:{int(match.group('part'))}"
+    if filename.lower().endswith(".zip"):
+        return "classic-zip:terminal"
+    raise ValueError(f"Unrecognized split archive member: {filename}")
+
+
 def model_name_from_filename(filename: str) -> str:
     name = safe_filename(filename, "Telegram model")
     lower = name.lower()

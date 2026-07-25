@@ -21,6 +21,9 @@ class ImportRecord:
     session_id: str | None
     model_id: str | None
     error: str | None
+    telegram_signature: str | None = None
+    content_signature: str | None = None
+    duplicate_of_import_key: str | None = None
 
 
 class ImportTracker:
@@ -50,10 +53,34 @@ class ImportTracker:
                 session_id TEXT,
                 model_id TEXT,
                 error TEXT,
+                telegram_signature TEXT,
+                content_signature TEXT,
+                duplicate_of_import_key TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """,
+        )
+        existing_columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(imports)").fetchall()
+        }
+        for column in (
+            "telegram_signature",
+            "content_signature",
+            "duplicate_of_import_key",
+        ):
+            if column not in existing_columns:
+                self._connection.execute(
+                    f"ALTER TABLE imports ADD COLUMN {column} TEXT"
+                )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS imports_telegram_signature_idx "
+            "ON imports (telegram_signature, status)",
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS imports_content_signature_idx "
+            "ON imports (content_signature, status)",
         )
         self._connection.commit()
 
@@ -70,6 +97,7 @@ class ImportTracker:
         upload_filename: str,
         model_message_ids: tuple[int, ...],
         attachment_message_ids: tuple[int, ...],
+        telegram_signature: str | None = None,
     ) -> ImportRecord:
         now = datetime.now(UTC).isoformat()
         with self._connection:
@@ -78,9 +106,14 @@ class ImportTracker:
                 INSERT INTO imports (
                     import_key, source_channel_id, logical_filename, upload_filename,
                     model_message_ids, attachment_message_ids, status,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'discovered', ?, ?)
-                ON CONFLICT(import_key) DO NOTHING
+                    telegram_signature, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'discovered', ?, ?, ?)
+                ON CONFLICT(import_key) DO UPDATE SET
+                    telegram_signature = CASE
+                        WHEN imports.status = 'completed'
+                            THEN COALESCE(imports.telegram_signature, excluded.telegram_signature)
+                        ELSE excluded.telegram_signature
+                    END
                 """,
                 (
                     import_key,
@@ -89,6 +122,7 @@ class ImportTracker:
                     upload_filename,
                     json.dumps(model_message_ids),
                     json.dumps(attachment_message_ids),
+                    telegram_signature,
                     now,
                     now,
                 ),
@@ -115,7 +149,77 @@ class ImportTracker:
             session_id=row["session_id"],
             model_id=row["model_id"],
             error=row["error"],
+            telegram_signature=row["telegram_signature"],
+            content_signature=row["content_signature"],
+            duplicate_of_import_key=row["duplicate_of_import_key"],
         )
+
+    def completed_by_signature(
+        self,
+        signature_type: str,
+        signature: str,
+        *,
+        exclude_import_key: str,
+    ) -> tuple[ImportRecord, ...]:
+        if signature_type not in {"telegram_signature", "content_signature"}:
+            raise ValueError(f"Unsupported signature type: {signature_type}")
+        rows = self._connection.execute(
+            f"""
+            SELECT import_key FROM imports
+            WHERE {signature_type} = ?
+              AND status = 'completed'
+              AND model_id IS NOT NULL
+              AND import_key <> ?
+            ORDER BY updated_at ASC
+            """,
+            (signature, exclude_import_key),
+        ).fetchall()
+        return tuple(
+            record
+            for row in rows
+            if (record := self.get(row["import_key"])) is not None
+        )
+
+    def set_content_signature(self, import_key: str, signature: str) -> ImportRecord:
+        now = datetime.now(UTC).isoformat()
+        with self._connection:
+            self._connection.execute(
+                "UPDATE imports SET content_signature = ?, updated_at = ? WHERE import_key = ?",
+                (signature, now, import_key),
+            )
+        record = self.get(import_key)
+        if record is None:
+            raise KeyError(import_key)
+        return record
+
+    def mark_duplicate(self, import_key: str, original: ImportRecord) -> ImportRecord:
+        if not original.model_id:
+            raise ValueError("A duplicate source must reference an Alexandria model")
+        now = datetime.now(UTC).isoformat()
+        with self._connection:
+            result = self._connection.execute(
+                """
+                UPDATE imports
+                SET status = 'completed',
+                    model_id = ?,
+                    duplicate_of_import_key = ?,
+                    error = NULL,
+                    updated_at = ?
+                WHERE import_key = ?
+                  AND status IN ('discovered', 'failed', 'downloading', 'uploading')
+                  AND session_id IS NULL
+                  AND model_id IS NULL
+                """,
+                (original.model_id, original.import_key, now, import_key),
+            )
+        if result.rowcount != 1:
+            raise ValueError(
+                "Cannot mark an import with Alexandria progress as a duplicate"
+            )
+        record = self.get(import_key)
+        if record is None:
+            raise KeyError(import_key)
+        return record
 
     def update(
         self,
