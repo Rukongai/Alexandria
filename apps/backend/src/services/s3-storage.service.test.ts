@@ -23,6 +23,7 @@ import {
   S3_SINGLE_COPY_MAX_SIZE,
   S3StorageService,
 } from './s3-storage.service.js';
+import { S3ThumbnailCacheService } from './s3-thumbnail-cache.service.js';
 import { describeStorageServiceContract } from './storage-service.contract.js';
 import { createStorageService } from './storage.service.js';
 
@@ -459,6 +460,8 @@ describe('S3StorageService', () => {
     const appConfig = {
       storageBackend: 's3',
       storagePath: '/unused',
+      s3ThumbnailCachePath: '/cache/alexandria-thumbnails',
+      s3ThumbnailCacheMaxBytes: 0,
       s3: {
         endpoint: 'http://127.0.0.1:9000',
         region: 'us-east-1',
@@ -480,6 +483,8 @@ describe('S3StorageService', () => {
       storageBackend: 's3',
       storagePath: '/unused',
       storageUploadConcurrency: 8,
+      s3ThumbnailCachePath: '/cache/alexandria-thumbnails',
+      s3ThumbnailCacheMaxBytes: 0,
       s3: {
         endpoint: 'http://127.0.0.1:9000',
         region: 'us-east-1',
@@ -499,5 +504,45 @@ describe('S3StorageService', () => {
     expect(retryStrategy.constructor.name).toBe('AdaptiveRetryStrategy');
     expect((retryStrategy as { mode?: string }).mode).toBe('adaptive');
     await expect(sdkClient.config.maxAttempts()).resolves.toBe(6);
+  });
+
+  it('wraps S3 storage when the thumbnail cache is enabled', () => {
+    const created = createStorageService({
+      storageBackend: 's3',
+      storagePath: '/unused',
+      storageUploadConcurrency: 8,
+      s3ThumbnailCachePath: '/cache/alexandria-thumbnails',
+      s3ThumbnailCacheMaxBytes: 1024,
+      s3: {
+        endpoint: 'http://127.0.0.1:9000',
+        region: 'us-east-1',
+        bucket: 'model-library',
+        prefix: 'alexandria',
+        forcePathStyle: true,
+      },
+    } as AppConfig);
+
+    expect(created).toBeInstanceOf(S3ThumbnailCacheService);
+    expect(created.kind).toBe('s3');
+    expect(created.uploadPartSize).toBe(S3_MULTIPART_PART_SIZE);
+  });
+
+  it('returns bare S3 storage when the thumbnail cache is disabled', () => {
+    const created = createStorageService({
+      storageBackend: 's3',
+      storagePath: '/unused',
+      storageUploadConcurrency: 8,
+      s3ThumbnailCachePath: '/cache/alexandria-thumbnails',
+      s3ThumbnailCacheMaxBytes: 0,
+      s3: {
+        endpoint: 'http://127.0.0.1:9000',
+        region: 'us-east-1',
+        bucket: 'model-library',
+        prefix: 'alexandria',
+        forcePathStyle: true,
+      },
+    } as AppConfig);
+
+    expect(created).toBeInstanceOf(S3StorageService);
   });
 });

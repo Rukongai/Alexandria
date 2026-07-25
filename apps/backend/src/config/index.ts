@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 export type StorageBackend = 'local' | 's3';
 
 export interface AppConfig {
@@ -9,6 +11,8 @@ export interface AppConfig {
   storageBackend: StorageBackend;
   storagePath: string;
   storageUploadConcurrency: number;
+  s3ThumbnailCachePath: string;
+  s3ThumbnailCacheMaxBytes: number;
   s3: {
     endpoint?: string;
     region: string;
@@ -37,6 +41,8 @@ export const DEFAULT_DATABASE_POOL_MAX = 10;
  */
 export const DEFAULT_STORAGE_UPLOAD_CONCURRENCY = 8;
 export const MAX_STORAGE_UPLOAD_CONCURRENCY = 32;
+export const DEFAULT_S3_THUMBNAIL_CACHE_MAX_BYTES = 1024 * 1024 * 1024;
+export const S3_THUMBNAIL_CACHE_RELATIVE_PATH = '.cache/s3-thumbnails';
 
 function parseStorageBackend(value: string | undefined): StorageBackend {
   const backend = value || 'local';
@@ -84,6 +90,49 @@ export function resolveStorageUploadConcurrency(value: string | undefined): numb
   return concurrency;
 }
 
+export function resolveS3ThumbnailCacheMaxBytes(value: string | undefined): number {
+  if (value === undefined || value === '') return DEFAULT_S3_THUMBNAIL_CACHE_MAX_BYTES;
+  if (!/^\d+$/.test(value)) {
+    throw new Error('S3_THUMBNAIL_CACHE_MAX_BYTES must be a non-negative integer');
+  }
+
+  const maxBytes = Number(value);
+  if (!Number.isSafeInteger(maxBytes)) {
+    throw new Error('S3_THUMBNAIL_CACHE_MAX_BYTES must be a non-negative integer');
+  }
+  return maxBytes;
+}
+
+export function resolveS3ThumbnailCachePath(
+  storagePath: string,
+  configuredPath: string | undefined,
+): string {
+  const defaultPath = path.join(storagePath, S3_THUMBNAIL_CACHE_RELATIVE_PATH);
+  if (!configuredPath) return defaultPath;
+
+  const storageRoot = path.resolve(storagePath);
+  const cacheRoot = path.resolve(configuredPath);
+  const reservedRoot = path.resolve(defaultPath);
+
+  if (isSameOrDescendant(cacheRoot, storageRoot)) {
+    if (!isSameOrDescendant(cacheRoot, reservedRoot)) {
+      throw new Error(
+        'S3_THUMBNAIL_CACHE_PATH inside STORAGE_PATH must be beneath '
+        + S3_THUMBNAIL_CACHE_RELATIVE_PATH,
+      );
+    }
+  } else if (isSameOrDescendant(storageRoot, cacheRoot)) {
+    throw new Error('S3_THUMBNAIL_CACHE_PATH must not contain STORAGE_PATH');
+  }
+
+  return configuredPath;
+}
+
+function isSameOrDescendant(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 export function resolveAiEncryptionKey(
   environment: string,
   configuredKey: string | undefined,
@@ -118,6 +167,8 @@ export function resolveAllowPrivateProviderUrls(
   return environment !== 'production';
 }
 
+const storagePath = process.env.STORAGE_PATH || './data/storage';
+
 export const config: AppConfig = {
   port: parseInt(process.env.PORT || '3000'),
   host: process.env.HOST || '0.0.0.0',
@@ -127,9 +178,16 @@ export const config: AppConfig = {
   databasePoolMax: resolveDatabasePoolMax(process.env.DATABASE_POOL_MAX),
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   storageBackend: parseStorageBackend(process.env.STORAGE_BACKEND),
-  storagePath: process.env.STORAGE_PATH || './data/storage',
+  storagePath,
   storageUploadConcurrency: resolveStorageUploadConcurrency(
     process.env.STORAGE_UPLOAD_CONCURRENCY,
+  ),
+  s3ThumbnailCachePath: resolveS3ThumbnailCachePath(
+    storagePath,
+    process.env.S3_THUMBNAIL_CACHE_PATH,
+  ),
+  s3ThumbnailCacheMaxBytes: resolveS3ThumbnailCacheMaxBytes(
+    process.env.S3_THUMBNAIL_CACHE_MAX_BYTES,
   ),
   s3: {
     endpoint: process.env.S3_ENDPOINT || undefined,

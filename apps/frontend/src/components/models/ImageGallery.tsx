@@ -85,8 +85,11 @@ export function ImageGallery({
       {/* Main image */}
       <div className="relative rounded-xl overflow-hidden bg-muted border border-border group">
         <img
-          src={`/api${selected.originalUrl}`}
+          src={`/api${selected.thumbnailUrl}`}
           alt={selected.filename}
+          loading="eager"
+          decoding="async"
+          fetchPriority="high"
           className="w-full aspect-video object-contain cursor-zoom-in"
           onClick={() => setLightboxOpen(true)}
         />
@@ -156,6 +159,8 @@ export function ImageGallery({
                   <img
                     src={`/api${image.thumbnailUrl}`}
                     alt={image.filename}
+                    loading="lazy"
+                    decoding="async"
                     className="w-full h-full object-cover"
                   />
                 </button>
@@ -186,6 +191,8 @@ export function ImageGallery({
             <img
               src={`/api${selected.originalUrl}`}
               alt={selected.filename}
+              loading="eager"
+              decoding="async"
               className="max-h-[85vh] w-full object-contain rounded-lg"
             />
 
