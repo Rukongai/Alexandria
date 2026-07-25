@@ -511,6 +511,36 @@ interface CompressFolderResponse {
 }
 ```
 
+### Tools Response Types
+
+Defined in `packages/shared/src/types/tools.ts`. Returned by `GET /tools/duplicates`.
+
+```typescript
+interface DuplicateModel {
+  id: string;
+  name: string;
+  originalFilename: string | null;
+  createdAt: string;
+}
+
+interface DuplicateGroup {
+  fingerprint: string;       // SHA-256 of the encoded complete sorted hash multiset
+  fileCount: number;         // files in each model; repeated file hashes count separately
+  totalSizeBytes: number;    // stored size of the oldest model in the group
+  reclaimableBytes: number;  // summed sizes of every model after the oldest
+  models: DuplicateModel[];  // oldest first; UUID breaks equal-timestamp ties
+}
+
+interface DuplicateScanResult {
+  scannedModelCount: number;   // ready, non-empty models considered
+  redundantModelCount: number; // duplicate copies beyond the oldest model in each group
+  reclaimableBytes: number;
+  groups: DuplicateGroup[];
+}
+```
+
+Duplicate identity uses the complete sorted multiset of per-file SHA-256 hashes. File order, filenames, and relative paths are ignored, but hash multiplicity is preserved. Models that are not `ready` or contain no files are excluded. Groups are ordered by their oldest model, using model UUID and then fingerprint as deterministic tie-breakers. These response types describe a report only; scanning does not delete, merge, or otherwise modify a model.
+
 ### Metadata Response Types
 
 ```typescript

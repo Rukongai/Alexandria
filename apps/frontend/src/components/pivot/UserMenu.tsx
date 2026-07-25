@@ -1,4 +1,4 @@
-import { LogOut, MoreHorizontal, User } from 'lucide-react';
+import { LogOut, MoreHorizontal, User, Wrench } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/use-auth';
 import { useLibraryPath } from '../../hooks/use-libraries';
@@ -24,7 +24,7 @@ function getInitials(displayName: string): string {
 
 /**
  * Rail-footer account control. Same behavior as Header's user menu (theme
- * toggle, identity, Settings nav, Log out) but styled for the dark rail.
+ * toggle, identity, Tools/Settings navigation, Log out) but styled for the dark rail.
  * Pinned at the bottom of PivotRail.
  */
 export function UserMenu() {
@@ -94,6 +94,10 @@ export function UserMenu() {
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => navigate(libPath('/tools'))}>
+                <Wrench className="mr-2 h-4 w-4" />
+                Tools
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => navigate(libPath('/settings'))}>
                 <User className="mr-2 h-4 w-4" />
                 Settings

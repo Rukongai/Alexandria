@@ -10,6 +10,7 @@ import { ModelDetailPage } from './pages/ModelDetailPage';
 import { CollectionsPage } from './pages/CollectionsPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { ToolsPage } from './pages/ToolsPage';
 import { UploadPage } from './pages/UploadPage';
 import { SearchPage } from './pages/SearchPage';
 import { SmartCollectionComposerPage } from './pages/SmartCollectionComposerPage';
@@ -66,6 +67,7 @@ export default function App() {
           <Route path="smart-collections/new" element={<SmartCollectionComposerPage />} />
           <Route path="smart-collections/:id/edit" element={<SmartCollectionComposerPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="tools" element={<ToolsPage />} />
           <Route path="search" element={<SearchPage />} />
         </Route>
       </Route>

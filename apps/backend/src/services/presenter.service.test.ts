@@ -599,3 +599,61 @@ describe('buildCollectionList', () => {
     }
   });
 });
+
+describe('buildDuplicateScanResult', () => {
+  it('formats duplicate candidates and computes removable-copy totals', () => {
+    const result = presenterService.buildDuplicateScanResult({
+      scannedModelCount: 3,
+      groups: [
+        {
+          fingerprint: 'fingerprint',
+          fileCount: 2,
+          models: [
+            {
+              id: 'old-copy',
+              name: 'Original',
+              originalFilename: 'original.zip',
+              createdAt: new Date('2026-01-01T00:00:00.000Z'),
+              totalSizeBytes: 100,
+            },
+            {
+              id: 'new-copy',
+              name: 'Copy',
+              originalFilename: 'copy.zip',
+              createdAt: new Date('2026-02-01T00:00:00.000Z'),
+              totalSizeBytes: 120,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      scannedModelCount: 3,
+      redundantModelCount: 1,
+      reclaimableBytes: 120,
+      groups: [
+        {
+          fingerprint: 'fingerprint',
+          fileCount: 2,
+          totalSizeBytes: 100,
+          reclaimableBytes: 120,
+          models: [
+            {
+              id: 'old-copy',
+              name: 'Original',
+              originalFilename: 'original.zip',
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'new-copy',
+              name: 'Copy',
+              originalFilename: 'copy.zip',
+              createdAt: '2026-02-01T00:00:00.000Z',
+            },
+          ],
+        },
+      ],
+    });
+  });
+});

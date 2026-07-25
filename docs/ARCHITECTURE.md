@@ -55,6 +55,7 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 │   ModelDetailPage: ModelBreadcrumb + ModelHero +         │
 │     ModelDetailPanel (Info/Collections/Files tabs)       │
 │     + SplitFolderDialog for file-tree folder extraction  │
+│   ToolsPage: library maintenance tools + duplicate scan  │
 │   ModelViewer3DModal → lazy ModelViewer3DScene (three.js)│
 │   lib/model-files.ts: STL path helpers (pure)           │
 └──────────────────────┬──────────────────────────────────┘
@@ -70,7 +71,8 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 │  └─────────┘  └──────────────┘  │ MetadataService     │   │
 │                                  │ CollectionService   │   │
 │  requireAuth ──→ requireLibrary  │ SearchService       │   │
-│  (injects request.libraryId)     │ AuthService         │   │
+│  (injects request.libraryId)     │ DuplicateScannerSvc │   │
+│                                  │ AuthService         │   │
 │                                  │ LibraryService      │   │
 │  ┌──────────────┐               └───────────────────┘   │
 │  │IngestionSvc  │──────────────→(services above)         │
@@ -197,6 +199,7 @@ Routes that apply `requireLibrary` (as of P5):
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/upload/multipart/complete`, `POST /models/import`
 - `GET /models/import-sessions`, `POST /models/import-sessions/:id/commit`
 - `GET /search`
+- `GET /tools/duplicates`
 - All `/smart-collections` routes
 - All `/bulk/*` routes
 - `POST /ai/chat`, `POST /ai/proposals/:id/apply`
@@ -346,6 +349,14 @@ On startup, S3 mode performs `HeadBucket` validation before database migration a
 
 **Abstraction:** The search implementation is behind an interface. Postgres FTS is the MVP implementation. A future MeiliSearch or Typesense implementation can be swapped in without changing any callers.
 
+### DuplicateScannerService
+
+**Owns:** Read-only detection and reporting of exact duplicate models within one authenticated user's active library.
+
+**Does not own:** File hashing, model deletion, model merging, or any other mutation.
+
+**Behavior:** `scanDuplicates(libraryId)` considers only `ready` models that have at least one file. The route supplies the ownership-checked `request.libraryId` produced by `requireLibrary`. PostgreSQL aggregates the ordered file-hash multiset into one row per model before results cross the database boundary, and concurrent requests for the same library share one in-flight scan. Sorting makes file order irrelevant while preserving repeated hashes, so a model containing the same file twice does not match one containing it once. Filenames and relative paths do not participate in matching. Only identities shared by at least two models are returned. PresenterService formats timestamps and assembles per-group and aggregate counts and reclaimable-byte estimates. The operation is report-only and never changes models or files.
+
 ### ModelService
 
 **Owns:** Model, ModelFile, and ModelFolder CRUD. Creating, reading, updating, and deleting Model records; managing file and persisted-folder relationships; and coordinating structural operations such as model merge and splitting one folder into a new model.
@@ -469,6 +480,7 @@ Provider base URLs are user-configured and contacted from the backend, so they a
 - `buildCollectionDetail(collection)` → collection with children and model count
 - `buildCollectionList(userId, params)` → all collections for a user, with optional depth expansion
 - `buildMetadataFieldList(fields)` → field definitions with value counts
+- `buildDuplicateScanResult(scan)` → duplicate groups, summary counts, and reclaimable-byte estimates
 
 ---
 
@@ -485,7 +497,7 @@ The application shell (`AppShell`) is a full-height flex row:
 │  PivotRail   │             <Outlet>                      │
 │  (272 px,    │  PivotPage → PivotMain                   │
 │   fixed)     │  ModelDetailPage, CollectionDetailPage,   │
-│              │  UploadPage, SettingsPage                 │
+│              │  UploadPage, SettingsPage, ToolsPage      │
 └──────────────┴──────────────────────────────────────────┘
 ```
 
@@ -495,10 +507,10 @@ The application shell (`AppShell`) is a full-height flex row:
 
 The rail contains, top to bottom:
 
-1. **Library header** — brand mark plus a library-name badge. The badge includes a chevron-down but is non-interactive (`aria-disabled`, `tabIndex=-1`): multi-library switching is a P5 stub.
+1. **Library header** — brand mark plus the active library switcher. Selecting another owned library navigates to that library's `/lib/:id` workspace; the switcher also links to the All-Libraries home.
 2. **AxisPicker** — a 2-column button grid for selecting the active axis. Collections, Artists, Tags, and Smart Collections are always present; every metadata field marked `isBrowsable` is also exposed as an axis (Artist and Tags reuse their dedicated axes instead of appearing twice).
 3. **AxisFacetBody** — a scrollable list for the active axis. Shows the collections tree, smart collections, or the values and model counts for the selected metadata dimension, each pulling from the appropriate backend endpoint.
-4. **UserMenu** — pinned footer with user avatar, display name, theme toggle, Settings link, and Log out.
+4. **UserMenu** — pinned footer with user avatar, display name, theme toggle, library-relative Tools and Settings links, and Log out. Tools navigates to `/lib/:id/tools` for the active library.
 
 ### Axes
 
@@ -568,9 +580,9 @@ On success the dialog drops its own `merge-selection` lookups and the detail-pag
 
 ### Navigation
 
-Routes unchanged from P0: `/models/:id`, `/collections`, `/collections/:id`, `/upload`, `/settings`. The standalone `/collections` nav link was removed from the left rail (collections are now an axis, not a separate page), but the route itself still exists for direct navigation and is used by collection-detail links.
+Authenticated workspace routes are rooted at `/lib/:id`. They include the library pivot at `/lib/:id`, model and collection detail routes, upload and search, smart-collection composition, `/lib/:id/settings`, and `/lib/:id/tools`. The UserMenu exposes Tools beside Settings; the Tools page keeps navigation and API requests within the active library. `/` is the authenticated All-Libraries home.
 
-`/lib/:id` (multi-library routing) does not exist yet; deferred to P5.
+The standalone collections route remains available beneath the library workspace for direct navigation and collection-detail links, although collections are primarily browsed as a pivot axis rather than through a persistent rail link.
 
 ---
 
@@ -743,6 +755,11 @@ All provider routes apply `requireAuth` and enforce provider ownership in `AiPro
 | Method | Route | Purpose | Service Chain | Library-scoped |
 |--------|-------|---------|---------------|---------------|
 | GET | /search | Cross-entity search (models, collections, artists, tags) | SearchService | Yes |
+
+**Tools**
+| Method | Route | Purpose | Service Chain | Library-scoped |
+|--------|-------|---------|---------------|---------------|
+| GET | /tools/duplicates | Report ready models with identical complete file-hash multisets | DuplicateScannerService → PresenterService | Yes |
 
 **Bulk Operations**
 | Method | Route | Purpose | Service Chain | Library-scoped |
