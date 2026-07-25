@@ -4,19 +4,20 @@ Alexandria includes a local Model Context Protocol server for trusted stdio clie
 
 ## Tools
 
-The server exposes exactly seven tools. MCP clients receive the input schemas during tool discovery.
+The server exposes exactly eight tools. MCP clients receive the input schemas during tool discovery.
 
 | Tool | Capability |
 |---|---|
 | `alexandria_search_models` | Searches the configured library using Alexandria's model search parameters, including text, tags, collection, file type, status, metadata filters, sorting, cursor, and page size. Results contain complete raw model table rows rather than presenter-shaped model summaries. |
 | `alexandria_get_model` | Returns every column from the owned model row plus its model-file, folder, metadata value and definition, tag and tag-membership, collection and collection-membership, and thumbnail rows. This includes stored information that the web UI does not render. |
+| `alexandria_get_model_files` | Accepts `{ modelId: UUID }` and returns `{ modelId, fileCount, files }` after verifying that the configured user owns the model in the configured library. `files` contains `id`, `modelId`, `filename`, `relativePath`, `fileType`, `mimeType`, `sizeBytes`, `storagePath`, `hash`, `isDuplicate`, and ISO 8601 `createdAt` fields in relative-path order. The file IDs are accepted by `alexandria_download_model_files`; unlike `alexandria_get_model`, this tool does not load other relationships. |
 | `alexandria_download_model_files` | Downloads all files for an owned model, or the selected `fileIds`, into a required `subdirectory` beneath the configured download root. `overwrite` defaults to `false`. |
 | `alexandria_update_model` | Updates core model fields, metadata values keyed by field slug, or both. Core and metadata changes run in one ownership-locked database transaction. |
 | `alexandria_merge_models` | Merges one to 100 owned, ready source models into an owned, ready target model. It moves their files and applicable relationships to the target and deletes the source model rows. |
 | `alexandria_delete_model` | Deletes one owned model and its database relationships, then attempts best-effort cleanup of every managed file. |
 | `alexandria_tag_model` | Adds, removes, or replaces tags on one owned model through Alexandria's metadata normalization and validation. An empty tag list is valid only for `replace`, where it clears the tags. |
 
-Dates in tool results are serialized as ISO 8601 strings and bigint values as strings. `alexandria_search_models` returns raw model rows only; use `alexandria_get_model` when related table rows are required.
+Dates in tool results are serialized as ISO 8601 strings and bigint values as strings. `alexandria_search_models` returns raw model rows only; use `alexandria_get_model_files` when only file rows are required, or `alexandria_get_model` for the model's complete related data.
 
 ## Prerequisites and environment
 

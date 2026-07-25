@@ -32,6 +32,25 @@ import {
 const logger = createLogger('McpTools');
 
 const modelIdSchema = z.object({ modelId: z.string().uuid() });
+const modelFileOutputSchema = z.object({
+  id: z.string().uuid(),
+  modelId: z.string().uuid(),
+  filename: z.string(),
+  relativePath: z.string(),
+  fileType: z.enum(['stl', 'image', 'document', 'other']),
+  mimeType: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  storagePath: z.string(),
+  hash: z.string(),
+  isDuplicate: z.boolean(),
+  createdAt: z.string().datetime(),
+}).strict();
+const modelFileListOutputSchema = z.object({
+  modelId: z.string().uuid(),
+  fileCount: z.number().int().nonnegative(),
+  files: z.array(modelFileOutputSchema),
+}).strict();
+type ModelFileListOutput = z.infer<typeof modelFileListOutputSchema>;
 const mergeModelInputSchema = z.object({ targetModelId: z.string().uuid() })
   .merge(mergeModelsSchema);
 const downloadInputSchema = z.object({
@@ -115,6 +134,7 @@ const defaultDependencies: McpDependencies = {
 export interface AlexandriaMcpHandlers {
   searchModels(params: ModelSearchParams): Promise<Record<string, unknown>>;
   getModel(input: z.infer<typeof modelIdSchema>): Promise<RawModelInformation>;
+  getModelFiles(input: z.infer<typeof modelIdSchema>): Promise<ModelFileListOutput>;
   downloadFiles(input: z.infer<typeof downloadInputSchema>): Promise<Record<string, unknown>>;
   updateModel(input: z.infer<typeof updateInputSchema>): Promise<Record<string, unknown>>;
   mergeModels(input: z.infer<typeof mergeModelInputSchema>): Promise<Record<string, unknown>>;
@@ -223,6 +243,16 @@ export async function createAlexandriaMcpHandlers(
       const model = await requireOwnedModel(modelId);
       const related = await dependencies.rawModels.getRelatedModelInformation(modelId);
       return { model, ...related } as RawModelInformation;
+    },
+
+    async getModelFiles({ modelId }) {
+      await requireOwnedModel(modelId);
+      const rawFiles = await dependencies.model.getModelFiles(modelId);
+      return modelFileListOutputSchema.parse({
+        modelId,
+        fileCount: rawFiles.length,
+        files: rawFiles.map((file) => jsonSafe(file)),
+      });
     },
 
     async downloadFiles({ modelId, fileIds, subdirectory, overwrite }) {
@@ -412,6 +442,25 @@ export async function createAlexandriaMcpServer(
     summary: `Loaded complete raw information for model ${input.modelId}.`,
     result: await handlers.getModel(input),
   })));
+
+  server.registerTool('alexandria_get_model_files', {
+    title: 'Get Alexandria model files',
+    description: 'Return every raw model-file row for an owned model in relative-path order.',
+    inputSchema: modelIdSchema,
+    outputSchema: modelFileListOutputSchema,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, safely(async (input) => {
+    const result = await handlers.getModelFiles(input);
+    return {
+      summary: `Loaded ${String(result.fileCount)} file(s) for model ${input.modelId}.`,
+      result,
+    };
+  }));
 
   server.registerTool('alexandria_download_model_files', {
     title: 'Download Alexandria model files',

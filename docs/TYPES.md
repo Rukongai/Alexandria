@@ -99,6 +99,7 @@ interface ModelFile {
   sizeBytes: number;
   storagePath: string; // backend-independent logical key, never a public URL
   hash: string;
+  isDuplicate: boolean;
   createdAt: string;
 }
 

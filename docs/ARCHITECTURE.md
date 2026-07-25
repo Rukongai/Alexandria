@@ -243,13 +243,17 @@ migrations, or seed logic. The process requires `ALEXANDRIA_MCP_USER_ID`, resolv
 user's owned `ALEXANDRIA_MCP_LIBRARY_ID` or their default library, and applies both values as a
 server-owned scope to every tool call. Tool input can never select a different user or library.
 
-The MCP adapter exposes search, raw model inspection, managed-file download, model and metadata
-updates, tag changes, merge, and delete. Mutations delegate to `ModelService`, `MetadataService`,
-`LibraryService`, and the configured `IStorageService` rather than duplicating domain rules. Raw
-inspection is the deliberate exception to presenter DTOs: a dedicated read repository returns all
-columns from the model and related model-file, folder, metadata-definition/value, tag-membership,
+The MCP adapter exposes search, raw model inspection, a focused raw model-file listing, managed-file
+download, model and metadata updates, tag changes, merge, and delete. Mutations delegate to
+`ModelService`, `MetadataService`, `LibraryService`, and the configured `IStorageService` rather
+than duplicating domain rules.
+
+Raw inspection is the deliberate exception to presenter DTOs: a dedicated read repository returns
+all columns from the model and related model-file, folder, metadata-definition/value, tag-membership,
 collection-membership, and thumbnail rows so MCP clients can inspect information the UI does not
 render. Ownership and library membership are checked before those related rows are queried.
+The focused file-list tool applies the same ownership check, then returns the model-file rows in
+relative-path order without querying the model's other relationships.
 
 Downloads stream through `IStorageService`, so local and S3-backed libraries behave identically.
 They may write only beneath a pre-created `ALEXANDRIA_MCP_DOWNLOAD_DIR`; relative-path validation, real-path and

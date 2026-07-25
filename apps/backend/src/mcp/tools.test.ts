@@ -14,6 +14,25 @@ const USER_ID = '11111111-1111-4111-8111-111111111111';
 const LIBRARY_ID = '22222222-2222-4222-8222-222222222222';
 const MODEL_ID = '33333333-3333-4333-8333-333333333333';
 
+function modelFileRow(
+  id: string,
+  relativePath: string,
+) {
+  return {
+    id,
+    modelId: MODEL_ID,
+    filename: relativePath.split('/').at(-1)!,
+    relativePath,
+    fileType: 'stl',
+    mimeType: 'model/stl',
+    sizeBytes: 12,
+    storagePath: `models/${MODEL_ID}/${relativePath}`,
+    hash: 'a'.repeat(64),
+    isDuplicate: false,
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  };
+}
+
 function modelRow(id = MODEL_ID) {
   return {
     id,
@@ -151,6 +170,49 @@ describe('Alexandria MCP handlers', () => {
     });
 
     expect(deps.rawModels.getRelatedModelInformation).not.toHaveBeenCalled();
+  });
+
+  it('checks ownership before returning raw model-file rows in service order', async () => {
+    const deps = dependencies();
+    const files = [
+      modelFileRow('44444444-4444-4444-8444-444444444444', 'parts/a.stl'),
+      modelFileRow('55555555-5555-4555-8555-555555555555', 'parts/b.stl'),
+    ];
+    vi.mocked(deps.model.getModelFiles).mockResolvedValueOnce(files);
+    const { handlers } = await createAlexandriaMcpHandlers({ userId: USER_ID }, deps);
+
+    const result = await handlers.getModelFiles({ modelId: MODEL_ID });
+
+    expect(deps.model.requireOwnedModel).toHaveBeenCalledWith(
+      MODEL_ID,
+      USER_ID,
+      LIBRARY_ID,
+    );
+    expect(deps.model.getModelFiles).toHaveBeenCalledWith(MODEL_ID);
+    expect(vi.mocked(deps.model.requireOwnedModel).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(deps.model.getModelFiles).mock.invocationCallOrder[0]);
+    expect(result).toEqual({
+      modelId: MODEL_ID,
+      fileCount: 2,
+      files: files.map((file) => ({
+        ...file,
+        createdAt: file.createdAt.toISOString(),
+      })),
+    });
+  });
+
+  it('does not query model files when model ownership validation fails', async () => {
+    const deps = dependencies();
+    vi.mocked(deps.model.requireOwnedModel).mockRejectedValueOnce(
+      notFound('Model not found'),
+    );
+    const { handlers } = await createAlexandriaMcpHandlers({ userId: USER_ID }, deps);
+
+    await expect(handlers.getModelFiles({ modelId: MODEL_ID })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+
+    expect(deps.model.getModelFiles).not.toHaveBeenCalled();
   });
 
   it('returns empty raw search results without running an ownership lookup', async () => {
@@ -364,6 +426,7 @@ describe('Alexandria MCP registration', () => {
       expect(listed.tools.map((tool) => tool.name)).toEqual([
         'alexandria_search_models',
         'alexandria_get_model',
+        'alexandria_get_model_files',
         'alexandria_download_model_files',
         'alexandria_update_model',
         'alexandria_merge_models',
@@ -379,6 +442,12 @@ describe('Alexandria MCP registration', () => {
             openWorldHint: false,
           },
           alexandria_get_model: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+          },
+          alexandria_get_model_files: {
             readOnlyHint: true,
             destructiveHint: false,
             idempotentHint: true,
@@ -415,6 +484,51 @@ describe('Alexandria MCP registration', () => {
             openWorldHint: false,
           },
         });
+      const modelFilesTool = listed.tools.find(
+        (tool) => tool.name === 'alexandria_get_model_files',
+      );
+      expect(modelFilesTool?.outputSchema).toMatchObject({
+        type: 'object',
+        additionalProperties: false,
+        required: ['modelId', 'fileCount', 'files'],
+        properties: {
+          modelId: { type: 'string', format: 'uuid' },
+          fileCount: { type: 'integer', minimum: 0 },
+          files: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: [
+                'id',
+                'modelId',
+                'filename',
+                'relativePath',
+                'fileType',
+                'mimeType',
+                'sizeBytes',
+                'storagePath',
+                'hash',
+                'isDuplicate',
+                'createdAt',
+              ],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                modelId: { type: 'string', format: 'uuid' },
+                filename: { type: 'string' },
+                relativePath: { type: 'string' },
+                fileType: { enum: ['stl', 'image', 'document', 'other'] },
+                mimeType: { type: 'string' },
+                sizeBytes: { type: 'integer', minimum: 0 },
+                storagePath: { type: 'string' },
+                hash: { type: 'string' },
+                isDuplicate: { type: 'boolean' },
+                createdAt: { type: 'string', format: 'date-time' },
+              },
+            },
+          },
+        },
+      });
 
       const searchResult = await client.callTool({
         name: 'alexandria_search_models',
@@ -488,6 +602,42 @@ describe('Alexandria MCP registration', () => {
         },
       });
       expect(JSON.stringify(failure)).not.toContain('database password');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('returns raw model-file rows through the registered transport tool', async () => {
+    const deps = dependencies();
+    const files = [
+      modelFileRow('44444444-4444-4444-8444-444444444444', 'parts/a.stl'),
+      modelFileRow('55555555-5555-4555-8555-555555555555', 'parts/b.stl'),
+    ];
+    vi.mocked(deps.model.getModelFiles).mockResolvedValueOnce(files);
+    const server = await createAlexandriaMcpServer({ userId: USER_ID }, deps);
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({
+        name: 'alexandria_get_model_files',
+        arguments: { modelId: MODEL_ID },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toEqual({
+        modelId: MODEL_ID,
+        fileCount: 2,
+        files: files.map((file) => ({
+          ...file,
+          createdAt: file.createdAt.toISOString(),
+        })),
+      });
+      expect(((result.content as Array<{ text: string }>)[0]).text)
+        .toContain(`Loaded 2 file(s) for model ${MODEL_ID}.`);
     } finally {
       await client.close();
       await server.close();
