@@ -426,7 +426,7 @@ it('test metadata', ...);
 
 ### Commit Messages
 
-Format: `<type>(<scope>): <description>`
+Format: `<type>: <description>`, with an optional `(<scope>)` when it aids clarity.
 
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`
 
@@ -434,14 +434,22 @@ Scope: the service, component, or area affected.
 
 Examples:
 ```
+feat: add telegram channel importer
+fix: prevent AI provider loop exhaustion
+refactor: drop unused models.file_hash column
 feat(ingestion): implement zip upload pipeline
-fix(metadata): correct tag storage routing for multi_enum type
-refactor(presenter): extract file tree builder into utility
 test(search): add integration tests for metadata filtering
 docs(architecture): update decision log with D13
-chore(docker): add Redis health check to compose file
 ```
 
 ### Branching
 
-Implementation phases map to branches. Work happens on phase branches and merges to `main` at phase milestones after review.
+Never commit directly to `main`. Every task — bug fix, feature, or refactor — gets its own branch
+and a pull request, and PRs are left open for review rather than self-merged.
+
+| Type | Branch format |
+|------|--------|
+| Bug fix with issue | `fix/{issue-number}-{short-slug}` |
+| Feature with issue | `feat/{issue-number}-{short-slug}` |
+| Bug fix without issue | `fix/{short-slug}` |
+| Feature without issue | `feat/{short-slug}` |

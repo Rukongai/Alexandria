@@ -166,6 +166,8 @@ npm run db:seed       # Seed default user and metadata fields
 
 For local development outside Docker, the backend connects to `postgresql://alexandria:alexandria@localhost:5432/alexandria` by default. Override with `DATABASE_URL`.
 
+Note that this built-in default does not match the local development stack: Compose publishes Postgres on host port `5433` (`POSTGRES_PORT`), not `5432`. `npm run dev:up` exports a matching `DATABASE_URL` for you, so the mismatch only bites when running the backend or a migration directly — in that case set `DATABASE_URL` explicitly, for example `postgresql://alexandria:alexandria@localhost:5433/alexandria`.
+
 Alexandria accepts a standard PostgreSQL connection URL, including provider TLS parameters. It runs migrations during every backend startup, so the configured database user must own the Alexandria schema and be allowed to create and alter its objects.
 
 ---

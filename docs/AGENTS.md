@@ -1,5 +1,11 @@
 # Alexandria — Agent Team Definitions
 
+> **Historical.** This document was written for the original phased build-out (`docs/PLAN.md`) and
+> its process guidance — Orchestrator prompt, phase milestones, per-phase agent assignments — no
+> longer reflects how work happens. `CLAUDE.md` is the current source of process direction. The
+> per-agent role and context-selection summaries below are still accurate and remain useful when
+> deciding what to hand a subagent.
+
 This document defines the agent team for implementing Alexandria. Agent definitions live in `.claude/agents/` as markdown files and are automatically available in Claude Code via the `/agents` command. The Orchestrator runs as the main Claude Code session; all other agents are invoked as subagents.
 
 ---
