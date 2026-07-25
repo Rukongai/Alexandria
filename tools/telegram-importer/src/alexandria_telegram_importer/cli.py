@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from .alexandria import AlexandriaClient
 from .importer import ChannelImporter, describe_plan
+from .progress import reporter_from_args
 from .telegram_source import TelegramSource
 from .tracker import ImportTracker
 
@@ -31,6 +32,10 @@ def _concurrency(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("concurrency must be at least 1")
     return parsed
+
+
+def _flag_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() not in {"", "0", "false", "no"}
 
 
 def _channel(value: str | None) -> str | int | None:
@@ -85,6 +90,12 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show grouping without downloading or uploading",
     )
+    result.add_argument(
+        "--no-progress",
+        action="store_true",
+        default=_flag_env("TELEGRAM_IMPORT_NO_PROGRESS"),
+        help=("Disable the progress display entirely and log as earlier versions did"),
+    )
     result.add_argument("--verbose", action="store_true")
     return result
 
@@ -132,6 +143,11 @@ async def run(args: argparse.Namespace) -> int:
             tracker=tracker,
             work_root=args.state.parent / f"{args.state.name}.work",
             concurrency=args.concurrency,
+            progress=reporter_from_args(
+                no_progress=args.no_progress,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            ),
         ).run(refs)
         print(
             "Import state: "

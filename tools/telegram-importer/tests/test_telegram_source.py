@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from alexandria_telegram_importer.models import MediaKind, MediaRef
 from alexandria_telegram_importer.telegram_source import TelegramSource
 
 
@@ -27,3 +31,48 @@ def test_should_distinguish_photo_identity_and_missing_media() -> None:
 
     assert TelegramSource._media_identity(photo) == "photo:987654321:2048"
     assert TelegramSource._media_identity(missing) is None
+
+
+class RecordingTelethonClient:
+    """Stands in for telethon's client, capturing the download arguments."""
+
+    def __init__(self) -> None:
+        self.progress_callback = None
+
+    async def get_messages(self, _entity, ids: int):
+        return SimpleNamespace(id=ids)
+
+    async def download_media(self, _message, file: str, progress_callback=None):
+        self.progress_callback = progress_callback
+        Path(file).write_bytes(b"payload")
+        return file
+
+
+@pytest.mark.asyncio
+async def test_should_forward_the_progress_callback_to_telethon(tmp_path) -> None:
+    source = TelegramSource.__new__(TelegramSource)
+    client = RecordingTelethonClient()
+    source._client = client
+    source.entity = object()
+    ref = MediaRef(message_id=7, filename="dragon.zip", kind=MediaKind.MODEL)
+    seen: list[tuple[int, int]] = []
+
+    await source.download(ref, tmp_path, on_progress=lambda a, b: seen.append((a, b)))
+
+    assert client.progress_callback is not None
+    client.progress_callback(5, 10)
+    assert seen == [(5, 10)]
+
+
+@pytest.mark.asyncio
+async def test_should_download_without_a_progress_callback(tmp_path) -> None:
+    source = TelegramSource.__new__(TelegramSource)
+    client = RecordingTelethonClient()
+    source._client = client
+    source.entity = object()
+    ref = MediaRef(message_id=7, filename="dragon.zip", kind=MediaKind.MODEL)
+
+    path = await source.download(ref, tmp_path)
+
+    assert path.exists()
+    assert client.progress_callback is None

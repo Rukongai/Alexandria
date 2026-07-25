@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +113,13 @@ class TelegramSource:
             )
         return refs
 
-    async def download(self, ref: MediaRef, directory: Path) -> Path:
+    async def download(
+        self,
+        ref: MediaRef,
+        directory: Path,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"{ref.message_id}_{safe_filename(ref.filename, 'media')}"
         for attempt in range(3):
@@ -125,7 +132,7 @@ class TelegramSource:
                         f"Telegram message {ref.message_id} no longer exists"
                     )
                 downloaded = await self._client.download_media(
-                    message, file=str(target)
+                    message, file=str(target), progress_callback=on_progress
                 )
                 if not downloaded:
                     raise RuntimeError(

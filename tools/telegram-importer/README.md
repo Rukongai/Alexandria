@@ -94,7 +94,47 @@ Raising it overlaps the slow parts of independent models — one model downloads
 
 Parts of one split archive are still downloaded and uploaded one at a time, which bounds disk use per model and preserves the abort path when a set turns out to be a duplicate. Attachments for a model are likewise appended one at a time. Concurrency applies between logical models, not inside one.
 
-Interleaved concurrent runs make log output non-sequential; every import log line names the model it refers to. The final `Import state:` summary is unaffected.
+Interleaved concurrent runs make log output non-sequential; every import log line names the model it refers to. The progress display gives each concurrent model its own numbered row, and the final `Import state:` summary is unaffected.
+
+## Progress output
+
+In an interactive terminal the importer pins a live block below the scrolling log: an overall bar, a running tally of this run's outcomes, and one row per model being imported.
+
+```
+2026-07-25 04:12:03 INFO Importing dragon-bust.zip
+2026-07-25 04:12:31 INFO Imported castle-set.7z as Alexandria model 0f3adc12
+
+  Total   ━━━━━━━━━━━━━━━━━╸━━━━━━━━━━  47/143 models
+  44 completed · 2 duplicates · 1 failed
+
+  #1 dragon-bust.zip     upload    ━━━━━━━━━━━╸━━━  412.0 MB/920.0 MB  8.1 MB/s
+  #2 castle-set.7z.002   download  ━━━━╸━━━━━━━━━━  180.0 MB/700.0 MB  4.4 MB/s
+  #3 knight-armor.stl    scanning  ⠹  waiting on Alexandria  0:00:44
+```
+
+Row numbers are stable slots: a model that finishes frees its number for the next one, so rows do not jump around mid-transfer. Each row names the phase it is in — `download`, `hashing`, `packaging`, `upload`, `attachments`, `scanning`, or `committing`. Only downloads and uploads have byte-level progress; the rest show elapsed time, because the importer is waiting on Alexandria rather than moving bytes. Attachments show a file count rather than a bar, since they are uploaded whole rather than in chunks.
+
+The tally counts this run only. Re-running against an existing state database opens at zero and counts already-imported models as `skipped`, rather than starting at the state file's historical totals.
+
+Progress goes to standard error, leaving standard output free for `--dry-run` plans and the final `Import state:` line.
+
+### Non-interactive output
+
+When standard error is not a terminal — `docker compose logs`, CI, or a redirect to a file — the live block is replaced by periodic log lines, so captured logs stay readable and free of terminal escape codes:
+
+```
+2026-07-25 04:12:31 INFO dragon-bust.zip download 45% (412.0 MB/920.0 MB, 8.1 MB/s)
+2026-07-25 04:12:41 INFO dragon-bust.zip download 78% (718.0 MB/920.0 MB, 8.4 MB/s)
+2026-07-25 04:12:48 INFO dragon-bust.zip download 100% (920.0 MB/920.0 MB, 8.2 MB/s)
+```
+
+Each transfer logs at most once every ten seconds, plus a final line when it finishes or stops early. The throttle is per transfer, so a concurrent run produces one interleaved stream per active model.
+
+`--verbose` also uses these lines rather than the live block, because debug output would contend with it for the same terminal.
+
+### Turning it off
+
+`--no-progress`, or `TELEGRAM_IMPORT_NO_PROGRESS=1`, disables both modes and restores the log output of earlier versions. A terminal that refuses the live region falls back to the periodic lines on its own; a display problem never interrupts an import.
 
 ## Exact grouping rules
 

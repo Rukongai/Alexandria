@@ -35,3 +35,25 @@ def test_should_reject_an_unusable_concurrency_from_the_environment(
 
     with pytest.raises(SystemExit):
         parser().parse_args([])
+
+
+def test_should_enable_the_progress_display_by_default() -> None:
+    assert parser().parse_args([]).no_progress is False
+
+
+def test_should_accept_an_explicit_progress_opt_out() -> None:
+    assert parser().parse_args(["--no-progress"]).no_progress is True
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes"])
+def test_should_opt_out_of_progress_from_the_environment(monkeypatch, value) -> None:
+    monkeypatch.setenv("TELEGRAM_IMPORT_NO_PROGRESS", value)
+
+    assert parser().parse_args([]).no_progress is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no"])
+def test_should_keep_progress_for_falsey_environment_values(monkeypatch, value) -> None:
+    monkeypatch.setenv("TELEGRAM_IMPORT_NO_PROGRESS", value)
+
+    assert parser().parse_args([]).no_progress is False

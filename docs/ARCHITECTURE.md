@@ -118,7 +118,10 @@ database or storage adapter directly. Complete archives use the normal chunked u
 ZIP/RAR sets use multipart `split` mode, and preceding Telegram media is appended to the staged
 session before commit. The utility owns its SQLite restart and duplicate state and short-lived local
 downloads; Alexandria continues to own all committed files through its configured local or S3
-storage backend.
+storage backend. On an interactive terminal it renders a live progress dashboard on stderr — the
+reason it carries `rich`, its only presentation dependency — and falls back to periodic log lines
+when output is captured. That display is strictly observational: it is injected into the importer
+and cannot alter, delay, or fail an import.
 
 Duplicate detection is local to the utility's state database and has two layers. Before download, a
 signature over the complete logical model's Telegram document/photo IDs and reported sizes
