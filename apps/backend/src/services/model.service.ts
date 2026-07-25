@@ -438,12 +438,21 @@ export class ModelService {
     executor: DatabaseExecutor = db,
   ): Promise<string[]> {
     if (modelIds.length === 0) return [];
-    const rows = await executor
+    const fileRows = await executor
       .select({ storagePath: modelFiles.storagePath })
       .from(modelFiles)
       .where(inArray(modelFiles.modelId, modelIds))
       .orderBy(asc(modelFiles.storagePath));
-    return rows.map((row) => row.storagePath);
+    const thumbnailRows = await executor
+      .select({ storagePath: thumbnails.storagePath })
+      .from(thumbnails)
+      .innerJoin(modelFiles, eq(thumbnails.sourceFileId, modelFiles.id))
+      .where(inArray(modelFiles.modelId, modelIds))
+      .orderBy(asc(thumbnails.storagePath));
+    return [...new Set([
+      ...fileRows.map((row) => row.storagePath),
+      ...thumbnailRows.map((row) => row.storagePath),
+    ])].sort();
   }
 
   async getModelFolders(modelId: string): Promise<Array<typeof modelFolders.$inferSelect>> {
@@ -1077,154 +1086,169 @@ export class ModelService {
       throw validationError('A model cannot be merged into itself', 'sourceModelIds');
     }
 
-    const target = await this.requireOwnedModel(targetModelId, userId, libraryId);
-    if (target.status !== 'ready') {
-      throw validationError('Target model must be ready before merging', 'targetModelId');
-    }
-
     if (uniqueSourceIds.length === 0) {
       throw validationError('At least one source model is required', 'sourceModelIds');
     }
+    const createdStoragePaths: string[] = [];
+    const stagingStoragePaths: string[] = [];
+    const oldStoragePaths: string[] = [];
+    let movedFileCount = 0;
 
-    const sourceRows = await db
-      .select()
-      .from(models)
-      .where(
-        and(
-          inArray(models.id, uniqueSourceIds),
-          eq(models.userId, userId),
-          eq(models.libraryId, libraryId),
-        ),
-      );
-
-    if (sourceRows.length !== uniqueSourceIds.length) {
-      throw notFound('One or more source models were not found');
-    }
-    if (sourceRows.some((source) => source.status !== 'ready')) {
-      throw validationError('Source models must be ready before merging', 'sourceModelIds');
-    }
-
-    const existingTargetFiles = await this.getModelFiles(targetModelId);
-    const usedPaths = new Set(existingTargetFiles.map((file) => file.relativePath));
-    const sourceFiles = await db
-      .select()
-      .from(modelFiles)
-      .where(inArray(modelFiles.modelId, uniqueSourceIds))
-      .orderBy(asc(modelFiles.relativePath));
-
-    let fallbackPreviewImageFileId: string | null = null;
-
-    for (const file of sourceFiles) {
-      const relativePath = this.uniqueRelativePath(file.relativePath, usedPaths);
-      const storagePath = `models/${targetModelId}/${relativePath}`;
-
-      await storageService.copy(file.storagePath, storagePath);
-      try {
-        await db
-          .update(modelFiles)
-          .set({
-            modelId: targetModelId,
-            relativePath,
-            storagePath,
-          })
-          .where(eq(modelFiles.id, file.id));
-      } catch (err) {
-        await storageService.delete(storagePath).catch(() => {});
-        throw err;
-      }
-
-      await storageService.delete(file.storagePath).catch(() => {});
-
-      if (
-        fallbackPreviewImageFileId === null &&
-        file.fileType === 'image' &&
-        sourceRows.some((source) => source.previewImageFileId === file.id)
-      ) {
-        fallbackPreviewImageFileId = file.id;
-      }
-    }
-
-    await db.transaction(async (tx) => {
-      const sourceCollections = await tx
-        .select({ collectionId: collectionModels.collectionId })
-        .from(collectionModels)
-        .where(inArray(collectionModels.modelId, uniqueSourceIds));
-
-      if (sourceCollections.length > 0) {
-        await tx
-          .insert(collectionModels)
-          .values(
-            sourceCollections.map((row) => ({
-              collectionId: row.collectionId,
-              modelId: targetModelId,
-            })),
-          )
-          .onConflictDoNothing();
-      }
-
-      const targetMetadataRows = await tx
-        .select({ fieldDefinitionId: modelMetadata.fieldDefinitionId })
-        .from(modelMetadata)
-        .where(eq(modelMetadata.modelId, targetModelId));
-      const targetMetadataFieldIds = new Set(
-        targetMetadataRows.map((row) => row.fieldDefinitionId),
-      );
-
-      const sourceMetadataRows = await tx
-        .select({
-          fieldDefinitionId: modelMetadata.fieldDefinitionId,
-          value: modelMetadata.value,
-        })
-        .from(modelMetadata)
-        .where(inArray(modelMetadata.modelId, uniqueSourceIds));
-
-      const metadataToCopy = sourceMetadataRows.filter((row) => {
-        if (targetMetadataFieldIds.has(row.fieldDefinitionId)) return false;
-        targetMetadataFieldIds.add(row.fieldDefinitionId);
-        return true;
-      });
-
-      if (metadataToCopy.length > 0) {
-        await tx.insert(modelMetadata).values(
-          metadataToCopy.map((row) => ({
-            modelId: targetModelId,
-            fieldDefinitionId: row.fieldDefinitionId,
-            value: row.value,
-          })),
+    try {
+      await db.transaction(async (tx) => {
+        const lockedRows = await this.lockOwnedModels(
+          [targetModelId, ...uniqueSourceIds],
+          userId,
+          libraryId,
+          tx,
         );
-      }
+        const target = lockedRows.find((row) => row.id === targetModelId)!;
+        const sourceRows = lockedRows.filter((row) => row.id !== targetModelId);
+        if (target.status !== 'ready') {
+          throw validationError('Target model must be ready before merging', 'targetModelId');
+        }
+        if (sourceRows.some((source) => source.status !== 'ready')) {
+          throw validationError('Source models must be ready before merging', 'sourceModelIds');
+        }
 
-      const sourceTags = await tx
-        .select({ tagId: modelTags.tagId })
-        .from(modelTags)
-        .where(inArray(modelTags.modelId, uniqueSourceIds));
+        const existingTargetFiles = await this.getModelFiles(targetModelId, tx);
+        const usedPaths = new Set(existingTargetFiles.map((file) => file.relativePath));
+        const sourceFiles = await tx
+          .select()
+          .from(modelFiles)
+          .where(inArray(modelFiles.modelId, uniqueSourceIds))
+          .orderBy(asc(modelFiles.relativePath));
+        movedFileCount = sourceFiles.length;
 
-      if (sourceTags.length > 0) {
-        await tx
-          .insert(modelTags)
-          .values(sourceTags.map((row) => ({ modelId: targetModelId, tagId: row.tagId })))
-          .onConflictDoNothing();
-      }
+        const mergeId = randomUUID();
+        const moves = sourceFiles.map((file) => {
+          const relativePath = this.uniqueRelativePath(file.relativePath, usedPaths);
+          return {
+            file,
+            relativePath,
+            storagePath: `models/${targetModelId}/${relativePath}`,
+            stagingPath: `merge-staging/${mergeId}/${file.id}`,
+          };
+        });
 
-      if (!target.previewImageFileId && fallbackPreviewImageFileId) {
-        await tx
-          .update(models)
-          .set({
-            previewImageFileId: fallbackPreviewImageFileId,
-            updatedAt: new Date(),
+        // Storage writes are staged before any database rows are changed. The
+        // model locks serialize merge/delete operations over the same models.
+        for (const move of moves) {
+          await storageService.copy(move.file.storagePath, move.stagingPath);
+          stagingStoragePaths.push(move.stagingPath);
+        }
+        for (const move of moves) {
+          await storageService.copy(move.stagingPath, move.storagePath);
+          createdStoragePaths.push(move.storagePath);
+          oldStoragePaths.push(move.file.storagePath);
+        }
+
+        for (const move of moves) {
+          await tx
+            .update(modelFiles)
+            .set({
+              modelId: targetModelId,
+              relativePath: move.relativePath,
+              storagePath: move.storagePath,
+            })
+            .where(eq(modelFiles.id, move.file.id));
+        }
+
+        const fallbackPreviewImageFileId = sourceFiles.find((file) =>
+          file.fileType === 'image'
+          && sourceRows.some((source) => source.previewImageFileId === file.id))?.id ?? null;
+
+        const sourceCollections = await tx
+          .select({ collectionId: collectionModels.collectionId })
+          .from(collectionModels)
+          .where(inArray(collectionModels.modelId, uniqueSourceIds));
+
+        if (sourceCollections.length > 0) {
+          await tx
+            .insert(collectionModels)
+            .values(
+              sourceCollections.map((row) => ({
+                collectionId: row.collectionId,
+                modelId: targetModelId,
+              })),
+            )
+            .onConflictDoNothing();
+        }
+
+        const targetMetadataRows = await tx
+          .select({ fieldDefinitionId: modelMetadata.fieldDefinitionId })
+          .from(modelMetadata)
+          .where(eq(modelMetadata.modelId, targetModelId));
+        const targetMetadataFieldIds = new Set(
+          targetMetadataRows.map((row) => row.fieldDefinitionId),
+        );
+
+        const sourceMetadataRows = await tx
+          .select({
+            fieldDefinitionId: modelMetadata.fieldDefinitionId,
+            value: modelMetadata.value,
           })
-          .where(eq(models.id, targetModelId));
-      }
+          .from(modelMetadata)
+          .where(inArray(modelMetadata.modelId, uniqueSourceIds));
 
-      await tx.delete(models).where(inArray(models.id, uniqueSourceIds));
-    });
+        const metadataToCopy = sourceMetadataRows.filter((row) => {
+          if (targetMetadataFieldIds.has(row.fieldDefinitionId)) return false;
+          targetMetadataFieldIds.add(row.fieldDefinitionId);
+          return true;
+        });
 
-    await this.recalculateModelStats(targetModelId);
+        if (metadataToCopy.length > 0) {
+          await tx.insert(modelMetadata).values(
+            metadataToCopy.map((row) => ({
+              modelId: targetModelId,
+              fieldDefinitionId: row.fieldDefinitionId,
+              value: row.value,
+            })),
+          );
+        }
+
+        const sourceTags = await tx
+          .select({ tagId: modelTags.tagId })
+          .from(modelTags)
+          .where(inArray(modelTags.modelId, uniqueSourceIds));
+
+        if (sourceTags.length > 0) {
+          await tx
+            .insert(modelTags)
+            .values(sourceTags.map((row) => ({ modelId: targetModelId, tagId: row.tagId })))
+            .onConflictDoNothing();
+        }
+
+        if (!target.previewImageFileId && fallbackPreviewImageFileId) {
+          await tx
+            .update(models)
+            .set({
+              previewImageFileId: fallbackPreviewImageFileId,
+              updatedAt: new Date(),
+            })
+            .where(eq(models.id, targetModelId));
+        }
+
+        await tx.delete(models).where(inArray(models.id, uniqueSourceIds));
+        await this.recalculateModelStats(targetModelId, tx);
+      });
+    } catch (error) {
+      await Promise.allSettled(
+        [...createdStoragePaths, ...stagingStoragePaths]
+          .map((storagePath) => storageService.delete(storagePath)),
+      );
+      throw error;
+    }
+
+    await Promise.allSettled(
+      [...oldStoragePaths, ...stagingStoragePaths]
+        .map((storagePath) => storageService.delete(storagePath)),
+    );
 
     return {
       targetModelId,
       mergedModelIds: uniqueSourceIds,
-      movedFileCount: sourceFiles.length,
+      movedFileCount,
     };
   }
 

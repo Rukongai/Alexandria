@@ -38,6 +38,10 @@ A self-hosted personal library for managing 3D printing model collections. Think
 - Try `{Artist Name} - {Date} - {Model Name}` filenames when filling metadata and infer Source as the character's originating work when evidence supports it
 - Enforce preview-before-apply with immutable, expiring, single-use individual and bulk proposals applied atomically; staged proposals update review metadata but never commit an upload
 
+**Local MCP server**
+- Connect a trusted local MCP client over stdio to search and inspect raw model records, download managed files, and update, merge, delete, or tag models within one operator-configured user and library scope
+- See [`docs/MCP.md`](docs/MCP.md) for tool details, client configuration, and safety constraints
+
 **API**
 - Typed REST endpoints with a consistent `{ data, meta, errors }` envelope on every response
 - Serves thumbnails and raw model files directly
@@ -220,7 +224,7 @@ alexandria/
 
 ## Environment Variables
 
-All backend variables have development defaults and can be set in the environment or a `.env` file.
+Backend variables can be set in the environment or a `.env` file. Defaults are listed where available.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -234,6 +238,9 @@ All backend variables have development defaults and can be set in the environmen
 | `S3_BUCKET` | — | Bucket name; required when `STORAGE_BACKEND=s3` |
 | `S3_PREFIX` | empty | Optional object-key prefix, without a leading slash |
 | `S3_FORCE_PATH_STYLE` | `false` | Use path-style instead of virtual-hosted-style bucket URLs |
+| `ALEXANDRIA_MCP_USER_ID` | — | UUID of the account the local MCP server acts as; required by the MCP server |
+| `ALEXANDRIA_MCP_LIBRARY_ID` | account's default library | Optional UUID of an owned library to scope the MCP server to |
+| `ALEXANDRIA_MCP_DOWNLOAD_DIR` | — | Optional download root; required only to use `alexandria_download_model_files` |
 | `SESSION_SECRET` | `dev-secret-change-in-production` | Secret for signing session cookies |
 | `AI_ENCRYPTION_KEY` | _(required in production)_ | Stable secret used to encrypt provider API keys; production rejects values under 32 characters, `SESSION_SECRET`, and checked placeholders |
 | `AI_ALLOW_PRIVATE_PROVIDER_URLS` | `true` in development; `false` in production | Allow trusted loopback/LAN AI providers; link-local, cloud-metadata, and reserved targets remain blocked |
@@ -300,6 +307,7 @@ docker compose up -d postgres redis --wait
 - `docs/CONVENTIONS.md` — naming, patterns, and coding standards
 - `docs/DEPLOYMENT.md` — Docker Compose deployment, upgrades, and production considerations
 - `docs/STORAGE.md` — local and S3-compatible storage configuration and migration
+- `docs/MCP.md` — local stdio MCP tools, setup, and safety constraints
 - `docs/HOSTED_DATABASE.md` — hosted PostgreSQL and Supabase deployment
 - `docs/PROJECT-BRIEF.md` — project overview and rationale
 
