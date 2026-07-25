@@ -474,4 +474,30 @@ describe('S3StorageService', () => {
     await expect(sdkClient.config.requestChecksumCalculation()).resolves.toBe('WHEN_REQUIRED');
     await expect(sdkClient.config.responseChecksumValidation()).resolves.toBe('WHEN_REQUIRED');
   });
+
+  it('should create SDK clients that back off the whole client when throttled', async () => {
+    const appConfig = {
+      storageBackend: 's3',
+      storagePath: '/unused',
+      storageUploadConcurrency: 8,
+      s3: {
+        endpoint: 'http://127.0.0.1:9000',
+        region: 'us-east-1',
+        bucket: 'model-library',
+        prefix: 'alexandria',
+        forcePathStyle: true,
+      },
+    } as AppConfig;
+
+    const created = createStorageService(appConfig) as S3StorageService;
+    const sdkClient = (created as unknown as { client: S3Client }).client;
+
+    // Assert the strategy the SDK actually resolved, not the option echoed
+    // back: adaptive is what turns a SlowDown into a slower client rather than
+    // just a retried request, and only the resolved strategy proves it took.
+    const retryStrategy = await sdkClient.config.retryStrategy();
+    expect(retryStrategy.constructor.name).toBe('AdaptiveRetryStrategy');
+    expect((retryStrategy as { mode?: string }).mode).toBe('adaptive');
+    await expect(sdkClient.config.maxAttempts()).resolves.toBe(6);
+  });
 });
