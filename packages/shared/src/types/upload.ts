@@ -120,6 +120,8 @@ export interface ImportSession {
   detected: DetectedImportMetadata | null;
   /** User/assistant-reviewed metadata staged for a later explicit commit. */
   draftMetadata: BatchUploadMetadata | null;
+  /** User-reviewed destination layout staged independently from metadata. */
+  draftFileLayout: ImportFileLayoutPlan | null;
   modelId: string | null;
   commitProgress: ImportCommitProgress | null;
   error: string | null;
@@ -171,4 +173,28 @@ export interface BatchUploadMetadata {
   /** Values for configured metadata fields, keyed by field slug. */
   metadata?: SetModelMetadataRequest;
   options?: UploadOptions;
+}
+
+/** Move every file below a source prefix while preserving its remaining path. */
+export interface ImportFileLayoutPrefixMapping {
+  /** Slash-separated source prefix. An empty string is the archive root fallback. */
+  sourcePrefix: string;
+  /** Destination folder below either Model or Images. */
+  destinationPrefix: string;
+}
+
+/** Override one source file with an exact destination path. */
+export interface ImportFileLayoutFileMapping {
+  sourcePath: string;
+  destinationPath: string;
+}
+
+/**
+ * A compact staged-upload layout. Exact file mappings win over prefix mappings;
+ * otherwise the longest matching source prefix wins.
+ */
+export interface ImportFileLayoutPlan {
+  rootFolders: ['Model', 'Images'];
+  prefixMappings: ImportFileLayoutPrefixMapping[];
+  fileMappings?: ImportFileLayoutFileMapping[];
 }

@@ -8,6 +8,7 @@ const committingSession: ImportSession = {
   originalFilename: 'dragon-pack.zip',
   status: 'committing',
   draftMetadata: null,
+  draftFileLayout: null,
   detected: {
     modelCount: 1,
     fileCount: 4,

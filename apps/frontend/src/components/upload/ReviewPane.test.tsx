@@ -24,6 +24,7 @@ const session: ImportSession = {
   originalFilename: 'model-pack.zip',
   status: 'ready_for_review',
   draftMetadata: null,
+  draftFileLayout: null,
   modelId: null,
   commitProgress: null,
   error: null,

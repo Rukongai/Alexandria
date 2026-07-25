@@ -1,16 +1,18 @@
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import path from 'node:path';
 import type {
   BatchUploadMetadata,
   ImportSession,
   ImportCommitProgress,
   ImportSessionStatus,
   DetectedImportMetadata,
+  ImportFileLayoutPlan,
 } from '@alexandria/shared';
 import type { FileManifest } from './file-processing.service.js';
 import { db } from '../db/index.js';
 import type { DatabaseExecutor } from '../db/index.js';
 import { importSessions } from '../db/schema/index.js';
-import { notFound } from '../utils/errors.js';
+import { notFound, validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 import { jobService } from './job.service.js';
 
@@ -18,6 +20,10 @@ const logger = createLogger('ImportSessionService');
 
 /** How long an un-committed session is kept before it is eligible for cleanup. */
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const PRINTABLE_MODEL_EXTENSIONS = new Set([
+  '.3mf', '.amf', '.blend', '.dae', '.fbx', '.gcode', '.glb', '.gltf',
+  '.obj', '.ply', '.scad', '.step', '.stl', '.stp',
+]);
 
 /** Statuses that still represent live, user-actionable sessions (the queue). */
 const ACTIVE_STATUSES: ImportSessionStatus[] = [
@@ -200,6 +206,7 @@ export class ImportSessionService {
       stagingPath: string | null;
       modelId: string | null;
       draftMetadata: BatchUploadMetadata | null;
+      draftFileLayout: ImportFileLayoutPlan | null;
       error: string | null;
     }>,
     executor: DatabaseExecutor = db,
@@ -242,6 +249,18 @@ export class ImportSessionService {
     return next;
   }
 
+  /** Replace the independently staged file layout using the caller's transaction. */
+  async updateDraftFileLayout(
+    id: string,
+    layout: ImportFileLayoutPlan,
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
+    await executor
+      .update(importSessions)
+      .set({ draftFileLayout: layout, updatedAt: new Date() })
+      .where(eq(importSessions.id, id));
+  }
+
   async delete(id: string): Promise<void> {
     await db.delete(importSessions).where(eq(importSessions.id, id));
     logger.info({ sessionId: id }, 'Import session deleted');
@@ -257,6 +276,7 @@ export class ImportSessionService {
       status: row.status as ImportSessionStatus,
       detected: (row.detected as DetectedImportMetadata | null) ?? null,
       draftMetadata: (row.draftMetadata as BatchUploadMetadata | null) ?? null,
+      draftFileLayout: (row.draftFileLayout as ImportFileLayoutPlan | null) ?? null,
       modelId: row.modelId,
       commitProgress: row.status === 'committing' ? commitProgress : null,
       error: row.error,
@@ -291,6 +311,137 @@ export class ImportSessionService {
       currentFilename: null,
     };
   }
+}
+
+function normalizeLayoutPath(input: string, field: string, allowRoot = false): string {
+  if (input.includes('\\')) throw validationError('Layout paths must use forward slashes', field);
+  const normalized = input.trim().replace(/^\/+|\/+$/g, '');
+  if (!normalized) {
+    if (allowRoot) return '';
+    throw validationError('Layout path is required', field);
+  }
+  const segments = normalized.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    throw validationError('Layout path cannot contain empty, . or .. segments', field);
+  }
+  if (segments.some((segment) => /[\0-\x1f]/.test(segment))) {
+    throw validationError('Layout path contains unsupported control characters', field);
+  }
+  if (segments.some((segment) => segment.length > 255) || normalized.length > 1000) {
+    throw validationError('Layout path is too long', field);
+  }
+  return normalized;
+}
+
+/**
+ * Expand a compact reviewed layout into a manifest whose source and
+ * destination paths are explicit. Used by preview validation and commit.
+ */
+export function applyImportFileLayout(
+  manifest: FileManifest,
+  layout: ImportFileLayoutPlan,
+): FileManifest {
+  if (layout.rootFolders[0] !== 'Model' || layout.rootFolders[1] !== 'Images') {
+    throw validationError('File layouts must create Model and Images root folders', 'layout.rootFolders');
+  }
+
+  const prefixMappings = layout.prefixMappings.map((mapping, index) => ({
+    sourcePrefix: normalizeLayoutPath(
+      mapping.sourcePrefix,
+      `layout.prefixMappings.${index}.sourcePrefix`,
+      true,
+    ),
+    destinationPrefix: normalizeLayoutPath(
+      mapping.destinationPrefix,
+      `layout.prefixMappings.${index}.destinationPrefix`,
+    ),
+    index,
+  }));
+  if (new Set(prefixMappings.map((mapping) => mapping.sourcePrefix)).size !== prefixMappings.length) {
+    throw validationError('Layout source prefixes must be unique', 'layout.prefixMappings');
+  }
+  const normalizedFileMappings = (layout.fileMappings ?? []).map((mapping, index) => ({
+    sourcePath: normalizeLayoutPath(mapping.sourcePath, `layout.fileMappings.${index}.sourcePath`),
+    destinationPath: normalizeLayoutPath(
+      mapping.destinationPath,
+      `layout.fileMappings.${index}.destinationPath`,
+    ),
+  }));
+  if (new Set(normalizedFileMappings.map((mapping) => mapping.sourcePath)).size
+    !== normalizedFileMappings.length) {
+    throw validationError('Layout source file paths must be unique', 'layout.fileMappings');
+  }
+  const fileMappings = new Map(normalizedFileMappings.map((mapping) => [
+    mapping.sourcePath,
+    mapping.destinationPath,
+  ]));
+  const sourcePaths = new Set(manifest.entries.map((entry) => entry.relativePath));
+  for (const sourcePath of fileMappings.keys()) {
+    if (!sourcePaths.has(sourcePath)) {
+      throw validationError('Layout source file does not exist', 'layout.fileMappings');
+    }
+  }
+  for (const mapping of prefixMappings) {
+    if (!manifest.entries.some((entry) => mapping.sourcePrefix === ''
+      || entry.relativePath === mapping.sourcePrefix
+      || entry.relativePath.startsWith(`${mapping.sourcePrefix}/`))) {
+      throw validationError('Layout source prefix does not exist', `layout.prefixMappings.${mapping.index}.sourcePrefix`);
+    }
+  }
+
+  const expandedEntries = manifest.entries.map((entry) => {
+    let destinationPath = fileMappings.get(entry.relativePath);
+    if (!destinationPath) {
+      const mapping = prefixMappings
+        .filter((candidate) => candidate.sourcePrefix === ''
+          || entry.relativePath === candidate.sourcePrefix
+          || entry.relativePath.startsWith(`${candidate.sourcePrefix}/`))
+        .sort((a, b) => b.sourcePrefix.length - a.sourcePrefix.length)[0];
+      if (!mapping) {
+        throw validationError(`Layout does not organize ${entry.relativePath}`, 'layout');
+      }
+      const remainder = mapping.sourcePrefix === ''
+        ? entry.relativePath
+        : entry.relativePath.slice(mapping.sourcePrefix.length).replace(/^\//, '');
+      destinationPath = remainder
+        ? path.posix.join(mapping.destinationPrefix, remainder)
+        : mapping.destinationPrefix;
+    }
+    destinationPath = normalizeLayoutPath(destinationPath, 'layout.destinationPath');
+    if (!(destinationPath.startsWith('Model/') || destinationPath.startsWith('Images/'))) {
+      throw validationError('Every destination must be below Model or Images', 'layout.destinationPath');
+    }
+    if (entry.fileType === 'image' && !destinationPath.startsWith('Images/')) {
+      throw validationError('Image files must be organized below Images', 'layout.destinationPath');
+    }
+    const isPrintableModel = entry.fileType === 'stl'
+      || PRINTABLE_MODEL_EXTENSIONS.has(path.posix.extname(entry.filename).toLowerCase());
+    if (isPrintableModel && !destinationPath.startsWith('Model/')) {
+      throw validationError('Printable model files must be organized below Model', 'layout.destinationPath');
+    }
+    return {
+      ...entry,
+      filename: path.posix.basename(destinationPath),
+      sourceRelativePath: entry.sourceRelativePath ?? entry.relativePath,
+      relativePath: destinationPath,
+    };
+  });
+
+  const destinationFiles = new Set(expandedEntries
+    .map((entry) => entry.relativePath.toLocaleLowerCase('en-US')));
+  if (destinationFiles.size !== expandedEntries.length) {
+    throw validationError('Layout destinations must be unique', 'layout');
+  }
+  for (const destination of destinationFiles) {
+    const segments = destination.split('/');
+    for (let index = 1; index < segments.length; index += 1) {
+      const ancestor = segments.slice(0, index).join('/');
+      if (!destinationFiles.has(ancestor)) continue;
+      throw validationError('A layout file destination conflicts with a destination folder', 'layout');
+    }
+  }
+
+  return { ...manifest, entries: expandedEntries };
 }
 
 export const importSessionService = new ImportSessionService();

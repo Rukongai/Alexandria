@@ -1,5 +1,5 @@
 import type { AiChange, AiChangePreview, AiChangePreviewDisplay } from '@alexandria/shared';
-import { Check, FilePenLine, FolderInput, Image as ImageIcon, Tags, X } from 'lucide-react';
+import { Check, FilePenLine, FolderInput, FolderTree, Image as ImageIcon, Tags, X } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 
@@ -80,6 +80,16 @@ function actionLines(change: AiChange, display?: AiChangePreviewDisplay): string
       if (field === 'newCollectionName') return [`New collection: ${displayValue(value)}`];
       return [`${field}: ${displayValue(value)}`];
     });
+  }
+
+  if (change.type === 'organize_import_session_files') {
+    return [
+      `Create root folders: ${change.layout.rootFolders.join(' and ')}`,
+      ...change.layout.prefixMappings.map(({ sourcePrefix, destinationPrefix }) =>
+        `Move ${sourcePrefix || 'archive root'} → ${destinationPrefix}`),
+      ...(change.layout.fileMappings ?? []).map(({ sourcePath, destinationPath }) =>
+        `Move file ${sourcePath} → ${destinationPath}`),
+    ];
   }
 
   if (change.type === 'bulk_collections') {
@@ -166,6 +176,38 @@ function BulkTargetSummary({ display }: { display?: AiChangePreviewDisplay }) {
   );
 }
 
+function ImportSessionLayoutSummary({
+  change,
+  display,
+}: {
+  change: AiChange;
+  display?: AiChangePreviewDisplay;
+}) {
+  if (change.type !== 'organize_import_session_files') return null;
+  const layout = display?.importSessionLayouts?.[change.importSessionId];
+  if (!layout) return null;
+
+  return (
+    <div className="mt-2 rounded-lg border bg-background/70 px-2.5 py-2 text-xs">
+      <p className="font-medium text-foreground">
+        {new Intl.NumberFormat('en-US').format(layout.fileCount)} {layout.fileCount === 1 ? 'file' : 'files'} will be organized
+      </p>
+      {layout.sampleDestinationPaths.length > 0 && (
+        <div className="mt-1.5">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Sample destinations
+          </p>
+          <ul className="mt-1 space-y-0.5 text-muted-foreground">
+            {layout.sampleDestinationPaths.map((path, index) => (
+              <li key={`${path}-${index}`} className="break-all font-mono text-[11px]">{path}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChangeIcon({ change }: { change: AiChange }) {
   const className = 'mt-0.5 h-4 w-4 shrink-0 text-primary';
   if (change.type === 'update_model') return <FilePenLine className={className} />;
@@ -173,6 +215,7 @@ function ChangeIcon({ change }: { change: AiChange }) {
     return <Tags className={className} />;
   }
   if (change.type === 'update_import_session') return <FilePenLine className={className} />;
+  if (change.type === 'organize_import_session_files') return <FolderTree className={className} />;
   return <FolderInput className={className} />;
 }
 
@@ -185,6 +228,7 @@ function changeLabel(change: AiChange, display?: AiChangePreviewDisplay): string
       : `Update metadata on ${affectedModelsLabel(change.modelIds)}`;
   }
   if (change.type === 'update_import_session') return `Update upload ${change.originalFilename}`;
+  if (change.type === 'organize_import_session_files') return `Organize upload ${change.originalFilename}`;
   if (change.type === 'bulk_collections') {
     return display?.bulkTarget
       ? 'Update collections'
@@ -195,7 +239,7 @@ function changeLabel(change: AiChange, display?: AiChangePreviewDisplay): string
 
 function changeKey(change: AiChange, index: number): string {
   let entityId: string;
-  if (change.type === 'update_import_session') {
+  if (change.type === 'update_import_session' || change.type === 'organize_import_session_files') {
     entityId = change.importSessionId;
   } else if (change.type === 'bulk_metadata' || change.type === 'bulk_collections') {
     entityId = change.modelIds[0];
@@ -246,6 +290,7 @@ export function ProposalPreviewCard({
                 {(change.type === 'bulk_metadata' || change.type === 'bulk_collections') && (
                   <BulkTargetSummary display={proposal.display} />
                 )}
+                <ImportSessionLayoutSummary change={change} display={proposal.display} />
                 {lines.length > 0 ? (
                   <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
                     {lines.map((line, lineIndex) => (

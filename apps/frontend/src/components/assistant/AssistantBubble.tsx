@@ -76,6 +76,11 @@ const STARTER_TASKS = [
     label: 'Suggest a collection',
     prompt: 'Suggest a collection for the current models or uploads.',
   },
+  {
+    label: 'Organize model',
+    prompt: 'Organize the current staged upload. Inspect its title and full file and folder structure before proposing changes. Extract metadata from a title matching {Artist} - {YYYY}-{MM} - {Character}; rename the model to {Character} when available, otherwise to {Artist} - Unknown. Mark it NSFW when any file or folder name contains NSFW, and mark it Presupported when any file or folder name says pre, presupported, or supported. Look for files that mention Patreon or contain an http(s) URL and use a discovered URL for the URL metadata field. Create Model and Images folders at the root. Move images and renders under Images while preserving their existing relative folder structure (for example, Renders/NSFW remains Images/Renders/NSFW). Arrange STL, OBJ, and other printable files under Model, grouped by meaningful model variants such as Standard, NSFW, Extra Torso, Bust, or Presupported when the existing structure supports those groups. If the organization paradigm is ambiguous, ask me a clarifying question instead of proposing changes.',
+    requiresImportSession: true,
+  },
 ] as const;
 
 function errorMessage(error: unknown): string {
@@ -393,7 +398,9 @@ export function AssistantBubble() {
                     Ask questions, find details, or preview changes to models and collections.
                   </p>
                   <div className="mt-5 flex flex-wrap justify-center gap-2" aria-label="Starter tasks">
-                    {STARTER_TASKS.map((task) => (
+                    {STARTER_TASKS.filter(
+                      (task) => !('requiresImportSession' in task) || importSessionIds.length > 0,
+                    ).map((task) => (
                       <Button
                         key={task.label}
                         type="button"

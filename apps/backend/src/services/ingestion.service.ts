@@ -24,7 +24,7 @@ import {
 } from './job.service.js';
 import { forEachWithConcurrency } from '../utils/concurrency.js';
 import { fileProcessingService, type FileManifest } from './file-processing.service.js';
-import { importSessionService } from './import-session.service.js';
+import { applyImportFileLayout, importSessionService } from './import-session.service.js';
 import { thumbnailService } from './thumbnail.service.js';
 import { modelService } from './model.service.js';
 import { metadataService } from './metadata.service.js';
@@ -502,6 +502,15 @@ export class IngestionService {
       const resolvedBatchMetadata = batchMetadata
         ?? (session.draftMetadata as BatchUploadMetadata | null)
         ?? undefined;
+      if (session.draftFileLayout) {
+        const scannedManifest = session.manifest as FileManifest | null;
+        if (!scannedManifest || !session.stagingPath) {
+          throw validationError('Import session is missing scanned data');
+        }
+        // Revalidate the reviewed layout under the same row lock used to claim
+        // the session. The worker expands it again from this immutable manifest.
+        applyImportFileLayout(scannedManifest, session.draftFileLayout);
+      }
 
       // Validate collection scope in the same transaction as the claim.
       if (resolvedBatchMetadata?.collectionId) {
@@ -568,13 +577,16 @@ export class IngestionService {
       logger.error({ sessionId }, 'Commit job: session not found');
       return;
     }
-    const manifest = session.manifest as FileManifest | null;
+    const scannedManifest = session.manifest as FileManifest | null;
     const stagingPath = session.stagingPath;
-    if (!manifest || !stagingPath) {
+    if (!scannedManifest || !stagingPath) {
       await modelService.updateModelStatus(modelId, 'error');
       await importSessionService.update(sessionId, { status: 'error', error: 'Missing scanned data' });
       return;
     }
+    const manifest = session.draftFileLayout
+      ? applyImportFileLayout(scannedManifest, session.draftFileLayout)
+      : scannedManifest;
 
     try {
       const progressBase = {
@@ -622,6 +634,7 @@ export class IngestionService {
 
       const modelFileInputs = manifest.entries.map((entry) => ({
         filename: entry.filename,
+        sourceRelativePath: entry.sourceRelativePath,
         relativePath: entry.relativePath,
         fileType: entry.fileType,
         mimeType: entry.mimeType,
@@ -631,6 +644,9 @@ export class IngestionService {
       }));
 
       const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
+      if (session.draftFileLayout) {
+        await modelService.ensureModelFolders(modelId, ['Model', 'Images']);
+      }
       await this.updateCommitProgress(job, {
         ...transferred,
         phase: 'generating_thumbnails',

@@ -66,6 +66,13 @@ function TargetedAssistant() {
   return <AssistantBubble />;
 }
 
+function UploadTargetedAssistant() {
+  useAssistantTarget({
+    importSessionIds: ['44444444-4444-4444-8444-444444444444'],
+  });
+  return <AssistantBubble />;
+}
+
 function TargetSwitchHarness() {
   const [modelId, setModelId] = useState('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
   useAssistantTarget({ modelIds: [modelId] });
@@ -120,6 +127,22 @@ function renderTargetSwitchAssistant() {
   );
 }
 
+function renderUploadTargetedAssistant() {
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={['/lib/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']}>
+        <AssistantContextProvider><UploadTargetedAssistant /></AssistantContextProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 describe('AssistantBubble proposal approval', () => {
   beforeAll(() => {
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -169,6 +192,34 @@ describe('AssistantBubble proposal approval', () => {
       'Fill out relevant metadata from the model file and filename.',
     );
     expect(sendAiChat).not.toHaveBeenCalled();
+  });
+
+  it('should populate the organize model instructions without sending them automatically', async () => {
+    renderUploadTargetedAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Open assistant' }));
+
+    const organizeModel = await screen.findByRole('button', { name: 'Organize model' });
+    fireEvent.click(organizeModel);
+
+    expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toHaveValue(
+      'Organize the current staged upload. Inspect its title and full file and folder structure before proposing changes. Extract metadata from a title matching {Artist} - {YYYY}-{MM} - {Character}; rename the model to {Character} when available, otherwise to {Artist} - Unknown. Mark it NSFW when any file or folder name contains NSFW, and mark it Presupported when any file or folder name says pre, presupported, or supported. Look for files that mention Patreon or contain an http(s) URL and use a discovered URL for the URL metadata field. Create Model and Images folders at the root. Move images and renders under Images while preserving their existing relative folder structure (for example, Renders/NSFW remains Images/Renders/NSFW). Arrange STL, OBJ, and other printable files under Model, grouped by meaningful model variants such as Standard, NSFW, Extra Torso, Bust, or Presupported when the existing structure supports those groups. If the organization paradigm is ambiguous, ask me a clarifying question instead of proposing changes.',
+    );
+    expect(sendAiChat).not.toHaveBeenCalled();
+  });
+
+  it('should hide the organize model starter without a staged upload target', async () => {
+    const noTarget = renderAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Open assistant' }));
+
+    await screen.findByRole('button', { name: 'Fill metadata' });
+    expect(screen.queryByRole('button', { name: 'Organize model' })).not.toBeInTheDocument();
+    noTarget.unmount();
+
+    renderTargetSwitchAssistant();
+    fireEvent.click(screen.getByRole('button', { name: 'Open assistant' }));
+
+    await screen.findByRole('button', { name: 'Fill metadata' });
+    expect(screen.queryByRole('button', { name: 'Organize model' })).not.toBeInTheDocument();
   });
 
   it('sends the current model and upload targets with the chat request', async () => {

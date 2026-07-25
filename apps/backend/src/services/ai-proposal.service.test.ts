@@ -47,9 +47,24 @@ function dependencies() {
         originalFilename: 'Maker - 2024 - Dragon.zip',
         updatedAt: new Date(EXPECTED_UPDATED_AT),
         draftMetadata: { metadata: { source: 'Existing Source', year: '2024' } },
+        manifest: {
+          entries: [
+            {
+              filename: 'body.stl', relativePath: 'Standard/body.stl', fileType: 'stl',
+              mimeType: 'model/stl', sizeBytes: 10, hash: 'a'.repeat(64),
+            },
+            {
+              filename: 'render.png', relativePath: 'Renders/render.png', fileType: 'image',
+              mimeType: 'image/png', sizeBytes: 20, hash: 'b'.repeat(64),
+            },
+          ],
+          totalSizeBytes: 30,
+        },
+        stagingPath: '/tmp/staged',
       }),
       lockOwnedReadyForReviewSessions: vi.fn().mockResolvedValue([]),
       updateDraftMetadata: vi.fn().mockResolvedValue(undefined),
+      updateDraftFileLayout: vi.fn().mockResolvedValue(undefined),
     },
   };
 }
@@ -768,6 +783,47 @@ describe('AiProposalService preview/apply invariant', () => {
       changedModelIds: [],
       changedImportSessionIds: [IMPORT_SESSION_ID],
     });
+  });
+
+  it('previews and atomically stages a validated import file layout', async () => {
+    const deps = dependencies();
+    const layout = {
+      rootFolders: ['Model', 'Images'],
+      prefixMappings: [
+        { sourcePrefix: 'Standard', destinationPrefix: 'Model/Standard' },
+        { sourcePrefix: 'Renders', destinationPrefix: 'Images/Renders' },
+      ],
+    };
+    const changes = [{
+      type: 'organize_import_session_files',
+      importSessionId: IMPORT_SESSION_ID,
+      originalFilename: 'Maker - 2024 - Dragon.zip',
+      expectedUpdatedAt: EXPECTED_UPDATED_AT,
+      layout,
+    }];
+    const tx = { update: vi.fn().mockReturnValue(updateChain(true)) };
+    const database = {
+      select: vi.fn().mockReturnValue(selectChain([proposalRow({ changes })])),
+      transaction: vi.fn().mockImplementation(async (callback) => callback(tx)),
+    };
+    const service = new AiProposalService(
+      deps.models as never,
+      deps.metadata as never,
+      deps.collections as never,
+      database as never,
+      () => NOW,
+      deps.importSessions as never,
+    );
+
+    await expect(service.apply(PROPOSAL_ID, USER_ID, LIBRARY_ID)).resolves.toMatchObject({
+      changedModelIds: [],
+      changedImportSessionIds: [IMPORT_SESSION_ID],
+    });
+    expect(deps.importSessions.lockOwnedReadyForReviewSessions)
+      .toHaveBeenCalledWith([IMPORT_SESSION_ID], USER_ID, LIBRARY_ID, tx);
+    expect(deps.importSessions.updateDraftFileLayout)
+      .toHaveBeenCalledWith(IMPORT_SESSION_ID, layout, tx);
+    expect(deps.importSessions.updateDraftMetadata).not.toHaveBeenCalled();
   });
 
   it('should reject a stale staged filename before preview persistence', async () => {

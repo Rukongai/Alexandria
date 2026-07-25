@@ -13,7 +13,11 @@ import { aiChangeProposals } from '../db/schema/index.js';
 import { collectionService } from './collection.service.js';
 import { metadataService } from './metadata.service.js';
 import { modelService } from './model.service.js';
-import { importSessionService } from './import-session.service.js';
+import {
+  applyImportFileLayout,
+  importSessionService,
+} from './import-session.service.js';
+import type { FileManifest } from './file-processing.service.js';
 import { AppError, conflict, notFound, processingError, validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -58,6 +62,7 @@ type ImportSessionDependency = Pick<
   | 'getOwnedReadyForReviewRow'
   | 'lockOwnedReadyForReviewSessions'
   | 'updateDraftMetadata'
+  | 'updateDraftFileLayout'
 >;
 
 export class AiProposalService {
@@ -281,14 +286,18 @@ export class AiProposalService {
     const changes = parsed.data.changes as AiChange[];
 
     const changedModelIds = new Set(changes.flatMap((change) => {
-      if (change.type === 'update_import_session') return [];
+      if (change.type === 'update_import_session'
+        || change.type === 'organize_import_session_files') return [];
       if (change.type === 'bulk_metadata' || change.type === 'bulk_collections') {
         return change.modelIds;
       }
       return [change.modelId];
     }));
     const changedImportSessionIds = new Set(changes.flatMap((change) =>
-      change.type === 'update_import_session' ? [change.importSessionId] : []));
+      change.type === 'update_import_session'
+        || change.type === 'organize_import_session_files'
+        ? [change.importSessionId]
+        : []));
     await this.database.transaction(async (tx) => {
       // Deterministic model-row locking serializes proposals that were prepared
       // from the same state and prevents a stale modelName check from racing.
@@ -328,6 +337,14 @@ export class AiProposalService {
           await this.importSessions.updateDraftMetadata(
             change.importSessionId,
             change.patch,
+            tx,
+          );
+          continue;
+        }
+        if (change.type === 'organize_import_session_files') {
+          await this.importSessions.updateDraftFileLayout(
+            change.importSessionId,
+            change.layout,
             tx,
           );
           continue;
@@ -401,7 +418,8 @@ export class AiProposalService {
     let validatedBulkModels: Awaited<ReturnType<ModelDependency['requireOwnedModels']>> = [];
     for (const [index, change] of changes.entries()) {
       assertOperationActive(operation);
-      if (change.type === 'update_import_session') {
+      if (change.type === 'update_import_session'
+        || change.type === 'organize_import_session_files') {
         const session = await this.importSessions.getOwnedReadyForReviewRow(
           change.importSessionId,
           userId,
@@ -420,6 +438,24 @@ export class AiProposalService {
             'Import session changed after this proposal was prepared',
             `changes.${index}.expectedUpdatedAt`,
           );
+        }
+        if (change.type === 'organize_import_session_files') {
+          const manifest = session.manifest as FileManifest | null;
+          if (!manifest) {
+            throw validationError(
+              'Import session has no scanned file manifest',
+              `changes.${index}.layout`,
+            );
+          }
+          const organizedManifest = applyImportFileLayout(manifest, change.layout);
+          display.importSessionLayouts ??= {};
+          display.importSessionLayouts[change.importSessionId] = {
+            fileCount: organizedManifest.entries.length,
+            sampleDestinationPaths: organizedManifest.entries
+              .slice(0, 5)
+              .map((entry) => entry.relativePath),
+          };
+          continue;
         }
         if (change.patch.metadata) {
           await this.validateMetadataValues(

@@ -665,6 +665,35 @@ export class ModelService {
       .where(eq(models.id, modelId));
   }
 
+  /** Persist required virtual folders even when files already make them implicit. */
+  async ensureModelFolders(
+    modelId: string,
+    requestedPaths: string[],
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
+    const folderPaths = [...new Set(requestedPaths.flatMap((requestedPath) => {
+      const folderPath = this.normalizeFolderPath(requestedPath);
+      return folderPath
+        .split('/')
+        .map((_, index, segments) => segments.slice(0, index + 1).join('/'));
+    }))];
+    if (folderPaths.length === 0) return;
+
+    const fileConflicts = await executor
+      .select({ relativePath: modelFiles.relativePath })
+      .from(modelFiles)
+      .where(and(
+        eq(modelFiles.modelId, modelId),
+        inArray(modelFiles.relativePath, folderPaths),
+      ));
+    if (fileConflicts.length > 0) {
+      throw conflict('A file already exists at a required folder path');
+    }
+    await executor.insert(modelFolders)
+      .values(folderPaths.map((pathValue) => ({ modelId, path: pathValue })))
+      .onConflictDoNothing();
+  }
+
   async updateModelFileLocation(
     modelId: string,
     fileId: string,
