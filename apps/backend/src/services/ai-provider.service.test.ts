@@ -292,7 +292,7 @@ describe('AI provider outbound request hardening', () => {
       .rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
   });
 
-  it('should honor a caller timeout longer than the provider default for chat completions', async () => {
+  it('should honor a chat timeout longer than the discovery timeout', async () => {
     vi.useFakeTimers();
     try {
       let resolveFetch!: (response: Response) => void;
@@ -311,13 +311,13 @@ describe('AI provider outbound request hardening', () => {
       const completion = service.createChatCompletion(
         connection,
         { messages: [] },
-        45_000,
+        90_000,
       );
       await vi.advanceTimersByTimeAsync(0);
       expect(fetchMock).toHaveBeenCalledOnce();
       const outboundSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
 
-      await vi.advanceTimersByTimeAsync(10_001);
+      await vi.advanceTimersByTimeAsync(45_001);
 
       const abortedAfterDiscoveryDeadline = outboundSignal.aborted;
       resolveFetch(new Response(JSON.stringify({
@@ -340,9 +340,9 @@ describe('AI provider outbound request hardening', () => {
       effectiveTimeoutMs: 5_000,
     },
     {
-      label: 'forty-five-second maximum',
-      requestedTimeoutMs: 60_000,
-      effectiveTimeoutMs: 45_000,
+      label: 'ninety-second maximum',
+      requestedTimeoutMs: 120_000,
+      effectiveTimeoutMs: 90_000,
     },
   ])('should abort chat completions at the $label', async ({
     requestedTimeoutMs,

@@ -7,7 +7,7 @@ import type {
   BulkMetadataOperation,
 } from '@alexandria/shared';
 import { aiBulkChangeSetSchema, aiChangeSetSchema, ErrorCodes } from '@alexandria/shared';
-import { db } from '../db/index.js';
+import { db, DATABASE_STATEMENT_TIMEOUT_MS } from '../db/index.js';
 import type { DatabaseExecutor, DatabaseTransaction } from '../db/index.js';
 import { aiChangeProposals } from '../db/schema/index.js';
 import { collectionService } from './collection.service.js';
@@ -629,7 +629,8 @@ export class AiProposalService {
     assertOperationActive(operation);
     if (operation.deadline === undefined) return;
     const remainingMs = Math.max(1, Math.floor(operation.deadline - Date.now()));
-    await tx.execute(sql`select set_config('statement_timeout', ${`${remainingMs}ms`}, true)`);
+    const statementTimeoutMs = Math.min(remainingMs, DATABASE_STATEMENT_TIMEOUT_MS);
+    await tx.execute(sql`select set_config('statement_timeout', ${`${statementTimeoutMs}ms`}, true)`);
     assertOperationActive(operation);
   }
 

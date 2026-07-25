@@ -572,7 +572,40 @@ describe('AiAssistantService tool-loop safety', () => {
     await serviceWith(deps).chat({ message: 'Hello' }, USER_ID, LIBRARY_ID);
     const timeoutMs = deps.providers.createChatCompletion.mock.calls[0][2];
     expect(timeoutMs).toBeGreaterThan(0);
-    expect(timeoutMs).toBeLessThanOrEqual(45_000);
+    expect(timeoutMs).toBeLessThanOrEqual(90_000);
+  });
+
+  it('allows a multi-response tool loop to complete after more than 45 seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = makeDependencies();
+      let responseIndex = 0;
+      deps.providers.createChatCompletion.mockImplementation(() => {
+        const currentResponse = responseIndex;
+        responseIndex += 1;
+        return new Promise((resolve) => setTimeout(() => resolve(currentResponse === 0
+          ? { choices: [{ message: { content: null, tool_calls: [{
+            id: 'delayed-search',
+            type: 'function',
+            function: { name: 'search_library', arguments: JSON.stringify({ query: 'Mint' }) },
+          }] } }] }
+          : { choices: [{ message: { content: 'Finished after extended research.' } }] }), 25_000));
+      });
+      deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
+      const startedAt = Date.now();
+
+      const chat = serviceWith(deps).chat({ message: 'Research Mint' }, USER_ID, LIBRARY_ID);
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(25_000);
+
+      await expect(chat).resolves.toMatchObject({ message: 'Finished after extended research.' });
+      expect(Date.now() - startedAt).toBe(50_000);
+      expect(deps.providers.createChatCompletion.mock.calls[0][2]).toBeLessThanOrEqual(90_000);
+      expect(deps.providers.createChatCompletion.mock.calls[1][2]).toBeLessThanOrEqual(65_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('propagates client cancellation to the provider and releases its concurrency slot', async () => {
@@ -674,7 +707,7 @@ describe('AiAssistantService tool-loop safety', () => {
 
       const chat = serviceWith(deps).chat({ message: 'Hello' }, USER_ID, LIBRARY_ID);
       const rejection = expect(chat).rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
-      await vi.advanceTimersByTimeAsync(45_001);
+      await vi.advanceTimersByTimeAsync(90_001);
 
       await rejection;
     } finally {

@@ -21,7 +21,7 @@ import { createTimeoutAbortSignal } from '../utils/abort-signal.js';
 
 const logger = createLogger('AiProviderService');
 const PROVIDER_DISCOVERY_TIMEOUT_MS = 10_000;
-const MAX_CHAT_COMPLETION_TIMEOUT_MS = 45_000;
+const MAX_CHAT_COMPLETION_TIMEOUT_MS = 90_000;
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
 const CIPHER_VERSION = 'v1';

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { AiProposalService } from './ai-proposal.service.js';
 import { MetadataService } from './metadata.service.js';
 import { notFound } from '../utils/errors.js';
@@ -174,6 +175,33 @@ describe('AiProposalService preview/apply invariant', () => {
     expect(deps.metadata.setModelMetadata).not.toHaveBeenCalled();
     expect(deps.collections.addModelsToCollection).not.toHaveBeenCalled();
     expect(deps.collections.removeModelFromCollection).not.toHaveBeenCalled();
+  });
+
+  it('caps transaction statement timeout at the database limit for a long operation deadline', async () => {
+    const deps = dependencies();
+    const insertChain = { values: vi.fn(), returning: vi.fn() };
+    insertChain.values.mockReturnValue(insertChain);
+    insertChain.returning.mockResolvedValue([{ id: PROPOSAL_ID }]);
+    const execute = vi.fn().mockResolvedValue(undefined);
+    const { database } = previewDatabase(insertChain, execute);
+    const service = new AiProposalService(
+      deps.models as never,
+      deps.metadata as never,
+      deps.collections as never,
+      database as never,
+      () => NOW,
+    );
+
+    await service.createPreview(USER_ID, LIBRARY_ID, {
+      summary: 'Rename it',
+      changes: [{
+        type: 'update_model', modelId: MODEL_ID, modelName: 'Dragon', patch: { name: 'New name' },
+      }],
+    }, { deadline: Date.now() + 90_000 });
+
+    expect(execute).toHaveBeenCalledOnce();
+    const timeoutQuery = new PgDialect().sqlToQuery(execute.mock.calls[0][0]);
+    expect(timeoutQuery.params).toEqual(['45000ms']);
   });
 
   it.each([
