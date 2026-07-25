@@ -1468,6 +1468,60 @@ Values are validated against the resolved field definition before storage. Numbe
 
 ---
 
+## Tools
+
+Tools are library maintenance operations exposed from the library-scoped Tools page at `/lib/:id/tools`.
+
+### GET /tools/duplicates
+
+Scan the active library for exact duplicate model contents. The scan is read-only and synchronous; it reports candidates but does not merge, delete, or otherwise modify models or files.
+
+**Auth required:** Yes. The route applies `requireAuth` followed by `requireLibrary`.
+
+**Library scope:** Required. `X-Library-Id` selects the active owned library; when the header is absent, the user's default library is used. An unknown or un-owned library returns `404 NOT_FOUND`.
+
+Only `ready` models with at least one file are scanned. Two models are duplicates only when their complete sorted multisets of per-file SHA-256 hashes match. Sorting makes file order irrelevant, while treating the hashes as a multiset preserves multiplicity: a model containing two copies of a file does not match a model containing one copy. Filenames and relative paths do not participate in matching.
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "scannedModelCount": 3,
+    "redundantModelCount": 1,
+    "reclaimableBytes": 8388608,
+    "groups": [
+      {
+        "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "fileCount": 4,
+        "totalSizeBytes": 8388608,
+        "reclaimableBytes": 8388608,
+        "models": [
+          {
+            "id": "uuid",
+            "name": "Dragon Bust",
+            "originalFilename": "dragon-bust.zip",
+            "createdAt": "2026-01-15T10:30:00.000Z"
+          },
+          {
+            "id": "uuid",
+            "name": "Dragon Bust Copy",
+            "originalFilename": "renamed-copy.zip",
+            "createdAt": "2026-02-01T12:00:00.000Z"
+          }
+        ]
+      }
+    ]
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is a `DuplicateScanResult`; each member of `groups` is a `DuplicateGroup`, whose `models` are `DuplicateModel` values. The fingerprint is the SHA-256 digest of the encoded sorted file-hash multiset and should be treated as an opaque group identifier. Models within a group are oldest-first, with UUID as the equal-timestamp tie-breaker; groups are likewise ordered by their oldest model. `scannedModelCount` counts eligible models whether or not they belong to a duplicate group. `redundantModelCount` counts duplicate copies beyond the oldest model in each group. Group and scan `reclaimableBytes` sum the stored sizes of those later copies; `totalSizeBytes` is the oldest model's stored total. These values are estimates only—the decision and any deletion remain manual.
+
+---
+
 ## Libraries
 
 Manage the libraries a user owns. These endpoints manage the library scope itself, so they are **not** scoped by the `X-Library-Id` header — they operate on the authenticated user's full set of libraries, identified by the URL `:id`. See [Library scoping](#library-scoping-multi-library).

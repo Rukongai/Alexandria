@@ -23,7 +23,7 @@ import { UserMenu } from './UserMenu';
  *   1. Library header — brand + interactive library switcher (P5 multi-library)
  *   2. AxisPicker — 2-col grid letting the user pick Collections / Artists / Tags
  *   3. AxisFacetBody — scrollable list for the active axis (flex-1)
- *   4. UserMenu — pinned footer with avatar, identity, theme toggle, Settings, Log out
+ *   4. UserMenu — pinned footer with avatar, identity, theme toggle, Tools, Settings, Log out
  */
 export function PivotRail() {
   const { axis } = useModelFilters();

@@ -8,3 +8,4 @@ export * from './upload.js';
 export * from './search.js';
 export * from './smart-collection.js';
 export * from './ai.js';
+export * from './tools.js';

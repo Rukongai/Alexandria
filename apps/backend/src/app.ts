@@ -15,6 +15,7 @@ import { libraryRoutes } from './routes/libraries.js';
 import { fileRoutes } from './routes/files.js';
 import { searchRoutes } from './routes/search.js';
 import { aiRoutes } from './routes/ai.js';
+import { toolsRoutes } from './routes/tools.js';
 import { startIngestionWorker } from './workers/ingestion.worker.js';
 
 export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
@@ -73,6 +74,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   await app.register(fileRoutes, { prefix: '/files' });
   await app.register(searchRoutes, { prefix: '/search' });
   await app.register(aiRoutes, { prefix: '/ai' });
+  await app.register(toolsRoutes, { prefix: '/tools' });
 
   // Start background workers
   startIngestionWorker();

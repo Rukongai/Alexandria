@@ -12,6 +12,7 @@ import type {
   ImageFile,
   FileTreeNode,
   FileType,
+  DuplicateScanResult,
 } from '@alexandria/shared';
 import { db } from '../db/index.js';
 import {
@@ -29,6 +30,7 @@ import { metadataService } from './metadata.service.js';
 import { collectionService } from './collection.service.js';
 import { createLogger } from '../utils/logger.js';
 import { formatDisplayValue } from '../utils/format.js';
+import type { DuplicateScan } from './duplicate-scanner.service.js';
 
 const logger = createLogger('PresenterService');
 
@@ -42,6 +44,7 @@ export interface IPresenterService {
     rows: ModelRow[],
     modelIds: string[],
   ): Promise<ModelCard[]>;
+  buildDuplicateScanResult(scan: DuplicateScan): DuplicateScanResult;
   buildModelDetail(modelId: string): Promise<ModelDetail>;
   buildFileTree(files: ModelFileRow[], folders?: ModelFolderRow[]): FileTreeNode[];
   buildCollectionDetail(collectionId: string): Promise<CollectionDetail>;
@@ -83,6 +86,38 @@ export interface ModelFolderRow {
 // ---------------------------------------------------------------------------
 
 export class PresenterService implements IPresenterService {
+  // -----------------------------------------------------------------------
+  // buildDuplicateScanResult — exact duplicate report
+  // -----------------------------------------------------------------------
+
+  buildDuplicateScanResult(scan: DuplicateScan): DuplicateScanResult {
+    const groups = scan.groups.map((group) => {
+      const reclaimableBytes = group.models
+        .slice(1)
+        .reduce((sum, model) => sum + model.totalSizeBytes, 0);
+
+      return {
+        fingerprint: group.fingerprint,
+        fileCount: group.fileCount,
+        totalSizeBytes: group.models[0].totalSizeBytes,
+        reclaimableBytes,
+        models: group.models.map((model) => ({
+          id: model.id,
+          name: model.name,
+          originalFilename: model.originalFilename,
+          createdAt: model.createdAt.toISOString(),
+        })),
+      };
+    });
+
+    return {
+      scannedModelCount: scan.scannedModelCount,
+      redundantModelCount: groups.reduce((sum, group) => sum + group.models.length - 1, 0),
+      reclaimableBytes: groups.reduce((sum, group) => sum + group.reclaimableBytes, 0),
+      groups,
+    };
+  }
+
   // -----------------------------------------------------------------------
   // buildModelCard — single model
   // -----------------------------------------------------------------------
