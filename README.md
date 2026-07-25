@@ -102,6 +102,10 @@ npm run dev
 
 `npm run dev` runs Turborepo's dev task across all packages. The backend uses `tsx watch` and the frontend uses Vite's dev server with hot reload. The frontend dev server proxies `/api/*` requests to `http://localhost:3000`.
 
+### Companion tools
+
+[`tools/telegram-importer`](tools/telegram-importer/README.md) is a standalone Python CLI for importing model media from a Telegram channel through a Telegram user account. It previews channel grouping, supports recognized split ZIP and RAR sets, and resumes interrupted Alexandria staged uploads from local SQLite state.
+
 To run a single app:
 
 ```bash

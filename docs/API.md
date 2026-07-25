@@ -1052,6 +1052,28 @@ For `scanning`, `ready_for_review`, `committed`, and `error` sessions, `commitPr
 
 ---
 
+### POST /models/import-sessions/:id/files
+
+Append one or more loose files to a staged model before commit. This is used by companion importers
+that first scan a model archive and then attach separately sourced preview images or documents. The
+session must be owned by the authenticated user, belong to the active library, and have status
+`ready_for_review`.
+
+**Auth required:** Yes
+
+**Library scope:** The session must belong to the active library.
+
+**Content type:** `multipart/form-data`; include one or more file parts. Each supplied basename must
+be non-empty and must not start with `.`. When a basename is
+already present at the staging root, Alexandria adds ` (2)`, ` (3)`, and later suffixes instead of
+overwriting the existing file.
+
+After copying the files, Alexandria rescans the staging directory and refreshes the session manifest
+and detected metadata. The response envelope's `data` is the updated `ImportSession`. If any copy or
+rescan step fails, files added by that request are removed before the error is returned.
+
+---
+
 ### POST /models/import-sessions/:id/commit
 
 Commit a reviewed import session, creating a model and enqueuing the full ingestion pipeline. The session must be in `ready_for_review` status. The server locks and claims that state while creating the model and changing the session to `committing` in one transaction, so concurrent commit requests cannot create duplicate models and an assistant draft apply cannot race the commit's draft read. A missing, un-owned, wrong-library, or no-longer-ready session returns `404 NOT_FOUND` without distinguishing the failed scope or state check.

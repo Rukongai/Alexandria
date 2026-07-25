@@ -94,6 +94,16 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
           └─────────────────────────┘
 ```
 
+### Companion utilities
+
+`tools/telegram-importer/` is an optional, separately installed Python userbot CLI. It reads
+Telegram channel history with Telethon and drives Alexandria exclusively through the existing
+authenticated staged-upload API. It is not part of the backend runtime and does not write to the
+database or storage adapter directly. Complete archives use the normal chunked upload path, split
+ZIP/RAR sets use multipart `split` mode, and preceding Telegram media is appended to the staged
+session before commit. The utility owns its SQLite restart state and short-lived local downloads;
+Alexandria continues to own all committed files through its configured local or S3 storage backend.
+
 ---
 
 ## Data Model: Library Scope
@@ -545,6 +555,8 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | POST | /models/import | Folder import (immediate; no staged session) | IngestionService → JobService | Yes |
 | GET | /models/import-sessions | List active staged sessions | ImportSessionService | Yes |
 | GET | /models/import-sessions/:id | Poll a single session | ImportSessionService | No (userId) |
+| POST | /models/import-sessions/:id/extract | Extract a nested staged archive | IngestionService → FileProcessingService | Yes |
+| POST | /models/import-sessions/:id/files | Append loose files to a staged model | IngestionService → FileProcessingService | Yes |
 | POST | /models/import-sessions/:id/commit | Commit session → create model | IngestionService → JobService | Yes |
 | DELETE | /models/import-sessions/:id | Discard session + staged files | IngestionService | No (userId) |
 | GET | /models/:id/status | Processing status | JobService | No (userId) |
