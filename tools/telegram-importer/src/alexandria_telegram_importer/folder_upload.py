@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
+import tempfile
 import zipfile
+from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .alexandria import session_filenames
 from .folder_metadata import (
     METADATA_FILENAME,
+    batch_metadata,
     merge_chain,
     model_name_from_folder,
     read_metadata,
@@ -22,6 +28,14 @@ from .grouping import (
     validate_logical_model,
 )
 from .models import MediaKind, MediaRef
+from .progress import (
+    ModelProgress,
+    NullModelProgress,
+    NullProgress,
+    ProgressReporter,
+    guarded_model,
+    guarded_reporter,
+)
 from .staging import unique_child
 
 log = logging.getLogger(__name__)
@@ -97,13 +111,11 @@ def _visit(
         for child in subdirectories:
             _visit(child, chain, image_dirs, nested, nested_ambiguous)
         if nested or nested_ambiguous:
-            ambiguous.append(
-                (
-                    directory,
-                    f"holds its own {MODELS_DIRNAME}/ and model folders beneath it; "
-                    f"finish the split by emptying {MODELS_DIRNAME}/",
-                ),
+            reason = (
+                f"holds its own {MODELS_DIRNAME}/ and model folders beneath it; "
+                f"finish the split by emptying {MODELS_DIRNAME}/"
             )
+            ambiguous.append((directory, reason))
             return
         found.append(
             ModelFolder(path=directory, chain=chain, container_image_dirs=image_dirs),
@@ -241,3 +253,191 @@ def _prune_empty_containers(directory: Path, root: Path) -> None:
             return
         shutil.rmtree(directory, ignore_errors=True)
         directory = directory.parent
+
+
+ATTACHMENT_BATCH_SIZE = 100
+
+
+def _uploaded_at() -> dict[str, str]:
+    return {"uploadedAt": datetime.now(UTC).isoformat()}
+
+
+def _failed_at() -> dict[str, str]:
+    return {"failedAt": datetime.now(UTC).isoformat()}
+
+
+class FolderUploader:
+    """Uploads hand-curated folders.
+
+    Performs no deduplication by design: the folders are the operator's, and
+    the phases share no state so that folders can be split, merged, renamed,
+    and recompressed freely between them.
+    """
+
+    def __init__(
+        self,
+        *,
+        alexandria: Any,
+        work_root: Path,
+        concurrency: int = 1,
+        progress: ProgressReporter | None = None,
+    ) -> None:
+        if concurrency < 1:
+            raise ValueError("Upload concurrency must be at least 1")
+        self.alexandria = alexandria
+        self.work_root = work_root
+        self.concurrency = concurrency
+        self.progress: ProgressReporter = progress or NullProgress()
+
+    def image_paths(self, folder: ModelFolder) -> tuple[Path, ...]:
+        """Every image to append, with the model's own file winning a name clash."""
+        by_name: dict[str, Path] = {}
+        for directory in folder.image_dirs:
+            for path in sorted(directory.iterdir()):
+                if path.is_file():
+                    by_name[path.name] = path
+        return tuple(by_name.values())
+
+    async def run(self, root: Path) -> dict[str, int]:
+        found, ambiguous = discover(root)
+        outcomes: Counter[str] = Counter()
+        settled = 0
+        total = len(found) + len(ambiguous)
+
+        for path, reason in ambiguous:
+            log.error("Skipping ambiguous folder %s: %s", path, reason)
+            dispose(path, root, FAILED_DIRNAME, {"error": reason, **_failed_at()})
+            outcomes["failed"] += 1
+            settled += 1
+
+        self.work_root.mkdir(parents=True, exist_ok=True)
+        slots = asyncio.Semaphore(self.concurrency)
+        lock = asyncio.Lock()
+
+        async def settle(folder: ModelFolder) -> None:
+            nonlocal settled
+            async with slots:
+                outcome = await self._upload_and_dispose(folder, root)
+            async with lock:
+                outcomes[outcome] += 1
+                settled += 1
+                self._report(settled, total, outcomes)
+
+        with guarded_reporter(self.progress):
+            self._report(settled, total, outcomes)
+            results = await asyncio.gather(
+                *(settle(folder) for folder in found),
+                return_exceptions=True,
+            )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return dict(outcomes)
+
+    def _report(self, done: int, total: int, outcomes: Counter[str]) -> None:
+        try:
+            self.progress.totals(done, total, dict(outcomes))
+        except Exception as error:  # noqa: BLE001 - a display fault is not an upload fault
+            log.debug("Progress reporter could not record totals: %s", error)
+
+    async def _upload_and_dispose(self, folder: ModelFolder, root: Path) -> str:
+        log.info("Uploading %s", folder.path.name)
+        try:
+            with guarded_model(self.progress, folder.path.name, parts=1) as handle:
+                model_id = await self.upload(folder, handle)
+        # One bad folder must not stop the rest of the staging directory.
+        except Exception as error:  # noqa: BLE001
+            log.error("Failed to upload %s: %s", folder.path.name, error)
+            dispose(
+                folder.path, root, FAILED_DIRNAME, {"error": str(error), **_failed_at()}
+            )
+            return "failed"
+        dispose(
+            folder.path, root, UPLOADED_DIRNAME, {"modelId": model_id, **_uploaded_at()}
+        )
+        log.info("Uploaded %s as Alexandria model %s", folder.path.name, model_id)
+        return "completed"
+
+    async def upload(
+        self, folder: ModelFolder, handle: ModelProgress | None = None
+    ) -> str:
+        handle = handle or NullModelProgress()
+        effective = folder.metadata
+        payload = batch_metadata(effective)
+        payload["modelName"] = folder.model_name
+
+        # upload() is public and callable without run(), so it owns creating
+        # the work root rather than relying on the caller having done so.
+        self.work_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="alexandria-folder-", dir=self.work_root
+        ) as temp:
+            plan = plan_models_dir(folder.models_dir)
+            if plan.kind == "zip":
+                handle.phase("packaging")
+            paths, multipart = build_upload_paths(
+                plan, Path(temp), payload["modelName"]
+            )
+
+            upload_ids: list[str] = []
+            try:
+                for path in paths:
+                    with handle.transfer("upload", path.name) as transfer:
+                        upload_ids.append(
+                            await self.alexandria.upload_file(
+                                path,
+                                path.name,
+                                multipart=multipart,
+                                on_progress=transfer.advance,
+                            ),
+                        )
+                session_id = await self.alexandria.complete_upload(
+                    upload_ids, multipart=multipart
+                )
+            except Exception:
+                await self.alexandria.abort_uploads(upload_ids)
+                raise
+
+            handle.phase("scanning")
+            session = await self.alexandria.wait_for_session(
+                session_id, {"ready_for_review"}
+            )
+            if session["status"] == "error":
+                raise RuntimeError(session.get("error") or "Alexandria ingestion failed")
+
+            await self._append_images(folder, session_id, session, handle)
+
+            handle.phase("committing")
+            await self.alexandria.commit(
+                session_id,
+                model_name=payload.pop("modelName"),
+                description=effective.get("description"),
+                batch_metadata=payload,
+            )
+            committed = await self.alexandria.wait_for_session(session_id, {"committed"})
+            if committed["status"] == "error":
+                raise RuntimeError(committed.get("error") or "Alexandria commit failed")
+            return committed["modelId"]
+
+    async def _append_images(
+        self,
+        folder: ModelFolder,
+        session_id: str,
+        session: dict[str, Any],
+        handle: ModelProgress,
+    ) -> None:
+        present = session_filenames(session)
+        pending = tuple(
+            path for path in self.image_paths(folder) if path.name not in present
+        )
+        if not pending:
+            return
+        handle.phase("attachments")
+        done = 0
+        handle.attachments(done, len(pending))
+        for offset in range(0, len(pending), ATTACHMENT_BATCH_SIZE):
+            batch = pending[offset : offset + ATTACHMENT_BATCH_SIZE]
+            for path in batch:
+                await self.alexandria.append_files(session_id, (path,), (path.name,))
+                done += 1
+                handle.attachments(done, len(pending))

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from alexandria_telegram_importer.folder_upload import (
+    FolderUploader,
     build_upload_paths,
     discover,
     dispose,
@@ -349,3 +350,162 @@ def test_should_suffix_a_disposal_that_collides_with_an_earlier_one(tmp_path) ->
     destination = dispose(folder, tmp_path, "uploaded", {"modelId": "abc"})
 
     assert destination.name == "dragon-2"
+
+
+class FakeAlexandria:
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, bool]] = []
+        self.appended: list[str] = []
+        self.commits: list[dict] = []
+        self.session = {"id": "session-1", "status": "ready_for_review"}
+        self.fail_commit = False
+
+    async def upload_file(self, path, upload_name, *, multipart, on_progress=None):
+        self.uploads.append((upload_name, multipart))
+        return f"upload-{len(self.uploads)}"
+
+    async def complete_upload(self, upload_ids, *, multipart):
+        return "session-1"
+
+    async def abort_uploads(self, upload_ids) -> None:
+        return None
+
+    async def get_session(self, session_id):
+        return self.session
+
+    async def wait_for_session(self, session_id, statuses, **kwargs):
+        return {"id": session_id, "status": min(statuses), "modelId": "model-1"}
+
+    async def append_files(self, session_id, paths, upload_names):
+        self.appended.extend(upload_names)
+        return self.session
+
+    async def commit(self, session_id, *, model_name, description=None, **extra):
+        if self.fail_commit:
+            raise RuntimeError("commit exploded")
+        self.commits.append(
+            {"modelName": model_name, "description": description, **extra}
+        )
+        return "model-1"
+
+
+async def test_should_upload_a_folder_and_return_its_model_id(tmp_path) -> None:
+    make_folder(
+        tmp_path / "002501-dragon",
+        models=["dragon.7z"],
+        images=["render.jpg"],
+        metadata={"modelName": "Dragon", "artist": "Foo", "tags": ["dragon"]},
+    )
+    alexandria = FakeAlexandria()
+    [folder], _ = discover(tmp_path)
+
+    model_id = await FolderUploader(
+        alexandria=alexandria, work_root=tmp_path / "work"
+    ).upload(folder)
+
+    assert model_id == "model-1"
+    assert alexandria.uploads == [("dragon.7z", False)]
+    assert alexandria.appended == ["render.jpg"]
+    assert alexandria.commits[0]["modelName"] == "Dragon"
+    assert alexandria.commits[0]["batch_metadata"]["artist"] == "Foo"
+    assert alexandria.commits[0]["batch_metadata"]["tags"] == ["dragon"]
+
+
+async def test_should_append_container_images_to_every_model_beneath_it(
+    tmp_path,
+) -> None:
+    release = tmp_path / "002501-dragon-set"
+    release.mkdir()
+    (release / "images").mkdir()
+    (release / "images" / "group.jpg").write_bytes(b"group")
+    make_folder(release / "knight", models=["knight.zip"], images=["knight.jpg"])
+    alexandria = FakeAlexandria()
+    [folder], _ = discover(tmp_path)
+
+    await FolderUploader(alexandria=alexandria, work_root=tmp_path / "work").upload(
+        folder
+    )
+
+    assert sorted(alexandria.appended) == ["group.jpg", "knight.jpg"]
+
+
+async def test_should_prefer_a_models_own_image_over_a_container_duplicate(
+    tmp_path,
+) -> None:
+    release = tmp_path / "002501-dragon-set"
+    release.mkdir()
+    (release / "images").mkdir()
+    (release / "images" / "render.jpg").write_bytes(b"container")
+    make_folder(release / "knight", models=["knight.zip"], images=["render.jpg"])
+    alexandria = FakeAlexandria()
+    [folder], _ = discover(tmp_path)
+
+    uploader = FolderUploader(alexandria=alexandria, work_root=tmp_path / "work")
+    assert [path.read_bytes() for path in uploader.image_paths(folder)] == [
+        b"render.jpg"
+    ]
+
+
+async def test_should_upload_a_split_set_as_multipart(tmp_path) -> None:
+    make_folder(
+        tmp_path / "002501-dragon", models=["dragon.part1.rar", "dragon.part2.rar"]
+    )
+    alexandria = FakeAlexandria()
+    [folder], _ = discover(tmp_path)
+
+    await FolderUploader(alexandria=alexandria, work_root=tmp_path / "work").upload(
+        folder
+    )
+
+    assert alexandria.uploads == [
+        ("dragon.part1.rar", True),
+        ("dragon.part2.rar", True),
+    ]
+
+
+async def test_should_move_a_folder_to_failed_when_upload_raises(tmp_path) -> None:
+    make_folder(tmp_path / "002501-dragon", models=["dragon.7z"])
+    alexandria = FakeAlexandria()
+    alexandria.fail_commit = True
+
+    uploader = FolderUploader(alexandria=alexandria, work_root=tmp_path / "work")
+    outcomes = await uploader.run(tmp_path)
+
+    assert outcomes["failed"] == 1
+    assert (tmp_path / "failed" / "002501-dragon").is_dir()
+    payload = json.loads(
+        (tmp_path / "failed" / "002501-dragon" / "metadata.json").read_text(
+            encoding="utf-8"
+        ),
+    )
+    assert "commit exploded" in payload["result"]["error"]
+
+
+async def test_should_move_an_ambiguous_folder_to_failed_without_uploading(
+    tmp_path,
+) -> None:
+    release = make_folder(tmp_path / "002501-dragon-set", models=["leftover.zip"])
+    make_folder(release / "knight", models=["knight.zip"])
+    alexandria = FakeAlexandria()
+
+    outcomes = await FolderUploader(
+        alexandria=alexandria, work_root=tmp_path / "work"
+    ).run(tmp_path)
+
+    assert outcomes["failed"] == 1
+    assert alexandria.uploads == []
+    assert (tmp_path / "failed" / "002501-dragon-set").is_dir()
+
+
+async def test_should_keep_going_after_one_folder_fails(tmp_path) -> None:
+    make_folder(tmp_path / "002501-broken", models=[])
+    make_folder(tmp_path / "002502-good", models=["good.7z"])
+    alexandria = FakeAlexandria()
+
+    outcomes = await FolderUploader(
+        alexandria=alexandria, work_root=tmp_path / "work"
+    ).run(tmp_path)
+
+    assert outcomes == {"completed": 1, "failed": 1}
+    assert (tmp_path / "uploaded" / "002502-good").is_dir()
+    assert (tmp_path / "failed" / "002501-broken").is_dir()
