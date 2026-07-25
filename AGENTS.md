@@ -125,8 +125,14 @@ already have and usually costs more than it returns.
 
 When delegating, hand over only the relevant architecture section, types, and source files.
 
-Run `reviewer` at the end of a feature or a non-trivial fix — not for a typo or a one-line change.
-Run `documentation` when a change alters an endpoint, a type contract, or the architecture.
+Run `reviewer` once at the end of a feature or a non-trivial fix, after implementation, tests, and
+documentation are stable — not for a typo or a one-line change. Treat its findings as one
+consolidated correction pass; do not automatically run another full review after every fix.
+Request at most one targeted follow-up review only when the correction materially changes a
+security boundary, concurrency behavior, data integrity, architecture, or a public type/API
+contract, or when the reviewer explicitly could not validate the original issue without it.
+
+Run `documentation` once, after endpoint, type-contract, or architecture changes have settled.
 
 ---
 
