@@ -18,7 +18,7 @@ Several decisions were made during the architecture phase and are treated as set
 
 **Collections are not metadata.** Collections are organizational (where you put a model), not descriptive (what a model is). This is why Artist is a metadata field and Collections are a separate entity. A model can belong to multiple collections.
 
-**Managed storage only.** After upload or import, Alexandria owns all files in its storage root. No runtime external file references. When importing an existing library folder, you choose a strategy: hardlink (zero additional disk usage on the same filesystem), copy, or move. Once imported, StorageService is the sole authority.
+**Managed storage only.** After upload or import, Alexandria owns all files in its storage root. No runtime external file references. When importing an existing library folder, you choose a strategy: hardlink (zero additional disk usage on the same filesystem), copy, or move. Once imported, StorageService is the sole authority. Derived files follow the same rule: a model folder can be compressed to a sibling 7z archive without deleting or changing the source folder, whether storage is local or S3-compatible.
 
 **Server-side response assembly.** PresenterService on the backend assembles all API response payloads into ready-to-render shapes before sending them. The frontend does not reshape or join data — it receives what it needs to display. This keeps frontend complexity low and makes response format changes a single-location concern.
 
@@ -38,13 +38,14 @@ The backend is organized around focused services. Each service owns a coherent s
 
 - **IngestionService** — orchestrates the upload and import pipelines; creates model records and enqueues processing jobs
 - **FileProcessingService** — extracts archives and supported split archives, temporarily colocates split members and starts extraction from the set's entry member, rejects unsafe paths and link-like entries before 7-Zip extraction, combines explicitly grouped complete archives under collision-safe folders, walks import directories, classifies files by type, and computes SHA-256 hashes
+- **ModelFolderArchiveService** — creates a verified sibling 7z archive from a model folder without changing the source folder, across local or S3-compatible storage
 - **StorageService** — manages backend-independent logical keys through local-filesystem or S3-compatible providers
 - **ThumbnailService** — generates WebP thumbnails at grid and detail sizes using sharp
 - **UploadService** — manages chunked upload sessions in memory, bounds accepted chunk bytes to the declared file size, supports explicit abort and cleanup, and assembles single files or multipart groups for ingestion
 - **ImportSessionService** — owns staged scan, persisted review drafts, and commit sessions
 - **ImportStrategyService** — moves folder imports into managed storage using hardlink, copy, or move strategies
 - **JobService** — manages BullMQ queues and job lifecycle
-- **ModelService** — CRUD for Model and ModelFile records
+- **ModelService** — CRUD for Model, ModelFile, and ModelFolder records
 - **ModelDownloadService** — streams model downloads from managed storage
 - **MetadataService** — field definitions and metadata values, with internal routing for optimized field types (tags)
 - **SearchService** — all query execution: full-text search, metadata filtering, sorting, cursor pagination
@@ -75,6 +76,6 @@ The auto-seed uses `admin@alexandria.local` as the default email, but Docker Com
 
 ## Current Status
 
-Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, the React frontend, the in-browser STL viewer, and the preview-first assistant — is implemented and reviewed. Deployments can use either the bundled Postgres container or hosted PostgreSQL. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent complete archives or uploading one complete supported split archive, including a modern `<base>.partN.rar` set, into a single review session and model. The assistant can now read collections and metadata knowledge, act on current single or multi-model page targets, stage uniform metadata or collection operations across as many as 500 server-resolved models, and stage metadata for pre-commit uploads without committing them.
+Phases 1 through 8 are complete. The full feature set described above — ingestion pipeline, metadata system, folder import, full-text search, collections, PresenterService API polish, the React frontend, the in-browser STL viewer, and the preview-first assistant — is implemented and reviewed. A model's file tree supports in-place organization and non-destructive folder-to-7z compression. Deployments can use either the bundled Postgres container or hosted PostgreSQL. Chunked uploads support files up to 5 GB with 10 MB chunks and automatic retry. The upload page also has a dedicated Multi-part archive tab for combining 2–100 independent complete archives or uploading one complete supported split archive, including a modern `<base>.partN.rar` set, into a single review session and model. The assistant can now read collections and metadata knowledge, act on current single or multi-model page targets, stage uniform metadata or collection operations across as many as 500 server-resolved models, and stage metadata for pre-commit uploads without committing them.
 
 Planned but not yet implemented: multi-user support and print job tracking.

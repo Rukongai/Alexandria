@@ -1328,6 +1328,42 @@ The endpoint returns `400 VALIDATION_ERROR` when the source is not ready, the na
 
 ---
 
+### POST /models/:id/folders/compress
+
+Create a 7z archive from one folder in a model. The archive uses LZMA2 compression and is stored beside the source folder as `<folder-name>.7z`. Archive entries are relative to the selected folder, so extracting the new archive through Alexandria recreates the folder contents without an extra duplicate top-level directory. The operation is non-destructive: the source folder and its files remain unchanged.
+
+**Auth required:** Yes. The model must belong to the authenticated user and active library.
+
+**Path parameter:** `id` — model UUID
+
+**Request body:**
+
+```json
+{
+  "path": "extras/parts"
+}
+```
+
+`path` must identify an existing folder and is limited to 1,000 characters. The derived archive path must also satisfy Alexandria's path limits, so the source path can be at most 997 characters and its final segment at most 252 characters to leave room for `.7z`. A missing folder returns `404 NOT_FOUND`. If the `extras/parts.7z` sibling namespace or its underlying storage key is already occupied, the request returns `409 CONFLICT`; the operation does not replace an existing managed path.
+
+**Response (201):**
+
+```json
+{
+  "data": {
+    "archiveFileId": "uuid",
+    "archivePath": "extras/parts.7z",
+    "sizeBytes": 1048576
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+The backend streams the selected files from managed storage into a temporary directory, preserving explicit empty descendant folders, creates the archive with the bundled 7-Zip binary, stores and verifies it through the configured local or S3 storage backend, persists it as a model file with MIME type `application/x-7z-compressed`, and updates the model's file and byte totals in one database transaction. Temporary data is always removed. A failure before database persistence triggers best-effort cleanup of any newly stored archive object.
+
+---
+
 ### GET /models/:id/download
 
 Download all files belonging to a model as a ZIP archive. The archive is assembled and streamed from managed storage; the original directory structure is preserved and the full archive is never buffered in server memory.

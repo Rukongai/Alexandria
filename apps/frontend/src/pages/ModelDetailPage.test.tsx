@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { ModelDetail } from '@alexandria/shared';
+import type { CompressFolderResponse, ModelDetail } from '@alexandria/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelDetailPage } from './ModelDetailPage';
 
@@ -19,6 +19,7 @@ vi.mock('../api/collections', () => ({
 }));
 
 vi.mock('../api/models', () => ({
+  compressModelFolder: vi.fn(),
   createModelFolder: vi.fn(),
   deleteModelFile: vi.fn(),
   deleteModelFolder: vi.fn(),
@@ -57,10 +58,20 @@ interface DetailPanelTestProps {
   collectionAddPending: boolean;
   onAddToCollections: (collectionIds: string[]) => Promise<void>;
   onSplitFolder: (path: string, name: string) => void;
+  fileActionsDisabled?: boolean;
+  fileActionStatus?: string;
+  onCompressFolder?: (path: string, name: string) => void;
 }
 
 vi.mock('../components/models/ModelDetailPanel', () => ({
-  ModelDetailPanel: ({ collectionAddPending, onAddToCollections, onSplitFolder }: DetailPanelTestProps) => (
+  ModelDetailPanel: ({
+    collectionAddPending,
+    onAddToCollections,
+    fileActionsDisabled,
+    fileActionStatus,
+    onCompressFolder,
+    onSplitFolder,
+  }: DetailPanelTestProps) => (
     <>
       <button
         type="button"
@@ -74,12 +85,24 @@ vi.mock('../components/models/ModelDetailPanel', () => ({
       <button type="button" onClick={() => onSplitFolder('variants/large', 'large')}>
         Split folder
       </button>
+      <button
+        type="button"
+        disabled={fileActionsDisabled}
+        onClick={() => onCompressFolder?.('parts', 'parts')}
+      >
+        {fileActionStatus ?? 'Compress folder'}
+      </button>
     </>
   ),
 }));
 
 import { addModelsToCollection, getCollections } from '../api/collections';
-import { getModel, getModelFiles, splitModelFolder } from '../api/models';
+import {
+  compressModelFolder,
+  getModel,
+  getModelFiles,
+  splitModelFolder,
+} from '../api/models';
 
 const model: ModelDetail = {
   id: 'model-1',
@@ -124,7 +147,7 @@ function renderPage(queryClient: QueryClient) {
   );
 }
 
-describe('ModelDetailPage collection membership', () => {
+describe('ModelDetailPage mutations', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getModel).mockResolvedValue(model);
@@ -223,6 +246,41 @@ describe('ModelDetailPage collection membership', () => {
       ['model-files', 'model-1'],
       ['models'],
       ['search'],
+    ]) {
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey });
+    }
+  });
+
+  it('should show compression progress, refresh model data, and name the created archive', async () => {
+    const compression = deferred<CompressFolderResponse>();
+    vi.mocked(compressModelFolder).mockReturnValue(compression.promise);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries');
+    renderPage(queryClient);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Compress folder' }));
+
+    await waitFor(() => {
+      expect(compressModelFolder).toHaveBeenCalledWith('model-1', 'parts');
+      expect(screen.getByRole('button', { name: 'Compressing folder…' })).toBeDisabled();
+    });
+    expect(mocks.toast).not.toHaveBeenCalled();
+
+    compression.resolve({
+      archiveFileId: 'archive-1',
+      archivePath: 'parts.7z',
+      sizeBytes: 2048,
+    });
+
+    await waitFor(() => {
+      expect(mocks.toast).toHaveBeenCalledWith({ title: 'Created parts.7z' });
+    });
+    for (const queryKey of [
+      ['model', 'model-1'],
+      ['model-files', 'model-1'],
+      ['models'],
     ]) {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey });
     }

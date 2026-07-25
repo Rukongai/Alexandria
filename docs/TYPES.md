@@ -498,6 +498,17 @@ interface FileTreeNode {
   id?: string;               // present for files only (ModelFile.id)
   children?: FileTreeNode[]; // present for directories only
 }
+
+interface CompressModelFolderRequest {
+  path: string; // relative path of the folder within the model; 1–1,000 characters
+}
+
+// POST /models/:id/folders/compress
+interface CompressFolderResponse {
+  archiveFileId: string;
+  archivePath: string; // sibling path, for example parts.7z or extras/parts.7z
+  sizeBytes: number;
+}
 ```
 
 ### Metadata Response Types

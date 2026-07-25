@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { promisify } from 'node:util';
 import yauzl from 'yauzl';
 import * as tar from 'tar';
 import { createExtractorFromFile } from 'node-unrar-js';
@@ -25,6 +27,7 @@ import { createLogger } from '../utils/logger.js';
 import { uploadConcurrencyFor, type IStorageService } from './storage.service.js';
 
 const logger = createLogger('FileProcessingService');
+const execFileAsync = promisify(execFile);
 
 const STORAGE_PROGRESS_MIN_BYTES = 1024 * 1024;
 const STORAGE_PROGRESS_MAX_INTERVAL_MS = 250;
@@ -333,6 +336,38 @@ export interface DiscoveredModel {
 }
 
 export class FileProcessingService {
+  /** Create a 7z archive whose root contains sourceDir's children, not sourceDir itself. */
+  async create7zArchive(sourceDir: string, archivePath: string): Promise<void> {
+    await fsPromises.mkdir(path.dirname(archivePath), { recursive: true });
+    await execFileAsync(
+      path7z,
+      ['a', '-t7z', '-m0=LZMA2', '-mx=5', '-bb0', '-bd', '-y', archivePath, '.'],
+      { cwd: sourceDir },
+    );
+
+    // 7-Zip exits successfully without writing an archive for a completely
+    // empty directory. Seed and remove one entry so empty model folders still
+    // produce a valid, empty 7z container.
+    try {
+      await fsPromises.access(archivePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const placeholder = `.alexandria-empty-${crypto.randomUUID()}`;
+      const placeholderPath = path.join(sourceDir, placeholder);
+      await fsPromises.writeFile(placeholderPath, '');
+      try {
+        await execFileAsync(
+          path7z,
+          ['a', '-t7z', '-m0=LZMA2', '-mx=5', '-bb0', '-bd', '-y', archivePath, placeholder],
+          { cwd: sourceDir },
+        );
+        await execFileAsync(path7z, ['d', '-bb0', '-bd', '-y', archivePath, placeholder]);
+      } finally {
+        await fsPromises.rm(placeholderPath, { force: true });
+      }
+    }
+  }
+
   validateMultipartArchives(
     files: MultipartArchiveFile[],
     mode: MultipartArchiveMode,

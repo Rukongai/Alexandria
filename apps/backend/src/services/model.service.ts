@@ -66,7 +66,7 @@ export interface UpdateModelStatusData {
 }
 
 export class ModelService {
-  private normalizeFolderPath(input: string, field = 'path', allowRoot = false): string {
+  normalizeFolderPath(input: string, field = 'path', allowRoot = false): string {
     const raw = input.replace(/\\/g, '/').trim().replace(/^\/+|\/+$/g, '');
     if (!raw) {
       if (allowRoot) return '';
@@ -174,10 +174,11 @@ export class ModelService {
   async createModelFiles(
     modelId: string,
     files: CreateModelFileData[],
+    executor: DatabaseExecutor = db,
   ): Promise<Array<{ id: string; fileType: string }>> {
     if (files.length === 0) return [];
 
-    const rows = await db
+    const rows = await executor
       .insert(modelFiles)
       .values(
         files.map((f) => ({
@@ -263,6 +264,17 @@ export class ModelService {
         updatedAt: new Date(),
       })
       .where(eq(models.id, modelId));
+  }
+
+  async createModelFileAndRecalculateStats(
+    modelId: string,
+    file: CreateModelFileData,
+  ): Promise<{ id: string }> {
+    return db.transaction(async (tx) => {
+      const [created] = await this.createModelFiles(modelId, [file], tx);
+      await this.recalculateModelStats(modelId, tx);
+      return { id: created.id };
+    });
   }
 
   async getModelById(id: string, executor: DatabaseExecutor = db): Promise<Model> {

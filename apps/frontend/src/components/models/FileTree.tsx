@@ -15,6 +15,7 @@ import {
   SquareCheck,
   Trash2,
   PackageOpen,
+  Archive,
   Loader2,
   Scissors,
 } from 'lucide-react';
@@ -66,6 +67,7 @@ interface FileNodeProps {
   onExtractArchive?: (fileId: string, name: string) => void;
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
+  onCompressFolder?: (path: string, name: string) => void;
   onDeleteFolder?: (path: string, name: string) => void;
   onSplitFolder?: (path: string, name: string) => void;
   selectionMode: boolean;
@@ -340,6 +342,7 @@ function FileNode({
   onExtractArchive,
   onRenameFolder,
   onMoveFolder,
+  onCompressFolder,
   onDeleteFolder,
   onSplitFolder,
   selectionMode,
@@ -427,6 +430,10 @@ function FileNode({
                 <Scissors className="mr-2 h-3.5 w-3.5" />
                 Split into new model…
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onCompressFolder?.(nodePath, node.name)}>
+                <Archive className="mr-2 h-3.5 w-3.5" />
+                Compress to 7z
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-destructive hover:text-destructive"
@@ -465,6 +472,7 @@ function FileNode({
                 onExtractArchive={onExtractArchive}
                 onRenameFolder={onRenameFolder}
                 onMoveFolder={onMoveFolder}
+                onCompressFolder={onCompressFolder}
                 onDeleteFolder={onDeleteFolder}
                 onSplitFolder={onSplitFolder}
                 selectionMode={selectionMode}
@@ -709,6 +717,7 @@ interface FileTreeProps {
   onDeleteFiles?: (fileIds: string[]) => void;
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
+  onCompressFolder?: (path: string, name: string) => void;
   onDeleteFolder?: (path: string, name: string) => void;
   onSplitFolder?: (path: string, name: string) => void;
 }
@@ -731,6 +740,7 @@ export function FileTree({
   onDeleteFiles,
   onRenameFolder,
   onMoveFolder,
+  onCompressFolder,
   onDeleteFolder,
   onSplitFolder,
 }: FileTreeProps) {
@@ -1016,6 +1026,7 @@ export function FileTree({
               onExtractArchive={onExtractArchive}
               onRenameFolder={onRenameFolder}
               onMoveFolder={onMoveFolder}
+              onCompressFolder={onCompressFolder}
               onDeleteFolder={onDeleteFolder}
               onSplitFolder={onSplitFolder}
               selectionMode={selectionMode}

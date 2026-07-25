@@ -5,6 +5,7 @@ import { ChevronLeft, AlertTriangle, Download, GitMerge, Loader2, Upload, X } fr
 import type { ModelCard, ModelDetail, SplitModelFolderRequest } from '@alexandria/shared';
 import { addModelsToCollection, getCollections } from '../api/collections';
 import {
+  compressModelFolder,
   createModelFolder,
   deleteModelFile,
   deleteModelFolder,
@@ -53,6 +54,7 @@ type FileAction =
   | { type: 'delete-files'; fileIds: string[] }
   | { type: 'rename-folder'; path: string; name: string }
   | { type: 'move-folder'; path: string; parentPath: string }
+  | { type: 'compress-folder'; path: string; name: string }
   | { type: 'delete-folder'; path: string; name: string };
 
 function fileActionStatus(action: FileAction | undefined): string | undefined {
@@ -67,6 +69,7 @@ function fileActionStatus(action: FileAction | undefined): string | undefined {
     case 'delete-files': return `Deleting ${action.fileIds.length} files…`;
     case 'rename-folder': return 'Renaming folder…';
     case 'move-folder': return 'Moving folder…';
+    case 'compress-folder': return 'Compressing folder…';
     case 'delete-folder': return 'Deleting folder…';
   }
 }
@@ -196,6 +199,10 @@ export function ModelDetailPage() {
         case 'move-folder':
           await updateModelFolder(id, { path: action.path, parentPath: action.parentPath });
           return 'Folder moved';
+        case 'compress-folder': {
+          const result = await compressModelFolder(id, action.path);
+          return `Created ${result.archivePath}`;
+        }
         case 'delete-folder':
           await deleteModelFolder(id, action.path);
           return 'Folder deleted';
@@ -390,6 +397,7 @@ export function ModelDetailPage() {
               onDeleteFiles={(fileIds) => fileMutation.mutate({ type: 'delete-files', fileIds })}
               onRenameFolder={(path, name) => fileMutation.mutate({ type: 'rename-folder', path, name })}
               onMoveFolder={(path, parentPath) => runFileAction({ type: 'move-folder', path, parentPath })}
+              onCompressFolder={(path, name) => fileMutation.mutate({ type: 'compress-folder', path, name })}
               onDeleteFolder={(path, name) => fileMutation.mutate({ type: 'delete-folder', path, name })}
               onSplitFolder={(path, name) => setSplitFolderTarget({ path, name })}
               allCollections={collectionsQuery.data ?? []}

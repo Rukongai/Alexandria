@@ -55,3 +55,7 @@ export const splitModelFolderSchema = z.object({
   path: relativePathSchema,
   name: z.string().trim().min(1).max(255),
 });
+
+export const compressModelFolderSchema = z.object({
+  path: relativePathSchema,
+});
