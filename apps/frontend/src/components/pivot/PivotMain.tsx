@@ -6,6 +6,7 @@ import { useModelFilters } from '../../hooks/use-model-filters';
 import { useLibraryPath } from '../../hooks/use-libraries';
 import { useModelResults } from '../../hooks/use-model-results';
 import { getSmartCollections, getSmartCollectionModels } from '../../api/smart-collections';
+import { getFields } from '../../api/metadata';
 import { useDisplayPreferences } from '../../hooks/use-display-preferences';
 import { useBulkSelection } from '../../hooks/use-bulk-selection';
 import { useAssistantTarget } from '../../hooks/use-assistant-context';
@@ -24,17 +25,19 @@ import {
   ArtistIcon,
   TagIcon,
   SmartIcon,
+  MetadataIcon,
 } from '../icons';
-import type { PivotAxis } from '../../hooks/use-model-filters';
+import { getMetadataAxisSlug } from '../../hooks/use-model-filters';
+import type { BuiltInPivotAxis, PivotAxis } from '../../hooks/use-model-filters';
 
-const AXIS_ICONS: Record<PivotAxis, React.ComponentType<{ className?: string }>> = {
+const AXIS_ICONS: Record<BuiltInPivotAxis, React.ComponentType<{ className?: string }>> = {
   collections: CollectionsIcon,
   artists: ArtistIcon,
   tags: TagIcon,
   smart: SmartIcon,
 };
 
-const AXIS_LABELS: Record<PivotAxis, string> = {
+const AXIS_LABELS: Record<BuiltInPivotAxis, string> = {
   collections: 'Collections',
   artists: 'Artists',
   tags: 'Tags',
@@ -44,8 +47,16 @@ const AXIS_LABELS: Record<PivotAxis, string> = {
 /** Derive a human-readable context title from the active axis + selection. */
 function deriveContextTitle(
   axis: PivotAxis,
-  activeAxisValue: ReturnType<typeof useModelFilters>['activeAxisValue']
+  activeAxisValue: ReturnType<typeof useModelFilters>['activeAxisValue'],
+  metadataFieldName?: string,
 ): string {
+  const metadataSlug = getMetadataAxisSlug(axis);
+  if (metadataSlug) {
+    const fieldName = metadataFieldName ?? metadataSlug;
+    return activeAxisValue.metadata?.value
+      ? `${fieldName}: ${activeAxisValue.metadata.value}`
+      : `All ${fieldName}`;
+  }
   if (axis === 'collections') {
     return activeAxisValue.collectionId ? 'Collection' : 'All Collections';
   }
@@ -57,7 +68,7 @@ function deriveContextTitle(
       ? activeAxisValue.tags.join(', ')
       : 'All Tags';
   }
-  return AXIS_LABELS[axis];
+  return AXIS_LABELS[axis as BuiltInPivotAxis];
 }
 
 /**
@@ -77,6 +88,13 @@ export function PivotMain() {
   const { filters, toApiParams, setQ, axis, activeAxisValue, hasActiveFilters, smartCollectionId } =
     useModelFilters();
   const { view, showThumbnails } = useDisplayPreferences();
+  const metadataSlug = getMetadataAxisSlug(axis);
+  const { data: metadataFields = [] } = useQuery({
+    queryKey: ['metadata-fields'],
+    queryFn: getFields,
+    enabled: !!metadataSlug,
+  });
+  const activeMetadataField = metadataFields.find((field) => field.slug === metadataSlug);
 
   const [bulkMode, setBulkMode] = useState(false);
   const { selected, toggle, selectAll, clear, isSelected, count } = useBulkSelection();
@@ -126,18 +144,21 @@ export function PivotMain() {
     setBulkMode(false);
   }
 
-  const AxisIcon = AXIS_ICONS[axis];
+  const AxisIcon = metadataSlug ? MetadataIcon : AXIS_ICONS[axis as BuiltInPivotAxis];
   const contextTitle = isSmart
     ? activeSmart?.name ?? 'Smart Collections'
-    : deriveContextTitle(axis, activeAxisValue);
+    : deriveContextTitle(axis, activeAxisValue, activeMetadataField?.name);
 
   // Axis icon badge background per axis
-  const AXIS_BG: Record<PivotAxis, string> = {
+  const AXIS_BG: Record<BuiltInPivotAxis, string> = {
     collections: 'linear-gradient(135deg, var(--ax-amber), var(--ax-amber-deep, #b45309))',
     artists: 'linear-gradient(135deg, var(--ax-teal, #0d9488), #0f766e)',
     tags: 'linear-gradient(135deg, var(--ax-teal, #0d9488), #0f766e)',
     smart: 'linear-gradient(135deg, var(--ax-violet, #7c3aed), #6d28d9)',
   };
+  const axisBackground = metadataSlug
+    ? 'linear-gradient(135deg, var(--ax-teal, #0d9488), #0f766e)'
+    : AXIS_BG[axis as BuiltInPivotAxis];
 
   return (
     <div className="relative flex flex-col h-full min-h-0" style={{ background: 'var(--ax-bg)', color: 'var(--ax-fg)' }}>
@@ -151,7 +172,11 @@ export function PivotMain() {
       >
         {/* Left: breadcrumb */}
         <div className="flex-1 min-w-0">
-          <Breadcrumb axis={axis} activeAxisValue={activeAxisValue} />
+          <Breadcrumb
+            axis={axis}
+            activeAxisValue={activeAxisValue}
+            metadataFieldName={activeMetadataField?.name}
+          />
         </div>
 
         {/* Right: search + upload */}
@@ -217,7 +242,7 @@ export function PivotMain() {
             style={{
               width: 56,
               height: 56,
-              background: AXIS_BG[axis],
+              background: axisBackground,
               boxShadow: 'var(--ax-shadow-md)',
               color: 'white',
             }}
@@ -353,6 +378,7 @@ export function PivotMain() {
                 models={models}
                 axis={axis}
                 activeAxisValue={activeAxisValue}
+                metadataFieldName={activeMetadataField?.name}
                 selectable={bulkMode}
                 isSelected={isSelected}
                 onToggleSelect={toggle}

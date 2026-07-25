@@ -494,23 +494,27 @@ The application shell (`AppShell`) is a full-height flex row:
 The rail contains, top to bottom:
 
 1. **Library header** — brand mark plus a library-name badge. The badge includes a chevron-down but is non-interactive (`aria-disabled`, `tabIndex=-1`): multi-library switching is a P5 stub.
-2. **AxisPicker** — a 2-column button grid for selecting the active axis (Collections, Artists, Tags).
-3. **AxisFacetBody** — a scrollable list for the active axis. Shows collections tree, artist values, or tag values, each pulling from the appropriate backend endpoint.
+2. **AxisPicker** — a 2-column button grid for selecting the active axis. Collections, Artists, Tags, and Smart Collections are always present; every metadata field marked `isBrowsable` is also exposed as an axis (Artist and Tags reuse their dedicated axes instead of appearing twice).
+3. **AxisFacetBody** — a scrollable list for the active axis. Shows the collections tree, smart collections, or the values and model counts for the selected metadata dimension, each pulling from the appropriate backend endpoint.
 4. **UserMenu** — pinned footer with user avatar, display name, theme toggle, Settings link, and Log out.
 
 ### Axes
 
-The "axis" is the currently-selected browse dimension. It is stored in the URL as `?axis=` (e.g., `?axis=artists`). The default axis is `collections`, which is omitted from the URL for clean links.
+The "axis" is the currently-selected browse dimension. It is stored in the URL as `?axis=` (e.g., `?axis=artists`). Dynamic metadata axes use `metadata:<slug>` (for example, `?axis=metadata:source`). The default axis is `collections`, which is omitted from the URL for clean links.
 
 The axis is **pure UI state**. It is kept out of the React Query key and does not affect the API request made by `useModelResults`. Changing the axis reshapes the rail and the context header but does not refetch models unless the axis selection also changes the active filter (e.g., selecting a collection updates `?collectionId=`).
 
-The three axes and what they do in the rail:
+The fixed and dynamic axes behave as follows:
 
 | Axis | Rail body | Active filter set |
 |------|-----------|-------------------|
 | `collections` | Collections tree | `collectionId` query param |
 | `artists` | Artist values + model counts | `meta_artist` query param |
 | `tags` | Tag values + model counts | `tags` query param |
+| `smart` | Saved smart collections | `smartCollectionId` UI selection; the selected collection supplies the model query |
+| `metadata:<slug>` | Values + model counts for a browsable metadata field | `meta_<slug>` query param |
+
+The picker derives dynamic axes from `GET /metadata/fields`, preserving the endpoint's field-definition order (`sortOrder`, then creation time) and including only definitions with `isBrowsable: true`. The dedicated Artist and Tags axes remain responsible for those default fields because Tags uses its optimized storage and filter path. Other metadata axes use `GET /metadata/fields/:slug/values` and the existing generic metadata-filter contract.
 
 ### useModelFilters
 
@@ -548,7 +552,7 @@ Three view modes are available, selected via `ViewSwitch` and persisted in `loca
 
 The `showThumbnails` preference (also in `displayPrefs`) toggles thumbnail display in list and group views.
 
-**Group view limitation:** For `axis=collections`, per-collection grouping requires collection membership on `ModelCard`, which the API does not currently return. Group view renders a single group for the collections axis. For `artists` and `tags`, grouping runs client-side on loaded models; group counts reflect loaded models only and will grow as infinite scroll loads more pages.
+**Group view limitation:** For `axis=collections`, per-collection grouping requires collection membership on `ModelCard`, which the API does not currently return. Group view renders a single group for the collections axis. For `artists`, `tags`, and dynamic metadata axes, grouping runs client-side on loaded models; group counts reflect loaded models only and will grow as infinite scroll loads more pages. A dynamic metadata axis groups each model by the field's complete display value and puts models without a value in a `No <field name>` group.
 
 ### Bulk merge
 
@@ -791,7 +795,7 @@ Services throw typed errors or return domain data. Routes and middleware handle 
 The `requireLibrary` preHandler derives `libraryId` from the authenticated session and writes it to `request.libraryId`. No route accepts a `libraryId` value from the client. This ensures a user cannot access another user's library by supplying an arbitrary `libraryId` in the query string or request body.
 
 ### D14: Pivot axis is URL state, not query state
-The active pivot axis (`?axis=collections|artists|tags`) is stored in the URL so it survives navigation and is shareable, but it is excluded from the React Query key. The axis controls how the rail and context header look; it does not change the underlying API request. Only the filter values derived from an axis selection (e.g., `collectionId`, `meta_artist`) enter the query key and trigger refetches.
+The active pivot axis is stored in the URL so it survives navigation and is shareable, but it is excluded from the React Query key. Fixed axes use `?axis=collections|artists|tags|smart`; browsable metadata fields use `?axis=metadata:<slug>`. Artist and Tags remain reserved dedicated axes and are not duplicated as `metadata:artist` or `metadata:tags`. The axis by itself controls how the rail and context header look. Filter values derived from an axis selection (for example, `collectionId` or `meta_artist`) enter the model query key and trigger refetches; a selected smart collection instead supplies its own query and key.
 
 ### D15: three.js is isolated in a single lazy-loaded module
 `ModelViewer3DScene` is the only file in the frontend that imports `three`, `@react-three/fiber`, or `@react-three/drei`. All other code reaches it through `ModelViewer3DModal` via `React.lazy`, which causes Vite to emit three.js as a separate async chunk (~924 KB). The chunk is never fetched unless the 3D viewer is opened. This isolation is intentional: adding any static import of three anywhere else in the app would pull the entire bundle into the critical path. If the viewer grows to need additional three.js utilities, they must be added inside `ModelViewer3DScene` or co-located lazy modules — not imported at the app or component level.

@@ -15,6 +15,7 @@ vi.mock('../../api/collections', () => ({
 }));
 
 vi.mock('../../api/metadata', () => ({
+  getFields: vi.fn(),
   getFieldValues: vi.fn(),
 }));
 
@@ -33,11 +34,12 @@ vi.mock('../../hooks/use-auth', () => ({
 }));
 
 import { getCollections } from '../../api/collections';
-import { getFieldValues } from '../../api/metadata';
+import { getFields, getFieldValues } from '../../api/metadata';
 import { listLibraries } from '../../api/libraries';
 
 const mockGetCollections = vi.mocked(getCollections);
 const mockGetFieldValues = vi.mocked(getFieldValues);
+const mockGetFields = vi.mocked(getFields);
 const mockListLibraries = vi.mocked(listLibraries);
 
 function LocationProbe() {
@@ -57,6 +59,11 @@ const TAGS: MetadataFieldValue[] = [
 const ARTISTS: MetadataFieldValue[] = [
   { value: 'Prusa', modelCount: 22 },
   { value: 'Bambu', modelCount: 11 },
+];
+
+const METADATA_FIELDS = [
+  { id: 'field-1', name: 'Scale', slug: 'scale', type: 'enum' as const, isDefault: false, isFilterable: true, isBrowsable: true, config: null, sortOrder: 1 },
+  { id: 'field-2', name: 'Private Notes', slug: 'private-notes', type: 'text' as const, isDefault: false, isFilterable: false, isBrowsable: false, config: null, sortOrder: 2 },
 ];
 
 const COLLECTION: CollectionDetail = {
@@ -124,6 +131,10 @@ function makeLibraryWrapper(initialUrl = '/lib/library-1') {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+beforeEach(() => {
+  mockGetFields.mockResolvedValue(METADATA_FIELDS);
+});
+
 describe('AxisFacetBody — tags axis', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -259,6 +270,53 @@ describe('AxisFacetBody — artists axis', () => {
     await waitFor(() => {
       expect(screen.getByText(/no artists found/i)).toBeTruthy();
     });
+  });
+});
+
+describe('AxisFacetBody — metadata axis', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetFieldValues.mockResolvedValue([
+      { value: '1:12', modelCount: 8 },
+      { value: '1:24', modelCount: 3 },
+    ]);
+  });
+
+  it('fetches and renders values and counts for the axis field', async () => {
+    render(<AxisFacetBody axis="metadata:scale" />, { wrapper: makeWrapper() });
+
+    expect(await screen.findByText('1:12')).toBeTruthy();
+    expect(screen.getByText('8')).toBeTruthy();
+    expect(mockGetFieldValues).toHaveBeenCalledWith('scale');
+  });
+
+  it('toggles the field value through its meta_<slug> URL filter', async () => {
+    render(<AxisFacetBody axis="metadata:scale" />, {
+      wrapper: makeWrapper('/?axis=metadata%3Ascale'),
+    });
+    const value = await screen.findByRole('button', { name: /1:12/i });
+    fireEvent.click(value);
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(
+      '/?axis=metadata%3Ascale&meta_scale=1%3A12'
+    ));
+    fireEvent.click(value);
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(
+      '/?axis=metadata%3Ascale'
+    ));
+  });
+
+  it.each([
+    ['unknown', 'metadata:unknown'],
+    ['non-browsable', 'metadata:private-notes'],
+    ['reserved tags', 'metadata:tags'],
+  ] as const)('does not fetch facet values for a %s metadata axis', async (_case, axis) => {
+    render(<AxisFacetBody axis={axis} />, { wrapper: makeWrapper() });
+
+    if (axis !== 'metadata:tags') {
+      await waitFor(() => expect(mockGetFields).toHaveBeenCalled());
+    }
+    expect(mockGetFieldValues).not.toHaveBeenCalled();
   });
 });
 

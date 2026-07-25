@@ -42,13 +42,20 @@ vi.mock('../../api/models', () => ({
   getModels: vi.fn(),
 }));
 
+vi.mock('../../api/metadata', () => ({
+  getFields: vi.fn(),
+  getFieldValues: vi.fn(),
+}));
+
 vi.mock('../../hooks/use-assistant-context', () => ({
   useAssistantTarget: vi.fn(),
 }));
 
 import { getModels } from '../../api/models';
+import { getFields } from '../../api/metadata';
 import { useAssistantTarget } from '../../hooks/use-assistant-context';
 const mockGetModels = vi.mocked(getModels);
+const mockGetFields = vi.mocked(getFields);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -119,6 +126,9 @@ describe('PivotMain', () => {
     localStorage.clear();
     stubIntersectionObserver();
     mockGetModels.mockResolvedValue(MODELS_RESPONSE);
+    mockGetFields.mockResolvedValue([
+      { id: 'field-1', name: 'Scale', slug: 'scale', type: 'enum', isDefault: false, isFilterable: true, isBrowsable: true, config: null, sortOrder: 1 },
+    ]);
   });
 
   it('renders the search input', () => {
@@ -178,6 +188,16 @@ describe('PivotMain', () => {
     render(<PivotMain />, { wrapper: makeWrapper('/?axis=artists') });
 
     expect(screen.getByText('Artists')).toBeTruthy();
+  });
+
+  it('shows the metadata field name and active value in its context', async () => {
+    render(<PivotMain />, {
+      wrapper: makeWrapper('/?axis=metadata%3Ascale&meta_scale=1%3A12'),
+    });
+
+    expect(await screen.findByText('Scale')).toBeTruthy();
+    expect(screen.getByText('1:12')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Scale: 1:12' })).toBeTruthy();
   });
 
   it('renders the ViewSwitch with all three buttons', () => {

@@ -13,10 +13,35 @@ export interface ModelFilters {
   metadataFilters: Record<string, string>;
 }
 
-export type PivotAxis = 'collections' | 'artists' | 'tags' | 'smart';
+export type BuiltInPivotAxis = 'collections' | 'artists' | 'tags' | 'smart';
+export type MetadataPivotAxis = `metadata:${string}`;
+export type PivotAxis = BuiltInPivotAxis | MetadataPivotAxis;
 
-const VALID_AXES: PivotAxis[] = ['collections', 'artists', 'tags', 'smart'];
-const DEFAULT_AXIS: PivotAxis = 'collections';
+const VALID_AXES: BuiltInPivotAxis[] = ['collections', 'artists', 'tags', 'smart'];
+const DEFAULT_AXIS: BuiltInPivotAxis = 'collections';
+const RESERVED_METADATA_AXIS_SLUGS = new Set(['artist', 'tags']);
+
+export function isValidMetadataAxisSlug(slug: string): boolean {
+  return slug.length > 0
+    && slug.length <= 255
+    && !RESERVED_METADATA_AXIS_SLUGS.has(slug);
+}
+
+export function getMetadataAxisSlug(axis: PivotAxis): string | undefined {
+  if (!axis.startsWith('metadata:')) return undefined;
+  const slug = axis.slice('metadata:'.length);
+  return isValidMetadataAxisSlug(slug) ? slug : undefined;
+}
+
+function parsePivotAxis(rawAxis: string | null): PivotAxis {
+  if (rawAxis && VALID_AXES.includes(rawAxis as BuiltInPivotAxis)) {
+    return rawAxis as BuiltInPivotAxis;
+  }
+  if (rawAxis?.startsWith('metadata:') && getMetadataAxisSlug(rawAxis as MetadataPivotAxis)) {
+    return rawAxis as MetadataPivotAxis;
+  }
+  return DEFAULT_AXIS;
+}
 
 /**
  * The currently-selected value for the active pivot axis:
@@ -30,6 +55,7 @@ export interface ActiveAxisValue {
   artist: string | undefined;
   tags: string[];
   smartCollectionId: string | undefined;
+  metadata?: { slug: string; value: string | undefined };
 }
 
 function parseMetaFilters(params: URLSearchParams): Record<string, string> {
@@ -79,11 +105,8 @@ export function useModelFilters() {
   };
 
   // axis is pure UI — NOT in ModelFilters, NOT in toApiParams, NOT in the query key
-  const rawAxis = searchParams.get('axis');
-  const axis: PivotAxis =
-    rawAxis !== null && VALID_AXES.includes(rawAxis as PivotAxis)
-      ? (rawAxis as PivotAxis)
-      : DEFAULT_AXIS;
+  const axis = parsePivotAxis(searchParams.get('axis'));
+  const metadataAxisSlug = getMetadataAxisSlug(axis);
 
   // smartCollectionId is pure UI selection (which smart collection to view) —
   // like axis, it is NOT a model filter and not in toApiParams/the query key.
@@ -95,6 +118,9 @@ export function useModelFilters() {
     artist: axis === 'artists' ? filters.metadataFilters['artist'] : undefined,
     tags: axis === 'tags' ? filters.tags : [],
     smartCollectionId: axis === 'smart' ? smartCollectionId : undefined,
+    metadata: metadataAxisSlug
+      ? { slug: metadataAxisSlug, value: filters.metadataFilters[metadataAxisSlug] }
+      : undefined,
   };
 
   const toApiParams = useCallback(

@@ -1,25 +1,28 @@
-import type { PivotAxis, ActiveAxisValue } from '../../hooks/use-model-filters';
+import { getMetadataAxisSlug } from '../../hooks/use-model-filters';
+import type { PivotAxis, ActiveAxisValue, BuiltInPivotAxis } from '../../hooks/use-model-filters';
 import {
   CollectionsIcon,
   ArtistIcon,
   TagIcon,
   SmartIcon,
+  MetadataIcon,
   ChevronRightIcon,
 } from '../icons';
 
 interface BreadcrumbProps {
   axis: PivotAxis;
   activeAxisValue: ActiveAxisValue;
+  metadataFieldName?: string;
 }
 
-const AXIS_LABELS: Record<PivotAxis, string> = {
+const AXIS_LABELS: Record<BuiltInPivotAxis, string> = {
   collections: 'Collections',
   artists: 'Artists',
   tags: 'Tags',
   smart: 'Smart Collections',
 };
 
-const AXIS_ICONS: Record<PivotAxis, React.ReactNode> = {
+const AXIS_ICONS: Record<BuiltInPivotAxis, React.ReactNode> = {
   collections: <CollectionsIcon className="h-3.5 w-3.5" />,
   artists: <ArtistIcon className="h-3.5 w-3.5" />,
   tags: <TagIcon className="h-3.5 w-3.5" />,
@@ -34,9 +37,12 @@ const AXIS_ICONS: Record<PivotAxis, React.ReactNode> = {
  * Accepts axis and activeAxisValue as props so it's easily testable
  * without needing router/URL context.
  */
-export function Breadcrumb({ axis, activeAxisValue }: BreadcrumbProps) {
-  const axisLabel = AXIS_LABELS[axis];
-  const axisIcon = AXIS_ICONS[axis];
+export function Breadcrumb({ axis, activeAxisValue, metadataFieldName }: BreadcrumbProps) {
+  const metadataSlug = getMetadataAxisSlug(axis);
+  const axisLabel = metadataSlug ? metadataFieldName ?? metadataSlug : AXIS_LABELS[axis as BuiltInPivotAxis];
+  const axisIcon = metadataSlug
+    ? <MetadataIcon className="h-3.5 w-3.5" />
+    : AXIS_ICONS[axis as BuiltInPivotAxis];
 
   // Derive the current value label from the active axis value
   let valueLabel: string | null = null;
@@ -48,6 +54,8 @@ export function Breadcrumb({ axis, activeAxisValue }: BreadcrumbProps) {
     valueLabel = activeAxisValue.artist;
   } else if (axis === 'tags' && activeAxisValue.tags.length > 0) {
     valueLabel = activeAxisValue.tags.join(', ');
+  } else if (metadataSlug && activeAxisValue.metadata?.value) {
+    valueLabel = activeAxisValue.metadata.value;
   }
 
   const crumbs: Array<{ label: string; icon?: React.ReactNode }> = [
