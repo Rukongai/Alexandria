@@ -24,7 +24,7 @@ type CollectionDependency = Pick<
   typeof collectionService,
   'lockOwnedCollection' | 'bulkCollectionOperation'
 >;
-type StorageDependency = Pick<typeof storageService, 'delete'>;
+type StorageDependency = Pick<typeof storageService, 'deleteMany'>;
 
 export interface BulkDeleteResult {
   deletedCount: number;
@@ -89,15 +89,14 @@ export class BulkService {
       return { deletedIds, storagePaths };
     });
 
-    for (const storagePath of result.storagePaths) {
-      try {
-        await this.storage.delete(storagePath);
-      } catch (error) {
-        logger.warn(
-          { service: 'BulkService', storagePath, err: error },
-          'Best-effort bulk model storage cleanup failed',
-        );
-      }
+    // One request per ~100 objects rather than one per object: a bulk delete of
+    // a few models is otherwise thousands of sequential round trips.
+    const failures = await this.storage.deleteMany(result.storagePaths);
+    for (const failure of failures) {
+      logger.warn(
+        { service: 'BulkService', storagePath: failure.filePath, err: failure.reason },
+        'Best-effort bulk model storage cleanup failed',
+      );
     }
     return { deletedCount: result.deletedIds.length, deletedIds: result.deletedIds };
   }

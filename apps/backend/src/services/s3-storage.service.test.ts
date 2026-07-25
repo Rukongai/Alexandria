@@ -4,6 +4,7 @@ import {
   CopyObjectCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
@@ -17,6 +18,7 @@ import type { AppConfig } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
 import {
   S3_COPY_PART_SIZE,
+  S3_DELETE_BATCH_SIZE,
   S3_MULTIPART_PART_SIZE,
   S3_SINGLE_COPY_MAX_SIZE,
   S3StorageService,
@@ -68,6 +70,8 @@ async function toBuffer(value: Buffer | NodeJS.ReadableStream): Promise<Buffer> 
 class InMemoryS3Client {
   readonly objects = new Map<string, Buffer>();
   readonly multipartUploads = new Map<string, Buffer[]>();
+  /** Keys the fake provider refuses, to exercise per-key batch failures. */
+  readonly undeletableKeys = new Set<string>();
   private nextUploadId = 1;
   readonly send = vi.fn(async (command: unknown) => {
     if (command instanceof GetObjectCommand) {
@@ -83,6 +87,18 @@ class InMemoryS3Client {
     if (command instanceof DeleteObjectCommand) {
       this.objects.delete(command.input.Key!);
       return {};
+    }
+    if (command instanceof DeleteObjectsCommand) {
+      const errors: { Key: string; Code: string; Message: string }[] = [];
+      for (const { Key } of command.input.Delete?.Objects ?? []) {
+        if (this.undeletableKeys.has(Key!)) {
+          errors.push({ Key: Key!, Code: 'AccessDenied', Message: 'not allowed' });
+          continue;
+        }
+        this.objects.delete(Key!);
+      }
+      // S3 answers 200 with per-key errors in the body rather than failing.
+      return errors.length ? { Errors: errors } : {};
     }
     if (command instanceof CopyObjectCommand) {
       const decodedSource = decodeURIComponent(command.input.CopySource!);
@@ -310,6 +326,90 @@ describe('S3StorageService', () => {
       Key: 'alexandria/models/copied-large.stl',
       UploadId: 'upload-fail',
     });
+  });
+
+  it('should delete a batch in one request with the prefix applied', async () => {
+    const paths = ['models/a.stl', 'models/b.stl', 'models/nested/c.stl'];
+    for (const path of paths) client.objects.set(`alexandria/${path}`, Buffer.from('x'));
+
+    await expect(service.deleteMany(paths)).resolves.toEqual([]);
+
+    const deletes = client.send.mock.calls.filter(
+      ([command]) => command instanceof DeleteObjectsCommand,
+    );
+    expect(deletes).toHaveLength(1);
+    expect((deletes[0]![0] as DeleteObjectsCommand).input.Delete).toEqual({
+      Objects: [
+        { Key: 'alexandria/models/a.stl' },
+        { Key: 'alexandria/models/b.stl' },
+        { Key: 'alexandria/models/nested/c.stl' },
+      ],
+      Quiet: true,
+    });
+    expect(client.objects.size).toBe(0);
+  });
+
+  it('should split a large batch into provider-sized requests', async () => {
+    const paths = Array.from(
+      { length: S3_DELETE_BATCH_SIZE * 2 + 30 },
+      (_, index) => `models/file-${index}.stl`,
+    );
+    for (const path of paths) client.objects.set(`alexandria/${path}`, Buffer.from('x'));
+
+    await expect(service.deleteMany(paths)).resolves.toEqual([]);
+
+    const batches = client.send.mock.calls
+      .filter(([command]) => command instanceof DeleteObjectsCommand)
+      .map(([command]) => (command as DeleteObjectsCommand).input.Delete?.Objects?.length);
+    expect(batches).toEqual([S3_DELETE_BATCH_SIZE, S3_DELETE_BATCH_SIZE, 30]);
+    expect(client.objects.size).toBe(0);
+  });
+
+  it('should report per-key failures returned in a successful batch response', async () => {
+    const paths = ['models/ok.stl', 'models/locked.stl'];
+    for (const path of paths) client.objects.set(`alexandria/${path}`, Buffer.from('x'));
+    client.undeletableKeys.add('alexandria/models/locked.stl');
+
+    const failures = await service.deleteMany(paths);
+
+    // Reported against the logical path the caller passed, not the object key.
+    expect(failures).toEqual([
+      { filePath: 'models/locked.stl', reason: 'AccessDenied: not allowed' },
+    ]);
+    expect(client.objects.has('alexandria/models/ok.stl')).toBe(false);
+  });
+
+  it('should fail every key in a batch whose request itself is rejected', async () => {
+    client.send.mockRejectedValueOnce(
+      Object.assign(new Error('slow down'), {
+        name: 'SlowDown',
+        $metadata: { httpStatusCode: 503 },
+      }),
+    );
+
+    const failures = await service.deleteMany(['models/a.stl', 'models/b.stl']);
+
+    expect(failures.map((failure) => failure.filePath)).toEqual([
+      'models/a.stl',
+      'models/b.stl',
+    ]);
+    // Throttling has to be identifiable in the log, not flattened to a message.
+    expect(failures[0]?.reason).toContain('SlowDown');
+    expect(failures[0]?.reason).toContain('503');
+  });
+
+  it('should keep the provider error code when a store is throttled', async () => {
+    uploadMocks.done.mockRejectedValueOnce(
+      Object.assign(new Error('Please reduce your request rate.'), {
+        name: 'SlowDown',
+        $metadata: { httpStatusCode: 503 },
+      }),
+    );
+
+    const result = service.store('models/throttled.stl', Buffer.from('x'));
+
+    await expect(result).rejects.toMatchObject({ code: 'STORAGE_ERROR' });
+    await expect(result).rejects.toThrow(/SlowDown/);
   });
 
   it('should send delete for an absent key without first checking existence', async () => {

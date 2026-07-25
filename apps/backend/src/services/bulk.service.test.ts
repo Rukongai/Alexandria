@@ -22,7 +22,7 @@ function dependencies() {
       lockOwnedCollection: vi.fn().mockResolvedValue(undefined),
       bulkCollectionOperation: vi.fn().mockResolvedValue(undefined),
     },
-    storage: { delete: vi.fn().mockResolvedValue(undefined) },
+    storage: { deleteMany: vi.fn().mockResolvedValue([]) },
     database: {
       transaction: vi.fn().mockImplementation(async (callback) => callback(tx)),
     },
@@ -110,7 +110,7 @@ describe('BulkService scoped coordination', () => {
     expect(deps.collections.bulkCollectionOperation).not.toHaveBeenCalled();
     expect(deps.models.listModelStoragePaths).not.toHaveBeenCalled();
     expect(deps.models.deleteModels).not.toHaveBeenCalled();
-    expect(deps.storage.delete).not.toHaveBeenCalled();
+    expect(deps.storage.deleteMany).not.toHaveBeenCalled();
   });
 
   it('should reject a wrong-library collection before collection mutation', async () => {
@@ -132,9 +132,9 @@ describe('BulkService scoped coordination', () => {
       'models/castle/cover.webp',
     ]);
     deps.models.deleteModels.mockResolvedValue([OTHER_MODEL_ID, MODEL_ID]);
-    deps.storage.delete
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error('storage unavailable'));
+    deps.storage.deleteMany.mockResolvedValue([
+      { filePath: 'models/castle/cover.webp', reason: 'storage unavailable' },
+    ]);
 
     const result = await serviceWith(deps).deleteModels(
       { modelIds: [OTHER_MODEL_ID, MODEL_ID] },
@@ -150,10 +150,10 @@ describe('BulkService scoped coordination', () => {
       .toHaveBeenCalledBefore(deps.models.listModelStoragePaths);
     expect(deps.models.listModelStoragePaths)
       .toHaveBeenCalledBefore(deps.models.deleteModels);
-    expect(deps.models.deleteModels).toHaveBeenCalledBefore(deps.storage.delete);
-    expect(deps.storage.delete.mock.calls).toEqual([
-      ['models/dragon/model.stl'],
-      ['models/castle/cover.webp'],
+    expect(deps.models.deleteModels).toHaveBeenCalledBefore(deps.storage.deleteMany);
+    // One batched call, not one request per object.
+    expect(deps.storage.deleteMany.mock.calls).toEqual([
+      [['models/dragon/model.stl', 'models/castle/cover.webp']],
     ]);
     expect(result).toEqual({ deletedCount: 2, deletedIds: sortedIds });
   });
