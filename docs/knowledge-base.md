@@ -65,13 +65,13 @@ The API uses a consistent `{ data, meta, errors }` envelope on every response wi
 
 ## Deployment
 
-The default deployment runs four Docker Compose services: Postgres 16, Redis 7, the backend (Fastify on port 3001), and the frontend (Nginx on port 80). A supplied Compose override replaces the local Postgres service with a generic hosted PostgreSQL connection while Redis, the backend, and the frontend continue to run locally. The backend and frontend use published container images. All local services have healthchecks, and SQL migration files are included in the backend image so migrations run automatically against either database location.
+The default deployment runs four Docker Compose services: Postgres 16, Redis 7, the backend (Fastify on loopback port 3001), and the frontend (Nginx on port 80). Postgres and Redis host ports also bind to loopback. A supplied Compose override replaces the local Postgres service with a generic hosted PostgreSQL connection while Redis, the backend, and the frontend continue to run locally. The backend and frontend can be pulled from GHCR or built from source with multi-stage Dockerfiles. All local services have healthchecks; the backend waits for Postgres and Redis to be healthy before starting. SQL migration files are copied into the backend image at build time so migrations run automatically against either database location without the runtime container needing access to source directories. GitHub Actions validates both images on relevant pull requests and promotes paired multi-architecture AMD64/ARM64 tags with SBOM and provenance metadata from `main` and version tags only after both builds succeed.
 
 The backend keeps a persistent PostgreSQL pool. Its base maximum is 10 connections; the hosted-database Compose override defaults to 5. Hosted connections should use verified TLS. With Supabase, a direct connection is preferred for long-running containers when IPv6 works, with Supavisor session mode as the IPv4 fallback. Transaction mode is not appropriate because Alexandria runs migrations at startup and keeps pooled sessions open. Alexandria uses its own API and authentication rather than Supabase's Data API, Auth, or client libraries.
 
 Managed storage defaults to a named Docker volume mounted at `/data/storage` inside the backend container. It can instead use a private S3-compatible bucket, including MEGA S4; the local volume remains mounted for migration and rollback. In the default local stack, Postgres and Redis data also use named volumes that survive container restarts.
 
-Default credentials (`admin@alexandria.local` / `changeme`) are applied by the auto-seed on first startup. Override them with the `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables before first run.
+The auto-seed uses `admin@alexandria.local` as the default email, but Docker Compose requires the operator to provide `SEED_ADMIN_PASSWORD` before startup. `SEED_ADMIN_EMAIL` and `SEED_ADMIN_DISPLAY_NAME` can also be set before the first run. Seed values do not overwrite an existing account.
 
 ## Current Status
 

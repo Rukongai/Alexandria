@@ -1,18 +1,60 @@
-name: Build and Push Docker Images
+name: Docker images
 
 on:
   push:
     branches:
       - main
+    tags:
+      - "v*.*.*"
+  pull_request:
+    paths:
+      - ".github/workflows/docker-build.yml"
+      - ".dockerignore"
+      - ".env.example"
+      - "compose.yaml"
+      - "docker/**"
+      - "apps/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.base.json"
+      - "turbo.json"
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.ref }}
+  # Never interrupt a paired tag promotion halfway through a push workflow.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+permissions:
+  contents: read
 
 jobs:
-  build-and-push:
+  compose:
+    name: Validate Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        env:
+          AI_ENCRYPTION_KEY: ci-only-not-for-production-000000
+          POSTGRES_PASSWORD: ci-only-not-for-production
+          SEED_ADMIN_PASSWORD: ci-only-not-for-production
+          SESSION_SECRET: ci-only-not-for-production-111111
+        run: docker compose config --quiet
+
+  build:
+    name: Build ${{ matrix.name }} image
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
+      attestations: write
+      id-token: write
     strategy:
+      fail-fast: false
       matrix:
         include:
           - name: backend
@@ -23,9 +65,47 @@ jobs:
             image: ghcr.io/rukongai/alexandria-frontend
 
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ matrix.image }}:staging-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          provenance: ${{ github.event_name == 'push' }}
+          sbom: ${{ github.event_name == 'push' }}
+
+  publish:
+    name: Publish paired image tags
+    if: github.event_name == 'push'
+    needs:
+      - build
+      - compose
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -36,14 +116,48 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ${{ matrix.name }} image
-        uses: docker/build-push-action@v6
+      - name: Generate backend image metadata
+        id: backend-meta
+        uses: docker/metadata-action@v5
         with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
+          images: ghcr.io/rukongai/alexandria-backend
+          flavor: latest=false
           tags: |
-            ${{ matrix.image }}:latest
-            ${{ matrix.image }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Generate frontend image metadata
+        id: frontend-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/rukongai/alexandria-frontend
+          flavor: latest=false
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Promote backend and frontend tags
+        env:
+          BACKEND_TAGS: ${{ steps.backend-meta.outputs.tags }}
+          FRONTEND_TAGS: ${{ steps.frontend-meta.outputs.tags }}
+        run: |
+          promote() {
+            local source="$1"
+            local tags="$2"
+            local args=()
+            while IFS= read -r tag; do
+              if [[ -n "$tag" ]]; then
+                args+=(--tag "$tag")
+              fi
+            done <<< "$tags"
+            docker buildx imagetools create "${args[@]}" "$source"
+          }
+
+          promote "ghcr.io/rukongai/alexandria-backend:staging-${GITHUB_SHA}" "$BACKEND_TAGS"
+          promote "ghcr.io/rukongai/alexandria-frontend:staging-${GITHUB_SHA}" "$FRONTEND_TAGS"

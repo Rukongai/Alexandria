@@ -1,0 +1,106 @@
+# Keep the original project identity so existing docker_* named volumes remain attached.
+name: docker
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-alexandria}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before first startup}
+      POSTGRES_DB: ${POSTGRES_DB:-alexandria}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+      target: production
+    image: ghcr.io/rukongai/alexandria-backend:${ALEXANDRIA_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-3001}:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-alexandria}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before first startup}@postgres:5432/${POSTGRES_DB:-alexandria}
+      REDIS_URL: redis://redis:6379
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_PATH: /data/storage
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_PREFIX: ${S3_PREFIX:-}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET to a long random secret}
+      AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:?Set AI_ENCRYPTION_KEY to a long random secret}
+      AI_ALLOW_PRIVATE_PROVIDER_URLS: ${AI_ALLOW_PRIVATE_PROVIDER_URLS:-false}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@alexandria.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?Set SEED_ADMIN_PASSWORD before first startup}
+      SEED_ADMIN_DISPLAY_NAME: ${SEED_ADMIN_DISPLAY_NAME:-Admin}
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      NODE_ENV: production
+    volumes:
+      # Retained for local storage, local-to-S3 migration, and rollback.
+      - storagedata:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+      target: production
+    image: ghcr.io/rukongai/alexandria-frontend:${ALEXANDRIA_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  pgdata:
+  redisdata:
+  storagedata:
