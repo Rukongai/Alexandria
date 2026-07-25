@@ -531,15 +531,38 @@ interface DuplicateGroup {
   models: DuplicateModel[];  // oldest first; UUID breaks equal-timestamp ties
 }
 
+interface DuplicateFile {
+  id: string;
+  modelId: string;
+  modelName: string;
+  filename: string;
+  relativePath: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+interface DuplicateFileGroup {
+  hash: string;                // exact SHA-256 shared by every file in the group
+  sizeBytes: number;           // stored size of the oldest file candidate
+  reclaimableBytes: number;    // summed sizes of every later file candidate
+  files: DuplicateFile[];
+}
+
 interface DuplicateScanResult {
   scannedModelCount: number;   // ready, non-empty models considered
+  scannedFileCount: number;    // files read from those models
   redundantModelCount: number; // duplicate copies beyond the oldest model in each group
+  redundantFileCount: number;  // duplicate files beyond the oldest file in each group
   reclaimableBytes: number;
+  fileReclaimableBytes: number;
   groups: DuplicateGroup[];
+  fileGroups: DuplicateFileGroup[];
 }
 ```
 
-Duplicate identity uses the complete sorted multiset of per-file SHA-256 hashes. File order, filenames, and relative paths are ignored, but hash multiplicity is preserved. Models that are not `ready` or contain no files are excluded. Groups are ordered by their oldest model, using model UUID and then fingerprint as deterministic tie-breakers. These response types describe a report only; scanning does not delete, merge, or otherwise modify a model.
+PostgreSQL aggregates each `ready`, non-empty model's file hashes into one model row and returns file detail only for hashes that occur more than once in the same scope. Individual file identity is exact SHA-256 equality. Whole-model identity uses the complete sorted multiset of per-file SHA-256 hashes. File order, filenames, and relative paths are ignored, but hash multiplicity is preserved. Models that are not `ready` or contain no files are excluded.
+
+Files within a `DuplicateFileGroup` are ordered by file creation time and file UUID, with owning model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Models within a `DuplicateGroup` are ordered by creation time and UUID; whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. `fileReclaimableBytes` is independent from `reclaimableBytes` and can describe some of the same stored data, so the two estimates must not be added together. These response types describe a report only; scanning does not delete, merge, or otherwise modify a model or file.
 
 ### Metadata Response Types
 

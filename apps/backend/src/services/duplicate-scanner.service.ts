@@ -21,9 +21,27 @@ export interface DuplicateScanGroup {
   models: DuplicateScanCandidate[];
 }
 
+export interface DuplicateFileScanCandidate {
+  id: string;
+  modelId: string;
+  modelName: string;
+  filename: string;
+  relativePath: string;
+  sizeBytes: number;
+  createdAt: Date;
+  modelCreatedAt: Date;
+}
+
+export interface DuplicateFileScanGroup {
+  hash: string;
+  files: DuplicateFileScanCandidate[];
+}
+
 export interface DuplicateScan {
   scannedModelCount: number;
+  scannedFileCount: number;
   groups: DuplicateScanGroup[];
+  fileGroups: DuplicateFileScanGroup[];
 }
 
 export interface IDuplicateScannerService {
@@ -31,8 +49,9 @@ export interface IDuplicateScannerService {
 }
 
 /**
- * Finds exact model duplicates from their complete multisets of per-file
- * SHA-256 hashes. File names and paths deliberately do not participate.
+ * Finds duplicate files by SHA-256 and exact model duplicates from their
+ * complete multisets of per-file SHA-256 hashes. Names and paths deliberately
+ * do not participate in either identity.
  */
 export class DuplicateScannerService implements IDuplicateScannerService {
   private readonly inFlightByLibrary = new Map<string, Promise<DuplicateScan>>();
@@ -58,9 +77,11 @@ export class DuplicateScannerService implements IDuplicateScannerService {
   }
 
   private async runScan(libraryId: string): Promise<DuplicateScan> {
-    // Aggregate in PostgreSQL so one row crosses the database boundary per
-    // eligible model rather than one repeated model row per stored file.
-    const rows = await this.database
+    // Keep the complete hash multiset aggregation in PostgreSQL so unique-file
+    // detail does not cross the database boundary. The second query returns
+    // candidate detail only for hashes that occur more than once in this same
+    // ready-model/library scope.
+    const modelRowsQuery = this.database
       .select({
         id: models.id,
         name: models.name,
@@ -75,11 +96,66 @@ export class DuplicateScannerService implements IDuplicateScannerService {
       .groupBy(models.id)
       .orderBy(asc(models.createdAt), asc(models.id));
 
-    const groupsByHashMultiset = new Map<string, DuplicateScanGroup>();
+    const duplicateFileRowsQuery = this.database
+      .select({
+        modelId: models.id,
+        modelName: models.name,
+        modelCreatedAt: models.createdAt,
+        fileId: modelFiles.id,
+        filename: modelFiles.filename,
+        relativePath: modelFiles.relativePath,
+        fileSizeBytes: modelFiles.sizeBytes,
+        fileCreatedAt: modelFiles.createdAt,
+        hash: modelFiles.hash,
+      })
+      .from(models)
+      .innerJoin(modelFiles, eq(modelFiles.modelId, models.id))
+      .where(and(
+        eq(models.libraryId, libraryId),
+        eq(models.status, 'ready'),
+        sql<boolean>`${modelFiles.hash} in (
+          select duplicate_file.hash
+          from model_files as duplicate_file
+          inner join models as duplicate_model on duplicate_model.id = duplicate_file.model_id
+          where duplicate_model.library_id = ${libraryId}
+            and duplicate_model.status = 'ready'
+          group by duplicate_file.hash
+          having count(*) > 1
+        )`,
+      ))
+      .orderBy(
+        asc(modelFiles.createdAt),
+        asc(modelFiles.id),
+        asc(modelFiles.hash),
+      );
 
-    for (const row of rows) {
+    const [modelRows, duplicateFileRows] = await Promise.all([
+      modelRowsQuery,
+      duplicateFileRowsQuery,
+    ]);
+
+    const filesByHash = new Map<string, DuplicateFileScanCandidate[]>();
+
+    for (const row of duplicateFileRows) {
+      const file: DuplicateFileScanCandidate = {
+        id: row.fileId,
+        modelId: row.modelId,
+        modelName: row.modelName,
+        filename: row.filename,
+        relativePath: row.relativePath,
+        sizeBytes: row.fileSizeBytes,
+        createdAt: row.fileCreatedAt,
+        modelCreatedAt: row.modelCreatedAt,
+      };
+      const matchingFiles = filesByHash.get(row.hash);
+      if (matchingFiles) matchingFiles.push(file);
+      else filesByHash.set(row.hash, [file]);
+    }
+
+    const groupsByHashMultiset = new Map<string, DuplicateScanGroup>();
+    for (const row of modelRows) {
       // JSON supplies unambiguous element boundaries. Repeated hashes remain
-      // repeated, so multiplicity is part of the exact content identity.
+      // repeated, so multiplicity is part of the exact model identity.
       const hashMultisetKey = JSON.stringify(row.hashes);
       const existing = groupsByHashMultiset.get(hashMultisetKey);
       const candidate: DuplicateScanCandidate = {
@@ -105,15 +181,26 @@ export class DuplicateScannerService implements IDuplicateScannerService {
       .filter((group) => group.models.length > 1)
       .map((group) => ({ ...group, models: [...group.models].sort(compareCandidates) }))
       .sort(compareGroups);
+    const fileGroups = [...filesByHash.entries()]
+      .filter(([, files]) => files.length > 1)
+      .map(([hash, files]) => ({ hash, files: [...files].sort(compareFileCandidates) }))
+      .sort(compareFileGroups);
 
-    const result: DuplicateScan = { scannedModelCount: rows.length, groups };
+    const result: DuplicateScan = {
+      scannedModelCount: modelRows.length,
+      scannedFileCount: modelRows.reduce((sum, row) => sum + row.hashes.length, 0),
+      groups,
+      fileGroups,
+    };
 
     logger.debug(
       {
         service: 'DuplicateScannerService',
         libraryId,
         scannedModelCount: result.scannedModelCount,
-        duplicateGroupCount: result.groups.length,
+        scannedFileCount: result.scannedFileCount,
+        duplicateModelGroupCount: result.groups.length,
+        duplicateFileGroupCount: result.fileGroups.length,
       },
       'Completed duplicate scan',
     );
@@ -132,6 +219,22 @@ function compareGroups(left: DuplicateScanGroup, right: DuplicateScanGroup): num
   return leftOldest.createdAt.getTime() - rightOldest.createdAt.getTime()
     || compareStrings(leftOldest.id, rightOldest.id)
     || compareStrings(left.fingerprint, right.fingerprint);
+}
+
+function compareFileCandidates(
+  left: DuplicateFileScanCandidate,
+  right: DuplicateFileScanCandidate,
+): number {
+  return left.createdAt.getTime() - right.createdAt.getTime()
+    || compareStrings(left.id, right.id)
+    || left.modelCreatedAt.getTime() - right.modelCreatedAt.getTime()
+    || compareStrings(left.modelId, right.modelId);
+}
+
+function compareFileGroups(left: DuplicateFileScanGroup, right: DuplicateFileScanGroup): number {
+  return left.files[0].createdAt.getTime() - right.files[0].createdAt.getTime()
+    || compareStrings(left.hash, right.hash)
+    || compareStrings(left.files[0].id, right.files[0].id);
 }
 
 function compareStrings(left: string, right: string): number {

@@ -1474,13 +1474,13 @@ Tools are library maintenance operations exposed from the library-scoped Tools p
 
 ### GET /tools/duplicates
 
-Scan the active library for exact duplicate model contents. The scan is read-only and synchronous; it reports candidates but does not merge, delete, or otherwise modify models or files.
+Scan the active library for exact duplicate files and exact duplicate model contents. The scan is read-only and synchronous; it reports candidates but does not merge, delete, or otherwise modify models or files.
 
 **Auth required:** Yes. The route applies `requireAuth` followed by `requireLibrary`.
 
 **Library scope:** Required. `X-Library-Id` selects the active owned library; when the header is absent, the user's default library is used. An unknown or un-owned library returns `404 NOT_FOUND`.
 
-Only `ready` models with at least one file are scanned. Two models are duplicates only when their complete sorted multisets of per-file SHA-256 hashes match. Sorting makes file order irrelevant, while treating the hashes as a multiset preserves multiplicity: a model containing two copies of a file does not match a model containing one copy. Filenames and relative paths do not participate in matching.
+Only `ready` models with at least one file are scanned. PostgreSQL aggregates each eligible model's file hashes into one model row and returns individual file detail only for hashes that occur more than once in the same library/status scope. Individual files are duplicates when their SHA-256 hashes match. Two models are duplicates only when their complete sorted multisets of per-file SHA-256 hashes match. Sorting makes file order irrelevant, while treating the hashes as a multiset preserves multiplicity: a model containing two copies of a file does not match a model containing one copy. Filenames and relative paths do not participate in either comparison.
 
 **Response (200):**
 
@@ -1488,26 +1488,90 @@ Only `ready` models with at least one file are scanned. Two models are duplicate
 {
   "data": {
     "scannedModelCount": 3,
+    "scannedFileCount": 6,
     "redundantModelCount": 1,
-    "reclaimableBytes": 8388608,
+    "redundantFileCount": 3,
+    "reclaimableBytes": 1000,
+    "fileReclaimableBytes": 1100,
     "groups": [
       {
         "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "fileCount": 4,
-        "totalSizeBytes": 8388608,
-        "reclaimableBytes": 8388608,
+        "fileCount": 2,
+        "totalSizeBytes": 1000,
+        "reclaimableBytes": 1000,
         "models": [
           {
-            "id": "uuid",
+            "id": "11111111-1111-4111-8111-111111111111",
             "name": "Dragon Bust",
             "originalFilename": "dragon-bust.zip",
             "createdAt": "2026-01-15T10:30:00.000Z"
           },
           {
-            "id": "uuid",
+            "id": "22222222-2222-4222-8222-222222222222",
             "name": "Dragon Bust Copy",
             "originalFilename": "renamed-copy.zip",
             "createdAt": "2026-02-01T12:00:00.000Z"
+          }
+        ]
+      }
+    ],
+    "fileGroups": [
+      {
+        "hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sizeBytes": 100,
+        "reclaimableBytes": 200,
+        "files": [
+          {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+            "modelId": "11111111-1111-4111-8111-111111111111",
+            "modelName": "Dragon Bust",
+            "filename": "dragon-head.stl",
+            "relativePath": "parts/dragon-head.stl",
+            "sizeBytes": 100,
+            "createdAt": "2026-01-15T10:31:00.000Z"
+          },
+          {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+            "modelId": "22222222-2222-4222-8222-222222222222",
+            "modelName": "Dragon Bust Copy",
+            "filename": "renamed-head.stl",
+            "relativePath": "renamed-head.stl",
+            "sizeBytes": 100,
+            "createdAt": "2026-02-01T12:01:00.000Z"
+          },
+          {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+            "modelId": "33333333-3333-4333-8333-333333333333",
+            "modelName": "Dragon Bust Variant",
+            "filename": "dragon-head.stl",
+            "relativePath": "variant/dragon-head.stl",
+            "sizeBytes": 100,
+            "createdAt": "2026-03-01T09:01:00.000Z"
+          }
+        ]
+      },
+      {
+        "hash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sizeBytes": 900,
+        "reclaimableBytes": 900,
+        "files": [
+          {
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+            "modelId": "11111111-1111-4111-8111-111111111111",
+            "modelName": "Dragon Bust",
+            "filename": "dragon-base.stl",
+            "relativePath": "parts/dragon-base.stl",
+            "sizeBytes": 900,
+            "createdAt": "2026-01-15T10:32:00.000Z"
+          },
+          {
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+            "modelId": "22222222-2222-4222-8222-222222222222",
+            "modelName": "Dragon Bust Copy",
+            "filename": "base-copy.stl",
+            "relativePath": "base-copy.stl",
+            "sizeBytes": 900,
+            "createdAt": "2026-02-01T12:02:00.000Z"
           }
         ]
       }
@@ -1518,7 +1582,11 @@ Only `ready` models with at least one file are scanned. Two models are duplicate
 }
 ```
 
-`data` is a `DuplicateScanResult`; each member of `groups` is a `DuplicateGroup`, whose `models` are `DuplicateModel` values. The fingerprint is the SHA-256 digest of the encoded sorted file-hash multiset and should be treated as an opaque group identifier. Models within a group are oldest-first, with UUID as the equal-timestamp tie-breaker; groups are likewise ordered by their oldest model. `scannedModelCount` counts eligible models whether or not they belong to a duplicate group. `redundantModelCount` counts duplicate copies beyond the oldest model in each group. Group and scan `reclaimableBytes` sum the stored sizes of those later copies; `totalSizeBytes` is the oldest model's stored total. These values are estimates only—the decision and any deletion remain manual.
+`data` is a `DuplicateScanResult`. Each member of `groups` is a `DuplicateGroup`, whose `models` are `DuplicateModel` values. The fingerprint is the SHA-256 digest of the encoded sorted file-hash multiset and should be treated as an opaque group identifier. Models within a group are oldest-first, with UUID as the equal-timestamp tie-breaker; groups are likewise ordered by their oldest model. `scannedModelCount` counts eligible models whether or not they belong to a duplicate group. `redundantModelCount` counts duplicate copies beyond the oldest model in each group. Group and scan `reclaimableBytes` sum the stored sizes of those later copies; `totalSizeBytes` is the oldest model's stored total.
+
+Each member of `fileGroups` is a `DuplicateFileGroup`, whose `files` are `DuplicateFile` values. `scannedFileCount` counts all files read from eligible models. Within a file group, candidates are ordered by file creation time and file UUID, with owning model creation time and model UUID as later tie-breakers. `sizeBytes` is the oldest candidate's stored size, while `reclaimableBytes` sums every later candidate's size. `redundantFileCount` and `fileReclaimableBytes` aggregate those later candidates across all file groups. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID.
+
+The example's `Dragon Bust Variant` has one file identical to both whole-model copies but different remaining content, so it appears in a file group without joining the whole-model group. File-level savings are independent from and may overlap whole-model savings; do not add `fileReclaimableBytes` to `reclaimableBytes`. All byte values are estimates only—the decision and any deletion remain manual.
 
 ---
 

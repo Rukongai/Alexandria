@@ -33,13 +33,19 @@ describe('Tools routes', () => {
     vi.clearAllMocks();
     mocks.scanDuplicates.mockResolvedValue({
       scannedModelCount: 2,
+      scannedFileCount: 4,
       groups: [],
+      fileGroups: [],
     });
     mocks.buildDuplicateScanResult.mockReturnValue({
       scannedModelCount: 2,
+      scannedFileCount: 4,
       redundantModelCount: 1,
+      redundantFileCount: 2,
       reclaimableBytes: 1024,
+      fileReclaimableBytes: 512,
       groups: [],
+      fileGroups: [],
     });
     app = Fastify();
     await app.register(toolsRoutes, { prefix: '/tools' });
@@ -61,7 +67,9 @@ describe('Tools routes', () => {
     expect(mocks.scanDuplicates).toHaveBeenCalledWith(LIBRARY_ID);
     expect(mocks.buildDuplicateScanResult).toHaveBeenCalledWith({
       scannedModelCount: 2,
+      scannedFileCount: 4,
       groups: [],
+      fileGroups: [],
     });
   });
 
@@ -71,9 +79,13 @@ describe('Tools routes', () => {
     expect(response.json()).toEqual({
       data: {
         scannedModelCount: 2,
+        scannedFileCount: 4,
         redundantModelCount: 1,
+        redundantFileCount: 2,
         reclaimableBytes: 1024,
+        fileReclaimableBytes: 512,
         groups: [],
+        fileGroups: [],
       },
       meta: null,
       errors: null,
