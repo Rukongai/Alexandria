@@ -9,6 +9,7 @@ import pytest
 from alexandria_telegram_importer.folder_upload import (
     build_upload_paths,
     discover,
+    dispose,
     plan_models_dir,
 )
 
@@ -261,3 +262,90 @@ def test_should_report_a_split_set_as_multipart(tmp_path) -> None:
         "dragon.part1.rar",
         "dragon.part2.rar",
     ]
+
+
+def test_should_move_a_successful_folder_under_uploaded_preserving_its_path(
+    tmp_path,
+) -> None:
+    release = tmp_path / "002501-dragon-set"
+    release.mkdir()
+    (release / "metadata.json").write_text(
+        json.dumps({"artist": "Foo"}), encoding="utf-8"
+    )
+    folder = make_folder(release / "knight", models=["knight.zip"])
+
+    destination = dispose(folder, tmp_path, "uploaded", {"modelId": "abc"})
+
+    assert destination == tmp_path / "uploaded" / "002501-dragon-set" / "knight"
+    assert (destination / "models" / "knight.zip").is_file()
+    assert not folder.exists()
+
+
+def test_should_copy_container_metadata_alongside_a_disposed_folder(tmp_path) -> None:
+    release = tmp_path / "002501-dragon-set"
+    release.mkdir()
+    (release / "metadata.json").write_text(
+        json.dumps({"artist": "Foo"}), encoding="utf-8"
+    )
+    make_folder(release / "knight", models=["knight.zip"])
+    make_folder(release / "mage", models=["mage.zip"])
+
+    dispose(release / "knight", tmp_path, "uploaded", {"modelId": "abc"})
+
+    copied = tmp_path / "uploaded" / "002501-dragon-set" / "metadata.json"
+    assert json.loads(copied.read_text(encoding="utf-8"))["artist"] == "Foo"
+    assert (release / "metadata.json").is_file()
+    assert (release / "mage").is_dir()
+
+
+def test_should_write_the_result_into_the_disposed_metadata(tmp_path) -> None:
+    folder = make_folder(
+        tmp_path / "002501-dragon", models=["a.zip"], metadata={"modelName": "Dragon"}
+    )
+
+    destination = dispose(folder, tmp_path, "uploaded", {"modelId": "abc"})
+    payload = json.loads((destination / "metadata.json").read_text(encoding="utf-8"))
+
+    assert payload["result"] == {"modelId": "abc"}
+    assert payload["modelName"] == "Dragon"
+
+
+def test_should_write_a_result_even_when_the_folder_had_no_metadata(tmp_path) -> None:
+    folder = make_folder(tmp_path / "002501-dragon", models=["a.zip"])
+
+    destination = dispose(folder, tmp_path, "failed", {"error": "boom"})
+    payload = json.loads((destination / "metadata.json").read_text(encoding="utf-8"))
+
+    assert payload["result"] == {"error": "boom"}
+
+
+def test_should_remove_a_container_left_with_no_model_folders(tmp_path) -> None:
+    release = tmp_path / "002501-dragon-set"
+    release.mkdir()
+    (release / "metadata.json").write_text(json.dumps({}), encoding="utf-8")
+    make_folder(release / "knight", models=["knight.zip"])
+
+    dispose(release / "knight", tmp_path, "uploaded", {"modelId": "abc"})
+
+    assert not release.exists()
+
+
+def test_should_keep_a_container_that_still_holds_model_folders(tmp_path) -> None:
+    release = tmp_path / "002501-dragon-set"
+    release.mkdir()
+    make_folder(release / "knight", models=["knight.zip"])
+    make_folder(release / "mage", models=["mage.zip"])
+
+    dispose(release / "knight", tmp_path, "uploaded", {"modelId": "abc"})
+
+    assert release.is_dir()
+    assert (release / "mage").is_dir()
+
+
+def test_should_suffix_a_disposal_that_collides_with_an_earlier_one(tmp_path) -> None:
+    (tmp_path / "uploaded" / "dragon").mkdir(parents=True)
+    folder = make_folder(tmp_path / "dragon", models=["a.zip"])
+
+    destination = dispose(folder, tmp_path, "uploaded", {"modelId": "abc"})
+
+    assert destination.name == "dragon-2"

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .folder_metadata import merge_chain, model_name_from_folder, read_metadata
+from .folder_metadata import (
+    METADATA_FILENAME,
+    merge_chain,
+    model_name_from_folder,
+    read_metadata,
+    write_metadata,
+)
 from .grouping import (
     ARCHIVE_EXTENSIONS,
     multipart_part_role,
@@ -15,6 +22,7 @@ from .grouping import (
     validate_logical_model,
 )
 from .models import MediaKind, MediaRef
+from .staging import unique_child
 
 log = logging.getLogger(__name__)
 
@@ -190,3 +198,46 @@ def build_upload_paths(
             if path.is_file():
                 archive.write(path, arcname=str(path.relative_to(models_dir)))
     return (archive_path,), False
+
+
+def dispose(
+    folder: Path, root: Path, destination_dirname: str, result: dict[str, Any]
+) -> Path:
+    """Move one settled model folder under uploaded/ or failed/.
+
+    The path relative to the staging root is preserved, so a release that
+    settles a few folders at a time stays recognizable, and each ancestor's
+    metadata.json is copied so the archived copy still carries its defaults.
+    """
+    relative = folder.relative_to(root)
+    destination_parent = root / destination_dirname / relative.parent
+    destination_parent.mkdir(parents=True, exist_ok=True)
+    destination = unique_child(destination_parent, folder.name)
+
+    payload = read_metadata(folder) or {}
+    payload["result"] = result
+    write_metadata(folder, payload)
+
+    shutil.move(str(folder), str(destination))
+
+    ancestor = folder.parent
+    mirrored = destination_parent
+    while ancestor != root:
+        source_metadata = ancestor / METADATA_FILENAME
+        if source_metadata.is_file() and not (mirrored / METADATA_FILENAME).exists():
+            shutil.copy2(source_metadata, mirrored / METADATA_FILENAME)
+        ancestor = ancestor.parent
+        mirrored = mirrored.parent
+
+    _prune_empty_containers(folder.parent, root)
+    return destination
+
+
+def _prune_empty_containers(directory: Path, root: Path) -> None:
+    """Remove containers that no longer hold any model folder."""
+    while directory != root and directory.is_dir():
+        remaining, ambiguous = discover(directory)
+        if remaining or ambiguous:
+            return
+        shutil.rmtree(directory, ignore_errors=True)
+        directory = directory.parent
