@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import type { IgnoreDuplicatesResult, MarkDuplicatesResult } from '@alexandria/shared';
 import { db } from '../db/index.js';
 import type { DatabaseExecutor } from '../db/index.js';
@@ -9,9 +9,12 @@ import {
   modelFiles,
   models,
 } from '../db/schema/index.js';
+import { notFound } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('DuplicateScannerService');
+const MAX_SERIALIZABLE_ATTEMPTS = 3;
+const RETRYABLE_TRANSACTION_CODES = new Set(['40001', '40P01']);
 
 export interface DuplicateScanCandidate {
   id: string;
@@ -53,7 +56,8 @@ export interface DuplicateScan {
 export interface IDuplicateScannerService {
   scanDuplicates(libraryId: string): Promise<DuplicateScan>;
   markDuplicates(libraryId: string): Promise<MarkDuplicatesResult>;
-  ignoreDuplicates(libraryId: string): Promise<IgnoreDuplicatesResult>;
+  markDuplicateFileGroup(libraryId: string, hash: string): Promise<MarkDuplicatesResult>;
+  ignoreDuplicateFileGroup(libraryId: string, hash: string): Promise<IgnoreDuplicatesResult>;
   reconcileDuplicateFlags(
     libraryId: string,
     executor?: DatabaseExecutor,
@@ -90,40 +94,41 @@ export class DuplicateScannerService implements IDuplicateScannerService {
 
   /** Mark exactly the current, non-ignored duplicate candidates in one transaction. */
   async markDuplicates(libraryId: string): Promise<MarkDuplicatesResult> {
-    return this.withTransaction(async (tx) => {
+    return this.withSerializableTransaction(
+      (tx) => this.reconcileFlags(libraryId, tx, { markAll: true }),
+    );
+  }
+
+  /** Mark one current, non-ignored file group while preserving other current marks. */
+  async markDuplicateFileGroup(libraryId: string, hash: string): Promise<MarkDuplicatesResult> {
+    return this.withSerializableTransaction(async (tx) => {
       const scan = await this.runScan(libraryId, tx);
-      return this.reconcileFlagsFromScan(libraryId, scan, tx);
+      const group = scan.fileGroups.find((candidate) => candidate.hash === hash);
+      if (!group) throw notFound('Duplicate file group not found');
+
+      return this.reconcileFlags(libraryId, tx, { markHash: group.hash });
     });
   }
 
-  /** Persist every currently reported duplicate key, then clear stale review flags. */
-  async ignoreDuplicates(libraryId: string): Promise<IgnoreDuplicatesResult> {
-    const result = await this.withTransaction(async (tx) => {
+  /** Persist one current file-group key, then clear its review flags. */
+  async ignoreDuplicateFileGroup(libraryId: string, hash: string): Promise<IgnoreDuplicatesResult> {
+    const result = await this.withSerializableTransaction(async (tx) => {
       const scan = await this.runScan(libraryId, tx);
+      const group = scan.fileGroups.find((candidate) => candidate.hash === hash);
+      if (!group) throw notFound('Duplicate file group not found');
 
-      if (scan.fileGroups.length > 0) {
-        await tx
-          .insert(duplicateFileIgnores)
-          .values(scan.fileGroups.map((group) => ({ libraryId, hash: group.hash })))
-          .onConflictDoNothing({
-            target: [duplicateFileIgnores.libraryId, duplicateFileIgnores.hash],
-          });
-      }
-      if (scan.groups.length > 0) {
-        await tx
-          .insert(duplicateModelIgnores)
-          .values(scan.groups.map((group) => ({ libraryId, fingerprint: group.fingerprint })))
-          .onConflictDoNothing({
-            target: [duplicateModelIgnores.libraryId, duplicateModelIgnores.fingerprint],
-          });
-      }
+      await tx
+        .insert(duplicateFileIgnores)
+        .values({ libraryId, hash: group.hash })
+        .onConflictDoNothing({
+          target: [duplicateFileIgnores.libraryId, duplicateFileIgnores.hash],
+        });
 
-      const remaining = await this.runScan(libraryId, tx);
-      await this.reconcileFlagsFromScan(libraryId, remaining, tx);
+      await this.reconcileFlags(libraryId, tx);
 
       return {
-        ignoredFileGroupCount: scan.fileGroups.length,
-        ignoredModelGroupCount: scan.groups.length,
+        ignoredFileGroupCount: 1,
+        ignoredModelGroupCount: 0,
       };
     });
 
@@ -140,8 +145,7 @@ export class DuplicateScannerService implements IDuplicateScannerService {
     libraryId: string,
     executor: DatabaseExecutor = this.database,
   ): Promise<MarkDuplicatesResult> {
-    const scan = await this.runScan(libraryId, executor);
-    return this.reconcileFlagsFromScan(libraryId, scan, executor);
+    return this.reconcileFlags(libraryId, executor);
   }
 
   private async runScan(
@@ -292,24 +296,50 @@ export class DuplicateScannerService implements IDuplicateScannerService {
     return result;
   }
 
-  private async reconcileFlagsFromScan(
+  private async reconcileFlags(
     libraryId: string,
-    scan: DuplicateScan,
     executor: DatabaseExecutor,
+    options: { markAll?: boolean; markHash?: string } = {},
   ): Promise<MarkDuplicatesResult> {
-    const candidateFileIds = [...new Set(
-      scan.fileGroups.flatMap((group) => group.files.map((file) => file.id)),
-    )];
-    const fileCandidateCondition = candidateFileIds.length > 0
-      ? inArray(modelFiles.id, candidateFileIds)
+    // Re-evaluate membership in the UPDATE statement instead of trusting the
+    // preceding scan. Under PostgreSQL READ COMMITTED, an ignore or deletion
+    // committed before this statement begins is therefore visible here.
+    const fileCandidateCondition = sql<boolean>`exists (
+        select 1 from ${models} as duplicate_owner
+        where duplicate_owner.id = ${modelFiles.modelId}
+          and duplicate_owner.library_id = ${libraryId}
+          and duplicate_owner.status = 'ready'
+      )
+      and not exists (
+        select 1 from ${duplicateFileIgnores}
+        where ${duplicateFileIgnores.libraryId} = ${libraryId}
+          and ${duplicateFileIgnores.hash} = ${modelFiles.hash}
+      )
+      and ${modelFiles.hash} in (
+        select duplicate_file.hash
+        from ${modelFiles} as duplicate_file
+        inner join ${models} as duplicate_model
+          on duplicate_model.id = duplicate_file.model_id
+        where duplicate_model.library_id = ${libraryId}
+          and duplicate_model.status = 'ready'
+        group by duplicate_file.hash
+        having count(*) > 1
+      )`;
+    const requestedFileCondition = options.markHash
+      ? eq(modelFiles.hash, options.markHash)
       : sql<boolean>`false`;
+    const reconciledFileFlag = options.markAll
+      ? fileCandidateCondition
+      : sql<boolean>`${fileCandidateCondition}
+          and (${modelFiles.isDuplicate} or ${requestedFileCondition})`;
 
-    await executor
+    const reconciledFiles = await executor
       .update(modelFiles)
-      .set({ isDuplicate: fileCandidateCondition })
+      .set({ isDuplicate: reconciledFileFlag })
       .where(sql<boolean>`${modelFiles.modelId} in (
         select ${models.id} from ${models} where ${models.libraryId} = ${libraryId}
-      )`);
+      )`)
+      .returning({ isDuplicate: modelFiles.isDuplicate });
 
     const reconciledModels = await executor
       .update(models)
@@ -329,22 +359,39 @@ export class DuplicateScannerService implements IDuplicateScannerService {
       .returning({ isDuplicate: models.isDuplicate });
 
     return {
-      markedFileCount: candidateFileIds.length,
+      markedFileCount: reconciledFiles.filter((file) => file.isDuplicate).length,
       markedModelCount: reconciledModels.filter((model) => model.isDuplicate).length,
     };
   }
 
-  private async withTransaction<T>(
+  private async withSerializableTransaction<T>(
     callback: (executor: DatabaseExecutor) => Promise<T>,
   ): Promise<T> {
     const database = this.database as DatabaseExecutor & {
-      transaction?: (callback: (executor: DatabaseExecutor) => Promise<T>) => Promise<T>;
+      transaction?: (
+        callback: (executor: DatabaseExecutor) => Promise<T>,
+        config?: { isolationLevel: 'serializable' },
+      ) => Promise<T>;
     };
-    if (typeof database.transaction === 'function') {
-      return database.transaction(callback);
+    if (typeof database.transaction !== 'function') return callback(database);
+
+    for (let attempt = 1; attempt <= MAX_SERIALIZABLE_ATTEMPTS; attempt += 1) {
+      try {
+        return await database.transaction(callback, { isolationLevel: 'serializable' });
+      } catch (error) {
+        if (attempt === MAX_SERIALIZABLE_ATTEMPTS || !isRetryableTransactionError(error)) {
+          throw error;
+        }
+      }
     }
-    return callback(database);
+
+    throw new Error('Serializable transaction retry loop exhausted');
   }
+}
+
+function isRetryableTransactionError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false;
+  return RETRYABLE_TRANSACTION_CODES.has(String(error.code));
 }
 
 function compareCandidates(left: DuplicateScanCandidate, right: DuplicateScanCandidate): number {

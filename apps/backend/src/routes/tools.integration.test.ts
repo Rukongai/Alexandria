@@ -1,18 +1,24 @@
 /**
- * Integration coverage for GET /tools/duplicates.
+ * Integration coverage for duplicate scan and review routes.
  *
  * These tests exercise the complete Fastify/auth/library/service/database path.
  * Every library contains models with the same file-hash multiset so successful
- * scans also prove that duplicate groups cannot cross a library or tenant
- * boundary.
+ * scans and review actions also prove that duplicate groups cannot cross a
+ * library or tenant boundary.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { and, eq, inArray } from 'drizzle-orm';
 import { buildApp } from '../app.js';
 import { db } from '../db/index.js';
-import { libraries, modelFiles, models, users } from '../db/schema/index.js';
+import {
+  duplicateFileIgnores,
+  libraries,
+  modelFiles,
+  models,
+  users,
+} from '../db/schema/index.js';
 
 const OWNER_EMAIL = 'tools-duplicates-route-owner@example.com';
 const OTHER_TENANT_EMAIL = 'tools-duplicates-route-tenant@example.com';
@@ -108,10 +114,20 @@ function scanDuplicates(libraryId?: string) {
   return app.inject({ method: 'GET', url: '/tools/duplicates', headers });
 }
 
-function postDuplicateAction(action: 'mark' | 'ignore', libraryId?: string) {
+function markAllDuplicates(libraryId?: string) {
   const headers: Record<string, string> = { cookie: sessionCookie };
   if (libraryId) headers['x-library-id'] = libraryId;
-  return app.inject({ method: 'POST', url: `/tools/duplicates/${action}`, headers });
+  return app.inject({ method: 'POST', url: '/tools/duplicates/mark', headers });
+}
+
+function postFileGroupAction(hash: string, action: 'mark' | 'ignore', libraryId?: string) {
+  const headers: Record<string, string> = { cookie: sessionCookie };
+  if (libraryId) headers['x-library-id'] = libraryId;
+  return app.inject({
+    method: 'POST',
+    url: `/tools/duplicates/file-groups/${hash}/${action}`,
+    headers,
+  });
 }
 
 beforeAll(async () => {
@@ -455,8 +471,78 @@ describe('GET /tools/duplicates integration', () => {
 });
 
 describe('duplicate review actions integration', () => {
+  beforeEach(async () => {
+    await db.delete(duplicateFileIgnores).where(inArray(
+      duplicateFileIgnores.libraryId,
+      [ownerDefaultLibraryId, ownerSecondLibraryId],
+    ));
+    await db
+      .update(modelFiles)
+      .set({ isDuplicate: false })
+      .where(inArray(modelFiles.modelId, [
+        ...defaultModelIds,
+        partialDuplicateModelId,
+        ...secondLibraryModelIds,
+      ]));
+    await db
+      .update(models)
+      .set({ isDuplicate: false })
+      .where(inArray(models.libraryId, [ownerDefaultLibraryId, ownerSecondLibraryId]));
+  });
+
+  it('marks only one selected file group', async () => {
+    const response = await postFileGroupAction(SHARED_HASHES[0], 'mark');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      data: { markedFileCount: 3, markedModelCount: 0 },
+      meta: null,
+      errors: null,
+    });
+
+    const files = await db
+      .select({ hash: modelFiles.hash, isDuplicate: modelFiles.isDuplicate })
+      .from(modelFiles)
+      .innerJoin(models, eq(modelFiles.modelId, models.id))
+      .where(and(
+        eq(models.libraryId, ownerDefaultLibraryId),
+        eq(models.status, 'ready'),
+      ));
+    expect(files.filter((file) => file.hash === SHARED_HASHES[0])
+      .every((file) => file.isDuplicate)).toBe(true);
+    expect(files.filter((file) => file.hash === SHARED_HASHES[1])
+      .every((file) => file.isDuplicate === false)).toBe(true);
+
+    const markedModels = await db
+      .select({ isDuplicate: models.isDuplicate })
+      .from(models)
+      .where(inArray(models.id, [...defaultModelIds, partialDuplicateModelId]));
+    expect(markedModels.every((model) => model.isDuplicate === false)).toBe(true);
+  });
+
+  it('preserves another explicitly marked current file group', async () => {
+    const first = await postFileGroupAction(SHARED_HASHES[0], 'mark');
+    expect(first.statusCode).toBe(200);
+
+    const response = await postFileGroupAction(SHARED_HASHES[1], 'mark');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual({ markedFileCount: 5, markedModelCount: 2 });
+
+    const files = await db
+      .select({ hash: modelFiles.hash, isDuplicate: modelFiles.isDuplicate })
+      .from(modelFiles)
+      .innerJoin(models, eq(modelFiles.modelId, models.id))
+      .where(and(
+        eq(models.libraryId, ownerDefaultLibraryId),
+        eq(models.status, 'ready'),
+      ));
+    expect(files.filter((file) => SHARED_HASHES.includes(file.hash))
+      .every((file) => file.isDuplicate)).toBe(true);
+  });
+
   it('marks exactly the current duplicate files and fully duplicate models', async () => {
-    const response = await postDuplicateAction('mark');
+    const response = await markAllDuplicates();
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
@@ -485,35 +571,51 @@ describe('duplicate review actions integration', () => {
     ]));
   });
 
-  it('persists current report keys idempotently and excludes them from later scans', async () => {
-    const first = await postDuplicateAction('ignore');
-    const second = await postDuplicateAction('ignore');
+  it('ignores one selected group and clears its already-marked flags', async () => {
+    const mark = await markAllDuplicates();
+    expect(mark.statusCode).toBe(200);
+
+    const first = await postFileGroupAction(SHARED_HASHES[0], 'ignore');
+    const second = await postFileGroupAction(SHARED_HASHES[0], 'ignore');
 
     expect(first.statusCode).toBe(200);
     expect(first.json().data).toEqual({
-      ignoredFileGroupCount: 2,
-      ignoredModelGroupCount: 1,
-    });
-    expect(second.statusCode).toBe(200);
-    expect(second.json().data).toEqual({
-      ignoredFileGroupCount: 0,
+      ignoredFileGroupCount: 1,
       ignoredModelGroupCount: 0,
+    });
+    expect(second.statusCode).toBe(404);
+    expect(second.json().errors[0]).toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'Duplicate file group not found',
     });
 
     const scan = await scanDuplicates();
-    expect(scan.json().data.groups).toEqual([]);
-    expect(scan.json().data.fileGroups).toEqual([]);
+    expect(scan.json().data.fileGroups.map((group: { hash: string }) => group.hash))
+      .toEqual([SHARED_HASHES[1]]);
 
     const flags = await db
+      .select({ hash: modelFiles.hash, isDuplicate: modelFiles.isDuplicate })
+      .from(modelFiles)
+      .innerJoin(models, eq(modelFiles.modelId, models.id))
+      .where(and(
+        eq(models.libraryId, ownerDefaultLibraryId),
+        eq(models.status, 'ready'),
+      ));
+    expect(flags.filter((file) => file.hash === SHARED_HASHES[0])
+      .every((file) => file.isDuplicate === false)).toBe(true);
+    expect(flags.filter((file) => file.hash === SHARED_HASHES[1])
+      .every((file) => file.isDuplicate)).toBe(true);
+
+    const modelFlags = await db
       .select({ isDuplicate: models.isDuplicate })
       .from(models)
       .where(inArray(models.id, [...defaultModelIds, partialDuplicateModelId]));
-    expect(flags.every((model) => model.isDuplicate === false)).toBe(true);
+    expect(modelFlags.every((model) => model.isDuplicate === false)).toBe(true);
   });
 
-  it('clears surviving stale flags when deletion changes duplicate membership', async () => {
-    const mark = await postDuplicateAction('mark', ownerSecondLibraryId);
-    expect(mark.json().data).toEqual({ markedFileCount: 4, markedModelCount: 2 });
+  it('clears stale marks after deletion without marking unrelated candidates', async () => {
+    const mark = await postFileGroupAction(SHARED_HASHES[0], 'mark', ownerSecondLibraryId);
+    expect(mark.json().data).toEqual({ markedFileCount: 2, markedModelCount: 0 });
 
     const [fileToDelete] = await db
       .select({ id: modelFiles.id })
@@ -536,6 +638,8 @@ describe('duplicate review actions integration', () => {
       .where(eq(models.libraryId, ownerSecondLibraryId));
     expect(survivingFiles.find((file) => file.hash === SHARED_HASHES[0])?.isDuplicate)
       .toBe(false);
+    expect(survivingFiles.filter((file) => file.hash === SHARED_HASHES[1])
+      .every((file) => file.isDuplicate === false)).toBe(true);
 
     const survivingModels = await db
       .select({ id: models.id, isDuplicate: models.isDuplicate })
