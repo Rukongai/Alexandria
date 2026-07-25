@@ -5,6 +5,7 @@ import asyncio
 import getpass
 import logging
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +33,18 @@ def _concurrency(value: str) -> int:
         ) from error
     if parsed < 1:
         raise argparse.ArgumentTypeError("concurrency must be at least 1")
+    return parsed
+
+
+def _positive(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"count must be an integer, got {value!r}"
+        ) from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("count must be at least 1")
     return parsed
 
 
@@ -123,7 +136,68 @@ def parser() -> argparse.ArgumentParser:
         help=("Disable the progress display entirely and log as earlier versions did"),
     )
     result.add_argument("--verbose", action="store_true")
+    result.add_argument(
+        "--staging-dir",
+        type=Path,
+        default=(
+            Path(staging) if (staging := os.getenv("TELEGRAM_STAGING_DIR")) else None
+        ),
+        help=(
+            "Directory holding staged model folders. Required by --download-only, "
+            "--upload-only, and --stage"
+        ),
+    )
+    staging_mode = result.add_mutually_exclusive_group()
+    staging_mode.add_argument(
+        "--download-only",
+        type=_positive,
+        metavar="N",
+        help="Stage up to N new Telegram bundles as folders, then exit",
+    )
+    staging_mode.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="Upload every model folder already in --staging-dir, then exit",
+    )
+    staging_mode.add_argument(
+        "--stage",
+        type=_positive,
+        metavar="N",
+        help=(
+            "Stage up to N new bundles, pause for reorganization, then upload "
+            "whatever is in --staging-dir"
+        ),
+    )
     return result
+
+
+def validate_staging_args(args: argparse.Namespace) -> None:
+    selected = (
+        args.download_only is not None or args.upload_only or args.stage is not None
+    )
+    if selected and args.staging_dir is None:
+        raise SystemExit(
+            "--staging-dir is required by --download-only, --upload-only, and --stage"
+        )
+    if args.staging_dir is not None and not selected:
+        raise SystemExit(
+            "--staging-dir requires one of --download-only, --upload-only, or --stage"
+        )
+
+
+def confirm_upload(summary: str) -> bool:
+    """Pause between the phases. A non-interactive stdin quits rather than hangs."""
+    print(summary)
+    print(
+        "Reorganize the folders now — split releases, compress, rename, "
+        "edit metadata.json."
+    )
+    print("Press Enter to upload, or q then Enter to quit without uploading.")
+    line = sys.stdin.readline()
+    if not line:
+        print("No input available; leaving the staged folders in place.")
+        return False
+    return line.strip().lower() != "q"
 
 
 async def run(args: argparse.Namespace) -> int:

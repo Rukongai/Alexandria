@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from alexandria_telegram_importer.cli import parser
+from alexandria_telegram_importer.cli import (
+    confirm_upload,
+    parser,
+    validate_staging_args,
+)
 from alexandria_telegram_importer.parallel_download import (
     DEFAULT_CONNECTIONS,
     MAX_CONNECTIONS,
@@ -105,3 +109,53 @@ def test_should_keep_progress_for_falsey_environment_values(monkeypatch, value) 
     monkeypatch.setenv("TELEGRAM_IMPORT_NO_PROGRESS", value)
 
     assert parser().parse_args([]).no_progress is False
+
+
+def test_should_reject_a_staging_flag_without_a_staging_directory() -> None:
+    args = parser().parse_args(["--download-only", "5"])
+
+    with pytest.raises(SystemExit, match="--staging-dir"):
+        validate_staging_args(args)
+
+
+def test_should_reject_a_staging_directory_without_a_staging_flag() -> None:
+    args = parser().parse_args(["--staging-dir", "/tmp/work"])
+
+    with pytest.raises(SystemExit, match="one of"):
+        validate_staging_args(args)
+
+
+def test_should_reject_two_staging_flags_at_once() -> None:
+    with pytest.raises(SystemExit):
+        parser().parse_args(
+            ["--staging-dir", "/tmp/work", "--download-only", "5", "--upload-only"],
+        )
+
+
+def test_should_reject_a_non_positive_download_count() -> None:
+    with pytest.raises(SystemExit):
+        parser().parse_args(["--staging-dir", "/tmp/work", "--download-only", "0"])
+
+
+def test_should_accept_each_staging_mode(tmp_path) -> None:
+    for extra in (["--download-only", "5"], ["--upload-only"], ["--stage", "5"]):
+        args = parser().parse_args(["--staging-dir", str(tmp_path), *extra])
+        validate_staging_args(args)
+
+
+def test_should_treat_a_closed_stdin_as_quitting_the_pause(monkeypatch) -> None:
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+
+    assert confirm_upload("2 folders staged.") is False
+
+
+def test_should_treat_q_as_quitting_and_enter_as_proceeding(monkeypatch) -> None:
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("q\n"))
+    assert confirm_upload("2 folders staged.") is False
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("\n"))
+    assert confirm_upload("2 folders staged.") is True
