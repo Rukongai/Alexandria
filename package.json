@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "dev": "turbo dev",
+    "mcp": "npm --silent run mcp -w @alexandria/backend",
     "dev:up": "[ -f .env ] || cp .env.example .env; set -a; . ./.env; set +a; export POSTGRES_USER=${POSTGRES_USER:-alexandria} POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-alexandria} POSTGRES_DB=${POSTGRES_DB:-alexandria} POSTGRES_PORT=${POSTGRES_PORT:-5433} SESSION_SECRET=${SESSION_SECRET:-dev-only-session-secret} AI_ENCRYPTION_KEY=${AI_ENCRYPTION_KEY:-dev-only-ai-encryption-key} SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD:-changeme}; export DATABASE_URL=${DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/${POSTGRES_DB}}; npm run services:up && npm run db:setup && turbo dev",
     "services:up": "POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-alexandria} SESSION_SECRET=${SESSION_SECRET:-dev-only-session-secret} AI_ENCRYPTION_KEY=${AI_ENCRYPTION_KEY:-dev-only-ai-encryption-key} SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD:-changeme} docker compose up -d postgres redis --wait",
     "services:down": "POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-alexandria} SESSION_SECRET=${SESSION_SECRET:-dev-only-session-secret} AI_ENCRYPTION_KEY=${AI_ENCRYPTION_KEY:-dev-only-ai-encryption-key} SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD:-changeme} docker compose down",

@@ -322,7 +322,10 @@ export class MetadataService {
   // Metadata Value Operations
   // ---------------------------------------------------------------------------
 
-  async getModelMetadata(modelId: string): Promise<MetadataValue[]> {
+  async getModelMetadata(
+    modelId: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<MetadataValue[]> {
     logger.debug(
       { service: 'MetadataService', modelId },
       'Loading metadata for model',
@@ -331,7 +334,7 @@ export class MetadataService {
     const results: MetadataValue[] = [];
 
     // 1. Load generic model_metadata values joined with field definitions
-    const genericRows = await db
+    const genericRows = await executor
       .select({
         fieldSlug: metadataFieldDefinitions.slug,
         fieldName: metadataFieldDefinitions.name,
@@ -358,7 +361,7 @@ export class MetadataService {
     }
 
     // 2. Load tags via model_tags join, if any exist for this model
-    const tagRows = await db
+    const tagRows = await executor
       .select({
         name: tags.name,
       })
