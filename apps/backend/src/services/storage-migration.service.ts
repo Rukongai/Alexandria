@@ -2,8 +2,13 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import { forEachWithConcurrency } from '../utils/concurrency.js';
 import type { IStorageService } from './storage.service.js';
-import { LocalStorageService } from './storage.service.js';
+import {
+  LocalStorageService,
+  storeVerified,
+  uploadConcurrencyFor,
+} from './storage.service.js';
 
 export interface StorageMigrationProgress {
   key: string;
@@ -31,12 +36,15 @@ export async function migrateLocalStorage(
   const files = await listFiles(source.getStorageRoot());
   let copied = 0;
   let skipped = 0;
+  let processed = 0;
 
-  for (const [index, file] of files.entries()) {
-    const sourceDigest = await digestFile(file.absolutePath);
+  await forEachWithConcurrency(files, uploadConcurrencyFor(target), async (file) => {
     let status: StorageMigrationProgress['status'] = 'copied';
 
     if (await target.exists(file.key)) {
+      // An object already at the target is the one case that still justifies
+      // reading bytes back: nothing local records what a previous run uploaded.
+      const sourceDigest = await digestFile(file.absolutePath);
       const targetDigest = await digestStoredObject(target, file.key);
       if (digestsMatch(sourceDigest, targetDigest)) {
         status = 'skipped';
@@ -44,24 +52,27 @@ export async function migrateLocalStorage(
     }
 
     if (status === 'copied') {
-      await target.store(file.key, fs.createReadStream(file.absolutePath));
-      const targetDigest = await digestStoredObject(target, file.key);
-      if (!digestsMatch(sourceDigest, targetDigest)) {
+      // Verification now rides along with the upload: the source is hashed as
+      // it streams and checked against the ETag the provider reports, so a
+      // migration no longer moves every byte twice.
+      try {
+        await storeVerified(target, file.key, () => fs.createReadStream(file.absolutePath));
+      } catch (error) {
+        // Leave nothing half-written behind, so a re-run starts from a clean
+        // target rather than skipping a corrupt object it thinks it copied.
         await target.delete(file.key).catch(() => {});
-        throw new Error(`Storage migration verification failed for ${file.key}`);
+        throw error;
       }
-      copied++;
+      copied += 1;
     } else {
-      skipped++;
+      skipped += 1;
     }
 
-    onProgress({
-      key: file.key,
-      current: index + 1,
-      total: files.length,
-      status,
-    });
-  }
+    // Files complete out of order once uploads overlap, so `current` counts how
+    // many have finished rather than indexing into the file list.
+    processed += 1;
+    onProgress({ key: file.key, current: processed, total: files.length, status });
+  });
 
   return { copied, skipped, total: files.length };
 }

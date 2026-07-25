@@ -10,6 +10,7 @@ Objects should be private. Alexandria's authenticated `/files/...` endpoints loo
 |---|---|---|---|
 | `STORAGE_BACKEND` | `local` | No | `local` or `s3` |
 | `STORAGE_PATH` | `./data/storage` | Local; migration source | Local managed-storage root |
+| `STORAGE_UPLOAD_CONCURRENCY` | `8` | No | Files uploaded in parallel to a remote backend; max 32, ignored for local storage |
 | `S3_ENDPOINT` | AWS SDK default | Compatible services | Full custom endpoint URL; omit for AWS S3 |
 | `S3_REGION` | `us-east-1` | S3 | Signing region expected by the provider |
 | `S3_BUCKET` | — | S3 | Existing bucket name |
@@ -66,7 +67,19 @@ Endpoint availability can change; select the closest current endpoint from MEGA'
 
 MEGA S4 rejects several optional headers commonly accepted by AWS S3. Alexandria configures the AWS SDK's request and response checksum modes as `WHEN_REQUIRED` and does not send server-side-encryption, ACL, or non-standard storage-class headers. Configure access controls and any supported provider-side data protections outside Alexandria rather than adding those headers to uploads.
 
+MEGA S4 exposes no client library of its own; it is reached through the standard S3 SDK. MEGA's own SDK and MEGAJS target the consumer cloud drive, which is a different product with a different protocol, and do not apply here.
+
 Alexandria does not currently add client-side object encryption. Any encryption beyond TLS in transit and the storage provider's defaults must be handled outside this adapter.
+
+## Upload throughput and verification
+
+A remote object store charges a fixed round trip per request, and that cost dominates the many small files in a typical model — thumbnails especially, which are tens of kilobytes each. Alexandria therefore uploads several files at once rather than one at a time, bounded by `STORAGE_UPLOAD_CONCURRENCY`. Individual files larger than the 8 MiB part size are additionally uploaded as concurrent multipart parts by the AWS SDK. Local storage stays sequential, since filesystem writes gain nothing from fan-out.
+
+The socket pool is sized from `STORAGE_UPLOAD_CONCURRENCY` so it cannot become the real limit; raising the setting raises the pool with it. Values above 16 showed no reliable benefit in testing against MEGA S4, and the ceiling is 32.
+
+Uploads are verified without reading the object back. Each file is hashed as it streams to the provider, producing both its SHA-256 and the ETag those bytes should yield; the SHA-256 is checked against the hash recorded when the file was scanned, and the ETag against what the provider reports. Objects larger than the single-request copy limit are duplicated with a server-side multipart copy, so their bytes never travel through the backend. Together these mean an import or migration moves each byte once rather than twice.
+
+ETag verification assumes the provider follows the standard S3 scheme — MD5 for a single-request upload, and the MD5 of concatenated part digests with a `-<partCount>` suffix for a multipart upload. This was confirmed against MEGA S4. A provider that returns some other ETag format is treated as offering no verification rather than as failing it, and the SHA-256 check still applies.
 
 ## Migrate local storage to S3
 

@@ -138,6 +138,7 @@ describe('FileProcessingService – managed-storage progress', () => {
         onProgress?.(3);
         onProgress?.(7);
       }
+      return {};
     });
     const storage = {
       kind: 's3',
@@ -147,15 +148,112 @@ describe('FileProcessingService – managed-storage progress', () => {
 
     await service.copyManifestToStorage(extractDir, 'model-1', manifest, storage, progress);
 
-    expect(progress.mock.calls.map(([event]) => event)).toEqual([
-      expect.objectContaining({ completedFiles: 0, completedBytes: 0, currentFilename: 'first.stl' }),
-      expect.objectContaining({ completedFiles: 0, completedBytes: 5, currentFilename: 'first.stl' }),
-      expect.objectContaining({ completedFiles: 1, completedBytes: 5, currentFilename: 'first.stl' }),
-      expect.objectContaining({ completedFiles: 1, completedBytes: 5, currentFilename: 'second.stl' }),
-      expect.objectContaining({ completedFiles: 1, completedBytes: 12, currentFilename: 'second.stl' }),
-      expect.objectContaining({ completedFiles: 2, completedBytes: 12, currentFilename: 'second.stl' }),
-    ]);
-    expect(progress.mock.calls.every(([event]) => event.totalFiles === 2 && event.totalBytes === 12)).toBe(true);
+    const events = progress.mock.calls.map(([event]) => event);
+
+    // Files upload concurrently, so the interleaving of events is not fixed.
+    // What must hold is that the counters only ever move forward, never exceed
+    // the manifest totals, and land exactly on them.
+    expect(events.length).toBeGreaterThan(0);
+    for (const [index, event] of events.entries()) {
+      expect(event.totalFiles).toBe(2);
+      expect(event.totalBytes).toBe(12);
+      expect(event.completedBytes).toBeLessThanOrEqual(12);
+      expect(event.completedFiles).toBeLessThanOrEqual(2);
+
+      if (index > 0) {
+        expect(event.completedBytes).toBeGreaterThanOrEqual(events[index - 1].completedBytes);
+        expect(event.completedFiles).toBeGreaterThanOrEqual(events[index - 1].completedFiles);
+      }
+    }
+
+    // The first file's provider over-reports 50 bytes for a 5-byte file; that
+    // must be clamped rather than inflating the aggregate.
+    expect(events.at(-1)).toEqual(
+      expect.objectContaining({ completedFiles: 2, completedBytes: 12, totalBytes: 12 }),
+    );
+  });
+
+  it('should upload manifest entries concurrently on a remote backend', async () => {
+    const extractDir = path.join(tmpDir, 'storage-progress-concurrent');
+    await fsPromises.mkdir(extractDir, { recursive: true });
+
+    const entries = await Promise.all(
+      Array.from({ length: 6 }, async (_unused, index) => {
+        const filename = `part-${index}.stl`;
+        await fsPromises.writeFile(path.join(extractDir, filename), 'data');
+        return {
+          filename,
+          relativePath: filename,
+          fileType: 'stl' as const,
+          mimeType: 'model/stl',
+          sizeBytes: 4,
+          hash: `hash-${index}`,
+        };
+      }),
+    );
+    const manifest: FileManifest = { entries, totalSizeBytes: entries.length * 4 };
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const release: Array<() => void> = [];
+    const storage = {
+      kind: 's3',
+      store: vi.fn<IStorageService['store']>(async () => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        // Hold every upload open until they have all started, so the peak
+        // reflects real overlap rather than scheduling luck.
+        await new Promise<void>((resolve) => {
+          release.push(resolve);
+          if (release.length === entries.length) release.forEach((fn) => fn());
+        });
+        inFlight -= 1;
+        return {};
+      }),
+    } as unknown as IStorageService;
+
+    await service.copyManifestToStorage(extractDir, 'model-1', manifest, storage);
+
+    expect(peakInFlight).toBeGreaterThan(1);
+  });
+
+  it('should upload sequentially on a local backend', async () => {
+    const extractDir = path.join(tmpDir, 'storage-progress-local');
+    await fsPromises.mkdir(extractDir, { recursive: true });
+
+    const entries = await Promise.all(
+      Array.from({ length: 4 }, async (_unused, index) => {
+        const filename = `part-${index}.stl`;
+        await fsPromises.writeFile(path.join(extractDir, filename), 'data');
+        return {
+          filename,
+          relativePath: filename,
+          fileType: 'stl' as const,
+          mimeType: 'model/stl',
+          sizeBytes: 4,
+          hash: `hash-${index}`,
+        };
+      }),
+    );
+    const manifest: FileManifest = { entries, totalSizeBytes: entries.length * 4 };
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const storage = {
+      kind: 'local',
+      store: vi.fn<IStorageService['store']>(async () => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight -= 1;
+        return {};
+      }),
+    } as unknown as IStorageService;
+
+    await service.copyManifestToStorage(extractDir, 'model-1', manifest, storage);
+
+    // Filesystem writes gain nothing from fan-out, so ordering is preserved.
+    expect(peakInFlight).toBe(1);
   });
 
   it('should coalesce high-frequency provider callbacks and flush exact final counters', async () => {
@@ -180,6 +278,7 @@ describe('FileProcessingService – managed-storage progress', () => {
         for (let transferred = 4096; transferred <= totalBytes; transferred += 4096) {
           onProgress?.(transferred);
         }
+        return {};
       }),
     } as unknown as IStorageService;
     const observed: ManifestStorageProgress[] = [];
@@ -217,7 +316,10 @@ describe('FileProcessingService – managed-storage progress', () => {
     };
     const storage = {
       kind: 'local',
-      store: vi.fn<IStorageService['store']>(async (_key, _data, onProgress) => onProgress?.(5)),
+      store: vi.fn<IStorageService['store']>(async (_key, _data, onProgress) => {
+        onProgress?.(5);
+        return {};
+      }),
     } as unknown as IStorageService;
 
     await expect(

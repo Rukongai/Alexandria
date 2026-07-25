@@ -101,17 +101,25 @@ vi.mock('./collection.service.js', () => ({
   CollectionService: vi.fn(),
 }));
 
-vi.mock('./storage.service.js', () => ({
-  storageService: {
-    kind: 'local',
-    store: vi.fn(),
-    delete: vi.fn(),
-    retrieveStream: vi.fn().mockResolvedValue(Readable.from(Buffer.from('archive'))),
-    resolveStoragePath: vi.fn(),
-  },
-  isLocalStorageService: vi.fn((storage) => storage.kind === 'local'),
-  StorageService: vi.fn(),
-}));
+// Only the backend instance is faked. `storeVerified` and `uploadConcurrencyFor`
+// keep their real implementations so these tests exercise the actual
+// verification and fan-out logic rather than a stand-in for it.
+vi.mock('./storage.service.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./storage.service.js')>();
+  return {
+    ...actual,
+    storageService: {
+      kind: 'local',
+      uploadPartSize: 8 * 1024 * 1024,
+      store: vi.fn(),
+      delete: vi.fn(),
+      retrieveStream: vi.fn().mockResolvedValue(Readable.from(Buffer.from('archive'))),
+      resolveStoragePath: vi.fn(),
+    },
+    isLocalStorageService: vi.fn((storage) => storage.kind === 'local'),
+    StorageService: vi.fn(),
+  };
+});
 
 // node:fs is used for createReadStream inside processIngestionJob
 vi.mock('node:fs', () => ({
@@ -943,7 +951,17 @@ describe('IngestionService – remote folder import', () => {
       { id: 'file-1', fileType: 'stl' },
     ] as never);
     vi.mocked(modelService.updateModelStatus).mockResolvedValue(undefined);
-    vi.mocked(storageService.store).mockResolvedValue(undefined);
+    // A real backend consumes the body it is handed, which is what advances the
+    // streaming hash behind `storeVerified`. A mock that ignores it would make
+    // every upload look like zero bytes.
+    vi.mocked(storageService.store).mockImplementation(async (_path, data) => {
+      if (!Buffer.isBuffer(data)) {
+        for await (const _chunk of data) {
+          // drain
+        }
+      }
+      return {};
+    });
     vi.mocked(storageService.delete).mockResolvedValue(undefined);
     fsMocks.createReadStream.mockImplementation(() => Readable.from(contents));
   });
@@ -971,8 +989,11 @@ describe('IngestionService – remote folder import', () => {
     expect(storageService.store).toHaveBeenCalledWith(
       'models/model-1/model.stl',
       expect.anything(),
+      undefined,
     );
-    expect(storageService.retrieveStream).toHaveBeenCalledWith('models/model-1/model.stl');
+    // Verification now rides along with the upload, so the object is never
+    // fetched back to be hashed.
+    expect(storageService.retrieveStream).not.toHaveBeenCalledWith('models/model-1/model.stl');
     expect(fsPromises.unlink).toHaveBeenCalledWith(sourcePath);
     expect(modelService.updateModelStatus).toHaveBeenCalledWith('model-1', 'ready', {
       totalSizeBytes: contents.length,
@@ -981,7 +1002,8 @@ describe('IngestionService – remote folder import', () => {
   });
 
   it('cleans up an unverifiable object and preserves its source', async () => {
-    vi.mocked(storageService.retrieveStream).mockResolvedValue(
+    // The bytes actually read no longer hash to what the scan recorded.
+    fsMocks.createReadStream.mockImplementation(() =>
       Readable.from(Buffer.from('corrupted contents')),
     );
 
@@ -1004,7 +1026,6 @@ describe('IngestionService – remote folder import', () => {
   });
 
   it('cleans up verified objects when a later persistence step fails', async () => {
-    vi.mocked(storageService.retrieveStream).mockResolvedValue(Readable.from(contents));
     vi.mocked(modelService.createModelFiles).mockRejectedValue(new Error('database unavailable'));
 
     await service.processFolderImportJob({

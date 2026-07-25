@@ -22,13 +22,19 @@ import {
   type FolderImportJobPayload,
   type CommitJobPayload,
 } from './job.service.js';
+import { forEachWithConcurrency } from '../utils/concurrency.js';
 import { fileProcessingService, type FileManifest } from './file-processing.service.js';
 import { importSessionService } from './import-session.service.js';
 import { thumbnailService } from './thumbnail.service.js';
 import { modelService } from './model.service.js';
 import { metadataService } from './metadata.service.js';
 import { collectionService } from './collection.service.js';
-import { isLocalStorageService, storageService } from './storage.service.js';
+import {
+  isLocalStorageService,
+  storageService,
+  storeVerified,
+  uploadConcurrencyFor,
+} from './storage.service.js';
 import { createImportStrategy } from './import-strategy.service.js';
 import { parsePattern } from '../utils/pattern-parser.js';
 import { detectArchiveExtension, stripArchiveExtension } from '../utils/archive.js';
@@ -436,11 +442,17 @@ export class IngestionService {
         storagePath: `models/${modelId}/${path.posix.join(destinationPath, entry.relativePath)}`,
       }));
 
-      for (const fileInput of fileInputs) {
-        const sourcePath = path.join(extractDir, fileInput.sourceRelativePath);
-        await storageService.store(fileInput.storagePath, fs.createReadStream(sourcePath));
-        storedPaths.push(fileInput.storagePath);
-      }
+      await forEachWithConcurrency(
+        fileInputs,
+        uploadConcurrencyFor(storageService),
+        async (fileInput) => {
+          const sourcePath = path.join(extractDir, fileInput.sourceRelativePath);
+          await storageService.store(fileInput.storagePath, fs.createReadStream(sourcePath));
+          // Recorded as each upload lands so the failure path can clean up
+          // whatever finished before the batch aborted.
+          storedPaths.push(fileInput.storagePath);
+        },
+      );
 
       const createdFiles = await modelService.createModelFiles(modelId, fileInputs);
       filesCreated = true;
@@ -712,12 +724,16 @@ export class IngestionService {
       const storedPaths: string[] = [];
 
       try {
-        for (let i = 0; i < modelFileInputs.length; i++) {
-          const sourcePath = path.join(extractDir, manifest.entries[i].relativePath);
-          const readStream = fs.createReadStream(sourcePath);
-          await storageService.store(modelFileInputs[i].storagePath, readStream);
-          storedPaths.push(modelFileInputs[i].storagePath);
-        }
+        await forEachWithConcurrency(
+          modelFileInputs,
+          uploadConcurrencyFor(storageService),
+          async (modelFileInput, index) => {
+            const sourcePath = path.join(extractDir, manifest.entries[index].relativePath);
+            const readStream = fs.createReadStream(sourcePath);
+            await storageService.store(modelFileInput.storagePath, readStream);
+            storedPaths.push(modelFileInput.storagePath);
+          },
+        );
 
         const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
         await this.generateAndStoreThumbnails(modelId, manifest.entries, createdFiles, extractDir);
@@ -1201,30 +1217,36 @@ export class IngestionService {
       format: string;
     }> = [];
 
-    for (let i = 0; i < fileInputs.length; i++) {
-      const fileInput = fileInputs[i];
-      const createdFile = createdFiles[i];
+    const imageFiles = fileInputs
+      .map((fileInput, index) => ({ fileInput, createdFile: createdFiles[index] }))
+      .filter(({ fileInput }) => fileInput.fileType === 'image');
 
-      if (fileInput.fileType !== 'image') continue;
-
-      const sourcePath = path.join(
-        sourceDir,
-        fileInput.sourceRelativePath ?? fileInput.relativePath,
-      );
-      try {
-        const thumbnailRecords = await thumbnailService.generateThumbnails(
-          sourcePath,
-          modelId,
-          createdFile.id,
+    // Every image is independent and each one is two small uploads, which on a
+    // remote backend is almost entirely request round trip. Running them in a
+    // bounded batch keeps the resize work overlapped with those waits.
+    await forEachWithConcurrency(
+      imageFiles,
+      uploadConcurrencyFor(storageService),
+      async ({ fileInput, createdFile }) => {
+        const sourcePath = path.join(
+          sourceDir,
+          fileInput.sourceRelativePath ?? fileInput.relativePath,
         );
-        allThumbnailRecords.push(...thumbnailRecords);
-      } catch (err) {
-        logger.warn(
-          { modelId, fileId: createdFile.id, path: fileInput.relativePath, error: String(err) },
-          'Thumbnail generation failed for file (non-fatal)',
-        );
-      }
-    }
+        try {
+          const thumbnailRecords = await thumbnailService.generateThumbnails(
+            sourcePath,
+            modelId,
+            createdFile.id,
+          );
+          allThumbnailRecords.push(...thumbnailRecords);
+        } catch (err) {
+          logger.warn(
+            { modelId, fileId: createdFile.id, path: fileInput.relativePath, error: String(err) },
+            'Thumbnail generation failed for file (non-fatal)',
+          );
+        }
+      },
+    );
 
     const imageCount = fileInputs.filter((f) => f.fileType === 'image').length;
     if (imageCount > 0 && allThumbnailRecords.length === 0) {
@@ -1267,29 +1289,45 @@ export class IngestionService {
       const totalSizeBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
 
       const verifiedSources: VerifiedImportSource[] = [];
-      for (const entry of entries) {
-        const sourceFilePath = path.join(discovered.sourcePath, entry.relativePath);
-        const storagePath = `models/${modelId}/${entry.relativePath}`;
+      await forEachWithConcurrency(
+        entries,
+        uploadConcurrencyFor(storageService),
+        async (entry) => {
+          const sourceFilePath = path.join(discovered.sourcePath, entry.relativePath);
+          const storagePath = `models/${modelId}/${entry.relativePath}`;
 
-        if (isLocalStorageService(storageService)) {
-          if (!importStrategy) {
-            throw storageError('Local folder import strategy is unavailable');
+          if (isLocalStorageService(storageService)) {
+            if (!importStrategy) {
+              throw storageError('Local folder import strategy is unavailable');
+            }
+            await importStrategy.execute(
+              sourceFilePath,
+              storageService.resolveStoragePath(storagePath),
+            );
+            return;
           }
-          await importStrategy.execute(
-            sourceFilePath,
-            storageService.resolveStoragePath(storagePath),
-          );
-        } else {
-          await storageService.store(storagePath, fs.createReadStream(sourceFilePath));
+
+          // Registered before the upload starts: a write that fails or fails
+          // verification may still have left an object behind, and the cleanup
+          // path needs to know about it.
           storedPaths.push(storagePath);
-          await this.verifyStoredFile(storagePath, entry.hash, entry.sizeBytes);
+
+          // Hashing happens as the bytes stream out, so the source is only
+          // deleted after both its SHA-256 and the provider's ETag confirm the
+          // upload — with no second trip to fetch the object back.
+          await storeVerified(
+            storageService,
+            storagePath,
+            () => fs.createReadStream(sourceFilePath),
+            { expectedSha256: entry.hash, expectedSize: entry.sizeBytes },
+          );
           verifiedSources.push({
             filePath: sourceFilePath,
             hash: entry.hash,
             sizeBytes: entry.sizeBytes,
           });
-        }
-      }
+        },
+      );
 
       // Create model file records
       const modelFileInputs = entries.map((entry) => ({
@@ -1345,18 +1383,6 @@ export class IngestionService {
       }
       await modelService.updateModelStatus(modelId, 'error');
       throw err;
-    }
-  }
-
-  private async verifyStoredFile(
-    storagePath: string,
-    expectedHash: string,
-    expectedSize: number,
-  ): Promise<void> {
-    const digest = await this.digestStream(await storageService.retrieveStream(storagePath));
-
-    if (digest.sizeBytes !== expectedSize || digest.hash !== expectedHash) {
-      throw storageError(`Stored object failed SHA-256 verification: ${storagePath}`);
     }
   }
 

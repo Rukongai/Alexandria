@@ -1,24 +1,54 @@
 import { S3Client } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
+import { Agent as HttpAgent } from 'node:http';
+import { Agent as HttpsAgent } from 'node:https';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { config, type AppConfig } from '../config/index.js';
 import { storageError } from '../utils/errors.js';
+import { EtagCalculator } from '../utils/etag.js';
 import { S3StorageService } from './s3-storage.service.js';
 import { validateStorageKey } from './storage-key.js';
+
+/** Concurrent parts `@aws-sdk/lib-storage` keeps in flight per upload (its default). */
+const S3_MULTIPART_QUEUE_SIZE = 4;
+/** Spare sockets for reads, HEADs, and deletes running alongside uploads. */
+const S3_SOCKET_HEADROOM = 16;
 
 export type StorageData = Buffer | Readable;
 export type StorageProgressCallback = (transferredBytes: number) => void;
 
+/**
+ * What a backend can tell the caller about a completed write.
+ *
+ * `etag` lets a caller confirm the stored bytes match what it sent without
+ * downloading the object again; see `utils/etag.ts`. Backends with no such
+ * concept (the local filesystem) leave both fields undefined, and callers must
+ * treat that as "verification unavailable" rather than "verification failed".
+ */
+export interface StoreResult {
+  etag?: string;
+  /** Part size used for the upload, needed to reproduce a multipart ETag. */
+  partSize?: number;
+}
+
 export interface IStorageService {
   readonly kind: 'local' | 's3';
+  /**
+   * Part size this backend uploads with, when it has one. Needed up front to
+   * reproduce a multipart ETag while the bytes stream past; backends without a
+   * multipart concept leave it undefined.
+   */
+  readonly uploadPartSize?: number;
   store(
     filePath: string,
     data: StorageData,
     onProgress?: StorageProgressCallback,
-  ): Promise<void>;
+  ): Promise<StoreResult>;
   retrieve(filePath: string): Promise<Buffer>;
   retrieveStream(filePath: string): Promise<Readable>;
   copy(sourcePath: string, destinationPath: string): Promise<void>;
@@ -47,7 +77,7 @@ export class LocalStorageService implements IStorageService {
     filePath: string,
     data: StorageData,
     onProgress?: StorageProgressCallback,
-  ): Promise<void> {
+  ): Promise<StoreResult> {
     const absolute = this.resolve(filePath);
     const dir = path.dirname(absolute);
 
@@ -65,6 +95,9 @@ export class LocalStorageService implements IStorageService {
         await pipeline(data, writeStream);
         reportStorageProgress(onProgress, writeStream.bytesWritten);
       }
+
+      // The filesystem has no ETag; local writes are verified by the OS.
+      return {};
     } catch (error) {
       throw storageError(`Failed to store file at ${filePath}: ${errorMessage(error)}`);
     }
@@ -138,6 +171,108 @@ export function isLocalStorageService(
   return storage.kind === 'local';
 }
 
+/**
+ * How many files to upload at once for a given backend.
+ *
+ * Only remote backends benefit: their cost is dominated by per-request round
+ * trips. Local writes stay sequential so filesystem imports keep their existing
+ * ordering and disk access pattern.
+ */
+export function uploadConcurrencyFor(
+  storage: IStorageService,
+  appConfig: AppConfig = config,
+): number {
+  return storage.kind === 's3' ? appConfig.storageUploadConcurrency : 1;
+}
+
+export interface VerifiedStoreOptions {
+  /** SHA-256 the source bytes are expected to hash to. */
+  expectedSha256?: string;
+  expectedSize?: number;
+  onProgress?: StorageProgressCallback;
+}
+
+export interface VerifiedStoreResult extends StoreResult {
+  /** Whether the backend returned an ETag that could be checked. */
+  etagVerified: boolean;
+  sha256: string;
+  sizeBytes: number;
+}
+
+/**
+ * Store a file and verify it landed intact, without reading it back.
+ *
+ * The source is hashed as it streams to the backend, producing two independent
+ * checks for the price of one pass over bytes already in flight:
+ *
+ *   - SHA-256 over what was read, compared against the hash recorded when the
+ *     file was scanned — catches a source that changed or read back wrong
+ *   - the S3 ETag the bytes should produce, compared against what the provider
+ *     reports — catches truncation or corruption in transit
+ *
+ * This replaces downloading each object again to hash it, which doubled the
+ * bytes crossing the wire and dominated import time on a remote backend.
+ *
+ * `createSource` is a factory rather than a stream so the caller cannot
+ * accidentally supply one that has already been consumed.
+ */
+export async function storeVerified(
+  storage: IStorageService,
+  storagePath: string,
+  createSource: () => Readable,
+  options: VerifiedStoreOptions = {},
+): Promise<VerifiedStoreResult> {
+  const partSize = storage.uploadPartSize;
+  const etagCalculator = partSize === undefined ? undefined : new EtagCalculator(partSize);
+  const sha256 = createHash('sha256');
+  let sizeBytes = 0;
+
+  const source = createSource();
+  const hashing = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      try {
+        sha256.update(chunk);
+        sizeBytes += chunk.length;
+        etagCalculator?.update(chunk);
+        callback(null, chunk);
+      } catch (error) {
+        callback(error as Error);
+      }
+    },
+  });
+  // `pipe` does not forward source failures, which would otherwise leave the
+  // upload waiting on a stream that will never end.
+  source.on('error', (error) => hashing.destroy(error));
+  source.pipe(hashing);
+
+  const result = await storage.store(storagePath, hashing, options.onProgress);
+  const digest = sha256.digest('hex');
+
+  if (options.expectedSize !== undefined && sizeBytes !== options.expectedSize) {
+    throw storageError(
+      `Stored object has unexpected size: ${storagePath} ` +
+        `(expected ${options.expectedSize} bytes, read ${sizeBytes})`,
+    );
+  }
+  if (options.expectedSha256 !== undefined && digest !== options.expectedSha256) {
+    throw storageError(`Stored object failed SHA-256 verification: ${storagePath}`);
+  }
+
+  // A backend with no ETag concept (the local filesystem) reports nothing to
+  // compare, which is not the same as reporting a mismatch.
+  const comparablePartSize = result.partSize === undefined || result.partSize === partSize;
+  const etagVerified =
+    etagCalculator !== undefined && result.etag !== undefined && comparablePartSize;
+
+  if (etagVerified && !etagCalculator.matches(result.etag)) {
+    throw storageError(
+      `Stored object failed ETag verification: ${storagePath} (reported ${result.etag})`,
+    );
+  }
+
+  return { ...result, etagVerified, sha256: digest, sizeBytes };
+}
+
 export function createStorageService(appConfig: AppConfig = config): IStorageService {
   if (appConfig.storageBackend === 'local') {
     return new LocalStorageService(appConfig.storagePath);
@@ -147,12 +282,23 @@ export function createStorageService(appConfig: AppConfig = config): IStorageSer
     throw storageError('S3_BUCKET is required when STORAGE_BACKEND=s3');
   }
 
+  // Files are uploaded concurrently, and each multipart upload itself keeps
+  // several parts in flight, so the socket pool has to cover the product of the
+  // two. The SDK's default of 50 would otherwise silently become the real
+  // concurrency ceiling once fan-out is enabled.
+  const maxSockets =
+    appConfig.storageUploadConcurrency * S3_MULTIPART_QUEUE_SIZE + S3_SOCKET_HEADROOM;
+
   const client = new S3Client({
     endpoint: appConfig.s3.endpoint,
     region: appConfig.s3.region,
     forcePathStyle: appConfig.s3.forcePathStyle,
     requestChecksumCalculation: 'WHEN_REQUIRED',
     responseChecksumValidation: 'WHEN_REQUIRED',
+    requestHandler: new NodeHttpHandler({
+      httpsAgent: new HttpsAgent({ keepAlive: true, maxSockets }),
+      httpAgent: new HttpAgent({ keepAlive: true, maxSockets }),
+    }),
   });
 
   return new S3StorageService({
