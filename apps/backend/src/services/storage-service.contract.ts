@@ -8,6 +8,7 @@ export interface StorageContractService {
   retrieveStream(key: string): Promise<Readable>;
   copy(sourceKey: string, destinationKey: string): Promise<void>;
   delete(key: string): Promise<void>;
+  deleteMany(keys: string[]): Promise<{ filePath: string; reason: string }[]>;
   exists(key: string): Promise<boolean>;
 }
 
@@ -113,6 +114,47 @@ export function describeStorageServiceContract(
       await fixture.service.delete('models/delete-me.bin');
 
       await expect(fixture.service.exists('models/delete-me.bin')).resolves.toBe(false);
+    });
+
+    it('should delete many objects and report no failures', async () => {
+      const keys = ['models/a.bin', 'models/b.bin', 'models/nested/c.bin'];
+      for (const key of keys) await fixture.service.store(key, Buffer.from(key));
+
+      await expect(fixture.service.deleteMany(keys)).resolves.toEqual([]);
+
+      for (const key of keys) {
+        await expect(fixture.service.exists(key)).resolves.toBe(false);
+      }
+    });
+
+    it('should treat an already absent key in a batch as deleted', async () => {
+      await fixture.service.store('models/present.bin', Buffer.from('here'));
+
+      const failures = await fixture.service.deleteMany([
+        'models/present.bin',
+        'models/never-existed.bin',
+      ]);
+
+      expect(failures).toEqual([]);
+      await expect(fixture.service.exists('models/present.bin')).resolves.toBe(false);
+    });
+
+    it('should report an unusable key without abandoning the rest of the batch', async () => {
+      await fixture.service.store('models/keep-going.bin', Buffer.from('data'));
+
+      const failures = await fixture.service.deleteMany([
+        '../escaped.bin',
+        'models/keep-going.bin',
+      ]);
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.filePath).toBe('../escaped.bin');
+      // The valid key in the same call is still deleted.
+      await expect(fixture.service.exists('models/keep-going.bin')).resolves.toBe(false);
+    });
+
+    it('should accept an empty batch', async () => {
+      await expect(fixture.service.deleteMany([])).resolves.toEqual([]);
     });
 
     it('should map a missing object retrieval to a storage error', async () => {

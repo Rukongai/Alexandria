@@ -4,6 +4,7 @@ import {
   CopyObjectCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
@@ -18,6 +19,7 @@ import { normalizeEtag } from '../utils/etag.js';
 import type {
   IStorageService,
   StorageData,
+  StorageDeleteFailure,
   StorageProgressCallback,
   StoreResult,
 } from './storage.service.js';
@@ -31,6 +33,18 @@ export const S3_SINGLE_COPY_MAX_SIZE = 5 * 1024 * 1024 * 1024;
  * part limit it covers objects far larger than anything Alexandria stores.
  */
 export const S3_COPY_PART_SIZE = 1024 * 1024 * 1024;
+/**
+ * Objects per DeleteObjects request.
+ *
+ * The protocol allows 1,000, but providers meter deletion work rather than
+ * request count: MEGA S4's guidance is that ~100 per request balances delete
+ * throughput against contention with uploads running alongside it, and that
+ * 1,000-key batches degrade everything else. Batches are also sent one at a
+ * time for the same reason.
+ *
+ * @see https://help.mega.io/megas4/setup-guides/mega-s4-rate-limits-and-performance-guidance
+ */
+export const S3_DELETE_BATCH_SIZE = 100;
 
 export interface S3StorageServiceOptions {
   client: S3Client;
@@ -223,6 +237,59 @@ export class S3StorageService implements IStorageService {
     }
   }
 
+  async deleteMany(filePaths: string[]): Promise<StorageDeleteFailure[]> {
+    const failures: StorageDeleteFailure[] = [];
+    const keyed: { filePath: string; key: string }[] = [];
+
+    for (const filePath of filePaths) {
+      try {
+        keyed.push({ filePath, key: this.objectKey(filePath) });
+      } catch (error) {
+        // A key that cannot be built is this path's failure alone; the rest of
+        // the batch is still deletable.
+        failures.push({ filePath, reason: errorMessage(error) });
+      }
+    }
+
+    for (let offset = 0; offset < keyed.length; offset += S3_DELETE_BATCH_SIZE) {
+      const batch = keyed.slice(offset, offset + S3_DELETE_BATCH_SIZE);
+      failures.push(...(await this.deleteBatch(batch)));
+    }
+
+    return failures;
+  }
+
+  private async deleteBatch(
+    batch: { filePath: string; key: string }[],
+  ): Promise<StorageDeleteFailure[]> {
+    let response;
+    try {
+      response = await this.client.send(
+        new DeleteObjectsCommand({
+          Bucket: this.bucket,
+          // Quiet returns only the keys that failed. The successes are the
+          // batch minus those, and S3 counts deleting an absent key as success,
+          // which matches how the single-object path treats a missing object.
+          Delete: { Objects: batch.map(({ key }) => ({ Key: key })), Quiet: true },
+        }),
+      );
+    } catch (error) {
+      // The request itself failed, so nothing in this batch was deleted.
+      const reason = errorMessage(error);
+      return batch.map(({ filePath }) => ({ filePath, reason }));
+    }
+
+    if (!response.Errors?.length) return [];
+
+    // A DeleteObjects response is HTTP 200 even when individual keys fail, so
+    // the per-key errors have to be read out of the body or failures are lost.
+    const byKey = new Map(batch.map(({ filePath, key }) => [key, filePath]));
+    return response.Errors.map((failure) => ({
+      filePath: (failure.Key && byKey.get(failure.Key)) || failure.Key || 'unknown',
+      reason: [failure.Code, failure.Message].filter(Boolean).join(': ') || 'unknown error',
+    }));
+  }
+
   async exists(filePath: string): Promise<boolean> {
     const key = this.objectKey(filePath);
 
@@ -267,8 +334,26 @@ function isNotFound(error: unknown): boolean {
   );
 }
 
+/**
+ * Describe an S3 failure without discarding the code that identifies it.
+ *
+ * Providers signal throttling with a distinct code — `SlowDown` on MEGA S4 —
+ * and the SDK carries it on `name` rather than in the message. Dropping it
+ * makes a rate-limited deployment read exactly like a credentials fault, and
+ * the provider's own guidance is to watch the logs for these responses.
+ */
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+
+  const { httpStatusCode } = (error as { $metadata?: { httpStatusCode?: number } })
+    .$metadata ?? {};
+  const parts = [error.message];
+  if (error.name && error.name !== 'Error' && !error.message.includes(error.name)) {
+    parts.push(error.name);
+  }
+  if (httpStatusCode !== undefined) parts.push(`HTTP ${httpStatusCode}`);
+
+  return parts.length > 1 ? `${parts[0]} (${parts.slice(1).join(', ')})` : parts[0];
 }
 
 function reportStorageProgress(

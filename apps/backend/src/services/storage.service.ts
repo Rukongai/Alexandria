@@ -53,7 +53,21 @@ export interface IStorageService {
   retrieveStream(filePath: string): Promise<Readable>;
   copy(sourcePath: string, destinationPath: string): Promise<void>;
   delete(filePath: string): Promise<void>;
+  /**
+   * Delete many objects, reporting per-object failures rather than throwing.
+   *
+   * Callers deleting a model's files are cleaning up after the database row is
+   * already gone, so one unreachable object must not abandon the rest. The
+   * returned failures are for logging; an empty array means everything was
+   * removed or was already absent.
+   */
+  deleteMany(filePaths: string[]): Promise<StorageDeleteFailure[]>;
   exists(filePath: string): Promise<boolean>;
+}
+
+export interface StorageDeleteFailure {
+  filePath: string;
+  reason: string;
 }
 
 export class LocalStorageService implements IStorageService {
@@ -144,6 +158,20 @@ export class LocalStorageService implements IStorageService {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
       throw storageError(`Failed to delete file at ${filePath}: ${errorMessage(error)}`);
     }
+  }
+
+  async deleteMany(filePaths: string[]): Promise<StorageDeleteFailure[]> {
+    // The filesystem has no batch unlink, so this is the same work the caller
+    // would do itself; it exists so callers need only one code path.
+    const failures: StorageDeleteFailure[] = [];
+    for (const filePath of filePaths) {
+      try {
+        await this.delete(filePath);
+      } catch (error) {
+        failures.push({ filePath, reason: errorMessage(error) });
+      }
+    }
+    return failures;
   }
 
   async exists(filePath: string): Promise<boolean> {

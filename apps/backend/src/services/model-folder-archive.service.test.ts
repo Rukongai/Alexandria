@@ -54,6 +54,10 @@ function memoryStorage(initial: Record<string, string>): {
     async delete(key: string): Promise<void> {
       objects.delete(key);
     },
+    async deleteMany(keys: string[]) {
+      for (const key of keys) objects.delete(key);
+      return [];
+    },
     async exists(key: string): Promise<boolean> {
       return objects.has(key);
     },
