@@ -199,7 +199,7 @@ Routes that apply `requireLibrary` (as of P5):
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/upload/multipart/complete`, `POST /models/import`
 - `GET /models/import-sessions`, `POST /models/import-sessions/:id/commit`
 - `GET /search`
-- `GET /tools/duplicates`, `POST /tools/duplicates/mark`, `POST /tools/duplicates/ignore`
+- `GET /tools/duplicates`, `POST /tools/duplicates/mark`, `POST /tools/duplicates/file-groups/:hash/mark`, `POST /tools/duplicates/file-groups/:hash/ignore`
 - All `/smart-collections` routes
 - All `/bulk/*` routes
 - `POST /ai/chat`, `POST /ai/proposals/:id/apply`
@@ -361,7 +361,7 @@ On startup, S3 mode performs `HeadBucket` validation before database migration a
 
 File candidates are ordered by file creation time and file UUID, with owning-model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Whole-model candidates remain oldest-first by model creation time and UUID, and whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. PresenterService formats timestamps and assembles per-group and aggregate counts and two independent reclaimable-byte estimates. File-level savings can overlap whole-model savings, so clients must not add `fileReclaimableBytes` to `reclaimableBytes`.
 
-`markDuplicates(libraryId)` reconciles `model_files.is_duplicate` to the files in the current non-ignored scan, clearing stale marks as well as setting new ones. A ready, non-empty model receives `models.is_duplicate = true` only when every current file in it is marked. `ignoreDuplicates(libraryId)` idempotently persists the current report's file hashes and model fingerprints, then reconciles flags against the now-filtered scan. ModelService invokes the same reconciliation after file-set mutations; consequently, deleting one member of a two-file duplicate set clears the surviving file's mark and any model mark that no longer satisfies the all-files rule.
+`markDuplicates(libraryId)` marks every file in the current non-ignored scan, while `markDuplicateFileGroup(libraryId, hash)` marks only the selected current file group and preserves other explicit choices. A ready, non-empty model receives `models.is_duplicate = true` only when every current file in it is marked. `ignoreDuplicateFileGroup(libraryId, hash)` persists the selected file hash, then reconciles flags against the now-filtered scan so ignoring an already marked set clears its file and derived model flags. Both per-file-group methods reject a missing, stale, or already ignored hash as not found. There is no ignore-all service method or route. User-triggered mark and ignore actions run in retrying serializable transactions, and their flag update rechecks ready-library duplicate membership and ignore state in SQL, so an overlapping deletion or ignore cannot restore a stale flag. ModelService invokes preservation-oriented reconciliation after file-set mutations: it keeps marked files only while they remain members of a current, non-ignored duplicate set, never marks an unrelated set as a side effect, and recalculates model flags. Consequently, deleting one member of a two-file duplicate set clears the surviving file's mark and any model mark that no longer satisfies the all-files rule.
 
 ### ModelService
 
@@ -766,8 +766,9 @@ All provider routes apply `requireAuth` and enforce provider ownership in `AiPro
 | Method | Route | Purpose | Service Chain | Library-scoped |
 |--------|-------|---------|---------------|---------------|
 | GET | /tools/duplicates | Report exact duplicate files and ready models with identical complete file-hash multisets | DuplicateScannerService → PresenterService | Yes |
-| POST | /tools/duplicates/mark | Reconcile duplicate flags from the current non-ignored scan | DuplicateScannerService | Yes |
-| POST | /tools/duplicates/ignore | Persist the current duplicate identities as ignored and reconcile flags | DuplicateScannerService | Yes |
+| POST | /tools/duplicates/mark | Mark every file in the current non-ignored scan | DuplicateScannerService | Yes |
+| POST | /tools/duplicates/file-groups/:hash/mark | Mark one current duplicate file set | DuplicateScannerService | Yes |
+| POST | /tools/duplicates/file-groups/:hash/ignore | Ignore one current duplicate file set and clear its flags | DuplicateScannerService | Yes |
 
 **Bulk Operations**
 | Method | Route | Purpose | Service Chain | Library-scoped |

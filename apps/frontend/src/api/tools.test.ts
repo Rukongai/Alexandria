@@ -6,7 +6,12 @@ vi.mock('./client', () => ({
 }));
 
 import { get, post } from './client';
-import { ignoreDuplicates, markDuplicates, scanDuplicates } from './tools';
+import {
+  ignoreDuplicateFileGroup,
+  markDuplicateFileGroup,
+  markDuplicates,
+  scanDuplicates,
+} from './tools';
 
 const envelope = <T,>(data: T) => ({ data, meta: null, errors: null });
 
@@ -38,11 +43,23 @@ describe('duplicate tools API', () => {
     expect(post).toHaveBeenCalledWith('/tools/duplicates/mark');
   });
 
-  it('should ignore duplicates with a bodyless request and unwrap the group counts', async () => {
-    const result = { ignoredFileGroupCount: 3, ignoredModelGroupCount: 1 };
+  it('should mark one duplicate file group using its encoded hash', async () => {
+    const result = { markedFileCount: 2, markedModelCount: 1 };
     vi.mocked(post).mockResolvedValue(envelope(result));
 
-    await expect(ignoreDuplicates()).resolves.toEqual(result);
-    expect(post).toHaveBeenCalledWith('/tools/duplicates/ignore');
+    await expect(markDuplicateFileGroup('hash/with spaces')).resolves.toEqual(result);
+    expect(post).toHaveBeenCalledWith(
+      '/tools/duplicates/file-groups/hash%2Fwith%20spaces/mark',
+    );
+  });
+
+  it('should ignore one duplicate file group using its encoded hash', async () => {
+    const result = { ignoredFileGroupCount: 1, ignoredModelGroupCount: 0 };
+    vi.mocked(post).mockResolvedValue(envelope(result));
+
+    await expect(ignoreDuplicateFileGroup('hash/with spaces')).resolves.toEqual(result);
+    expect(post).toHaveBeenCalledWith(
+      '/tools/duplicates/file-groups/hash%2Fwith%20spaces/ignore',
+    );
   });
 });

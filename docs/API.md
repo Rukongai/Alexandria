@@ -1496,7 +1496,7 @@ Values are validated against the resolved field definition before storage. Numbe
 
 ## Tools
 
-Tools are library maintenance operations exposed from the library-scoped Tools page at `/lib/:id/tools`.
+Tools are library maintenance operations exposed from the library-scoped Tools page at `/lib/:id/tools`. Duplicate review supports marking the complete report or marking and ignoring one duplicate file set at a time. There is no bulk ignore endpoint.
 
 ### GET /tools/duplicates
 
@@ -1616,7 +1616,7 @@ The example's `Dragon Bust Variant` has one file identical to both whole-model c
 
 ### POST /tools/duplicates/mark
 
-Mark every file in the active library's current non-ignored duplicate report. The operation is a reconciliation: stale marks are cleared, current duplicate files are marked, and a ready non-empty model is marked only when all of its files are marked duplicate.
+Mark every file in the active library's current non-ignored duplicate report. Stale marks are cleared, current duplicate files are marked, and a ready non-empty model is marked only when all of its files are marked duplicate.
 
 **Auth required:** Yes. The route applies `requireAuth` followed by `requireLibrary`.
 
@@ -1627,7 +1627,7 @@ Mark every file in the active library's current non-ignored duplicate report. Th
 ```json
 {
   "data": {
-    "markedFileCount": 3,
+    "markedFileCount": 5,
     "markedModelCount": 2
   },
   "meta": null,
@@ -1637,11 +1637,34 @@ Mark every file in the active library's current non-ignored duplicate report. Th
 
 `markedFileCount` counts files in the current non-ignored file groups. `markedModelCount` counts `ready`, non-empty models in the active library whose every current file is marked after reconciliation.
 
-After a file-set mutation, including deletion, the same reconciliation runs again. If deleting a file leaves its former match unique, the surviving file's duplicate flag is cleared; affected all-file model flags are recalculated as well.
+After a file-set mutation, including deletion, reconciliation preserves explicitly marked files that are still members of a current, non-ignored duplicate set and clears marks that are no longer valid. It does not automatically mark newly discovered sets. If deleting a file leaves its former match unique, the surviving file's duplicate flag is cleared; affected all-file model flags are recalculated as well.
 
-### POST /tools/duplicates/ignore
+### POST /tools/duplicates/file-groups/:hash/mark
 
-Ignore every file group and whole-model group in the active library's current duplicate report. The operation stores exact file hashes and whole-model fingerprints as library-scoped ignore keys, is idempotent, and reconciles existing duplicate flags after those groups are removed from future reports.
+Mark the files in one current duplicate file set. Other explicitly marked sets remain marked, and unrelated unmarked sets remain unmarked. The `hash` path parameter is the lowercase SHA-256 value returned as `DuplicateFileGroup.hash` by the scan endpoint.
+
+**Auth required:** Yes. The route applies `requireAuth` followed by `requireLibrary`.
+
+**Request body:** None.
+
+**Response (200):** `data` is a `MarkDuplicatesResult` in the standard envelope. The counts describe all files and models marked after the operation.
+
+```json
+{
+  "data": {
+    "markedFileCount": 2,
+    "markedModelCount": 0
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+If the hash is not a current, non-ignored duplicate file set in the active library, the endpoint returns `404 NOT_FOUND` with the message `Duplicate file group not found`. A hash that is not a 64-character lowercase SHA-256 digest instead returns `400 VALIDATION_ERROR`.
+
+### POST /tools/duplicates/file-groups/:hash/ignore
+
+Ignore one current duplicate file set. The operation persists its exact file hash as a library-scoped ignore key, excludes the set from later scans, and clears duplicate flags from its files if the set was already marked. Other current file-set marks are preserved, and model flags are recalculated from the remaining file flags. Whole-model duplicate groups remain independent and read-only in the duplicate report.
 
 **Auth required:** Yes. The route applies `requireAuth` followed by `requireLibrary`.
 
@@ -1652,15 +1675,15 @@ Ignore every file group and whole-model group in the active library's current du
 ```json
 {
   "data": {
-    "ignoredFileGroupCount": 2,
-    "ignoredModelGroupCount": 1
+    "ignoredFileGroupCount": 1,
+    "ignoredModelGroupCount": 0
   },
   "meta": null,
   "errors": null
 }
 ```
 
-The two counts describe the file groups and whole-model groups in the non-ignored report captured by this request. Repeating the request with no newly discovered groups returns zero for both counts.
+On success, `ignoredFileGroupCount` is `1` and `ignoredModelGroupCount` is `0`. If the hash is not a current, non-ignored duplicate file set in the active library, including because it was already ignored, the endpoint returns `404 NOT_FOUND` with the message `Duplicate file group not found`. A hash that is not a 64-character lowercase SHA-256 digest instead returns `400 VALIDATION_ERROR`.
 
 ---
 

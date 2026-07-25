@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ErrorCodes } from '@alexandria/shared';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { DuplicateScannerService } from './duplicate-scanner.service.js';
 
 interface FileCandidateRow {
@@ -87,6 +90,32 @@ function databaseReturning(rows: FileCandidateRow[], ignoredFingerprints: string
     },
     modelQuery,
     fileQuery,
+  };
+}
+
+function withReconciliationUpdates(database: { select: ReturnType<typeof vi.fn> }) {
+  let fileFlag: SQL | undefined;
+  const fileUpdate = {
+    set: vi.fn((values: { isDuplicate: SQL }) => {
+      fileFlag = values.isDuplicate;
+      return fileUpdate;
+    }),
+    where: vi.fn(() => fileUpdate),
+    returning: vi.fn().mockResolvedValue([]),
+  };
+  const modelUpdate = {
+    set: vi.fn(() => modelUpdate),
+    where: vi.fn(() => modelUpdate),
+    returning: vi.fn().mockResolvedValue([]),
+  };
+  const update = vi.fn()
+    .mockReturnValueOnce(fileUpdate)
+    .mockReturnValueOnce(modelUpdate);
+  Object.assign(database, { update });
+
+  return {
+    getFileFlag: () => fileFlag,
+    update,
   };
 }
 
@@ -247,5 +276,77 @@ describe('DuplicateScannerService', () => {
 
     expect(ignored.groups).toEqual([]);
     expect(ignored.fileGroups).toHaveLength(1);
+  });
+
+  it.each(['markDuplicateFileGroup', 'ignoreDuplicateFileGroup'] as const)(
+    'rejects a missing or stale group in %s',
+    async (method) => {
+      const fixture = databaseReturning([
+        fileRow('first', 'shared'),
+        fileRow('second', 'shared'),
+      ]);
+      const service = new DuplicateScannerService(fixture.database as never);
+
+      await expect(service[method]('library-1', 'missing')).rejects.toMatchObject({
+        code: ErrorCodes.NOT_FOUND,
+        statusCode: 404,
+        message: 'Duplicate file group not found',
+      });
+    },
+  );
+
+  it('revalidates current duplicate membership inside the mark-all update', async () => {
+    const fixture = databaseReturning([]);
+    const updates = withReconciliationUpdates(fixture.database);
+
+    await new DuplicateScannerService(fixture.database as never).markDuplicates('library-1');
+
+    const fileFlag = updates.getFileFlag();
+    expect(fileFlag).toBeDefined();
+    const query = new PgDialect().sqlToQuery(fileFlag!);
+    expect(query.sql).toContain('duplicate_owner.status = \'ready\'');
+    expect(query.sql).toContain('duplicate_model.status = \'ready\'');
+    expect(query.sql).toContain('count(*)');
+    expect(query.sql).toContain('duplicate_file_ignores');
+    expect(query.params.filter((param) => param === 'library-1')).toHaveLength(3);
+  });
+
+  it('marks a selected current hash without relying on scanned file IDs', async () => {
+    const fixture = databaseReturning([
+      fileRow('first', 'shared'),
+      fileRow('second', 'shared'),
+    ]);
+    const updates = withReconciliationUpdates(fixture.database);
+
+    await new DuplicateScannerService(fixture.database as never)
+      .markDuplicateFileGroup('library-1', 'shared');
+
+    const query = new PgDialect().sqlToQuery(updates.getFileFlag()!);
+    expect(query.params).toContain('shared');
+    expect(query.params).not.toContain('first-shared');
+    expect(query.params).not.toContain('second-shared');
+  });
+
+  it('retries user review actions in a serializable transaction', async () => {
+    const fixture = databaseReturning([]);
+    withReconciliationUpdates(fixture.database);
+    const serializationFailure = Object.assign(new Error('serialization failure'), {
+      code: '40001',
+    });
+    const transaction = vi.fn()
+      .mockRejectedValueOnce(serializationFailure)
+      .mockImplementationOnce((callback: (database: unknown) => Promise<unknown>) =>
+        callback(fixture.database));
+    Object.assign(fixture.database, { transaction });
+
+    await new DuplicateScannerService(fixture.database as never).markDuplicates('library-1');
+
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(transaction).toHaveBeenNthCalledWith(1, expect.any(Function), {
+      isolationLevel: 'serializable',
+    });
+    expect(transaction).toHaveBeenNthCalledWith(2, expect.any(Function), {
+      isolationLevel: 'serializable',
+    });
   });
 });

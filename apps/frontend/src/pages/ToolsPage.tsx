@@ -13,11 +13,21 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { DuplicateFile, DuplicateModel, DuplicateScanResult } from '@alexandria/shared';
-import { ignoreDuplicates, markDuplicates, scanDuplicates } from '../api/tools';
+import {
+  ignoreDuplicateFileGroup,
+  markDuplicateFileGroup,
+  markDuplicates,
+  scanDuplicates,
+} from '../api/tools';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { useLibraryPath } from '../hooks/use-libraries';
 import { formatDate, formatFileSize } from '../lib/format';
+
+interface FileGroupActionTarget {
+  hash: string;
+  setNumber: number;
+}
 
 export function ToolsPage() {
   const libPath = useLibraryPath();
@@ -48,25 +58,56 @@ export function ToolsPage() {
       await refreshDuplicateData();
     },
   });
-  const ignoreMutation = useMutation({
-    mutationFn: ignoreDuplicates,
+  const markFileGroupMutation = useMutation({
+    mutationFn: ({ hash }: FileGroupActionTarget) => markDuplicateFileGroup(hash),
     onMutate: () => setActionFeedback(''),
-    onSuccess: async (result) => {
+    onSuccess: async (result, target) => {
       setActionFeedback(
-        `Ignored ${countPhrase(result.ignoredFileGroupCount, 'duplicate file group')} and ${countPhrase(result.ignoredModelGroupCount, 'duplicate model group')}.`,
+        `Marked duplicate file set ${target.setNumber}. ${countPhrase(result.markedFileCount, 'duplicate file')} and ${countPhrase(result.markedModelCount, 'duplicate model')} are now marked.`,
       );
       await refreshDuplicateData();
     },
   });
-  const actionPending = markMutation.isPending || ignoreMutation.isPending;
-  const actionError = markMutation.isError || ignoreMutation.isError;
+  const ignoreFileGroupMutation = useMutation({
+    mutationFn: ({ hash }: FileGroupActionTarget) => ignoreDuplicateFileGroup(hash),
+    onMutate: () => setActionFeedback(''),
+    onSuccess: async (_result, target) => {
+      setActionFeedback(
+        `Ignored duplicate file set ${target.setNumber}. Any existing duplicate flags for this set were cleared.`,
+      );
+      await refreshDuplicateData();
+    },
+  });
+  const actionPending =
+    markMutation.isPending ||
+    markFileGroupMutation.isPending ||
+    ignoreFileGroupMutation.isPending;
+  const actionError =
+    markMutation.isError || markFileGroupMutation.isError || ignoreFileGroupMutation.isError;
+  const actionErrorMessage = markMutation.isError
+    ? 'Duplicates could not be marked.'
+    : markFileGroupMutation.isError
+      ? `Duplicate file set ${markFileGroupMutation.variables?.setNumber ?? ''} could not be marked.`
+      : ignoreFileGroupMutation.isError
+        ? `Duplicate file set ${ignoreFileGroupMutation.variables?.setNumber ?? ''} could not be ignored.`
+        : '';
+  const resetActions = () => {
+    setActionFeedback('');
+    markMutation.reset();
+    markFileGroupMutation.reset();
+    ignoreFileGroupMutation.reset();
+  };
   let liveAnnouncement = '';
   if (markMutation.isPending) {
     liveAnnouncement = 'Marking all reported duplicate files and models.';
-  } else if (ignoreMutation.isPending) {
-    liveAnnouncement = 'Ignoring the reported duplicate groups.';
+  } else if (markFileGroupMutation.isPending) {
+    liveAnnouncement = `Marking duplicates in duplicate file set ${markFileGroupMutation.variables.setNumber}.`;
+  } else if (ignoreFileGroupMutation.isPending) {
+    liveAnnouncement = `Ignoring duplicate file set ${ignoreFileGroupMutation.variables.setNumber}.`;
   } else if (actionFeedback) {
     liveAnnouncement = actionFeedback;
+  } else if (actionErrorMessage) {
+    liveAnnouncement = actionErrorMessage;
   } else if (scan.isFetching) {
     liveAnnouncement = 'Scanning library for duplicate files and models.';
   } else if (scan.isError) {
@@ -114,9 +155,7 @@ export function ToolsPage() {
           </div>
           <Button
             onClick={() => {
-              setActionFeedback('');
-              markMutation.reset();
-              ignoreMutation.reset();
+              resetActions();
               void scan.refetch();
             }}
             disabled={scan.isFetching || actionPending}
@@ -145,9 +184,7 @@ export function ToolsPage() {
           {actionError && (
             <div role="alert" className="mb-5 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
               <p className="text-sm font-medium text-destructive">
-                {markMutation.isError
-                  ? 'Duplicates could not be marked.'
-                  : 'Duplicate groups could not be ignored.'}
+                {actionErrorMessage}
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
                 No changes were applied. Try the action again.
@@ -174,10 +211,26 @@ export function ToolsPage() {
           ) : scan.data ? (
             <DuplicateResults
               result={scan.data}
-              onMark={() => markMutation.mutate()}
-              onIgnore={() => ignoreMutation.mutate()}
-              marking={markMutation.isPending}
-              ignoring={ignoreMutation.isPending}
+              onMarkAll={() => {
+                resetActions();
+                markMutation.mutate();
+              }}
+              onMarkFileGroup={(target) => {
+                resetActions();
+                markFileGroupMutation.mutate(target);
+              }}
+              onIgnoreFileGroup={(target) => {
+                resetActions();
+                ignoreFileGroupMutation.mutate(target);
+              }}
+              markingAll={markMutation.isPending}
+              activeFileGroupAction={
+                markFileGroupMutation.isPending
+                  ? { hash: markFileGroupMutation.variables.hash, action: 'mark' }
+                  : ignoreFileGroupMutation.isPending
+                    ? { hash: ignoreFileGroupMutation.variables.hash, action: 'ignore' }
+                    : null
+              }
               actionsDisabled={actionPending || scan.isFetching}
             />
           ) : (
@@ -212,17 +265,19 @@ function countPhrase(count: number, singular: string): string {
 
 function DuplicateResults({
   result,
-  onMark,
-  onIgnore,
-  marking,
-  ignoring,
+  onMarkAll,
+  onMarkFileGroup,
+  onIgnoreFileGroup,
+  markingAll,
+  activeFileGroupAction,
   actionsDisabled,
 }: {
   result: DuplicateScanResult;
-  onMark: () => void;
-  onIgnore: () => void;
-  marking: boolean;
-  ignoring: boolean;
+  onMarkAll: () => void;
+  onMarkFileGroup: (target: FileGroupActionTarget) => void;
+  onIgnoreFileGroup: (target: FileGroupActionTarget) => void;
+  markingAll: boolean;
+  activeFileGroupAction: { hash: string; action: 'mark' | 'ignore' } | null;
   actionsDisabled: boolean;
 }) {
   const hasDuplicateFiles = result.fileGroups.length > 0;
@@ -257,26 +312,18 @@ function DuplicateResults({
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             Marking adds a Duplicate indicator to every reported file and to any model whose every
-            file is duplicated. Ignoring excludes these groups from later scans. Neither action
-            deletes files.
+            file is duplicated. You can also mark or ignore one duplicate file set at a time below.
+            Ignoring a set clears its existing Duplicate indicators. No review action deletes files.
           </p>
         </div>
         <div className="flex flex-shrink-0 flex-wrap gap-2">
-          <Button variant="outline" onClick={onIgnore} disabled={actionsDisabled}>
-            {ignoring ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <EyeOff className="mr-2 h-4 w-4" />
-            )}
-            {ignoring ? 'Ignoring…' : 'Ignore duplicates'}
-          </Button>
-          <Button onClick={onMark} disabled={actionsDisabled}>
-            {marking ? (
+          <Button onClick={onMarkAll} disabled={actionsDisabled}>
+            {markingAll ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (
               <Tags className="mr-2 h-4 w-4" />
             )}
-            {marking ? 'Marking…' : 'Mark all duplicates'}
+            {markingAll ? 'Marking…' : 'Mark all duplicates'}
           </Button>
         </div>
       </section>
@@ -301,6 +348,13 @@ function DuplicateResults({
         {hasDuplicateFiles ? (
           <div className="flex flex-col gap-4">
             {result.fileGroups.map((group, index) => {
+              const setNumber = index + 1;
+              const markingThisGroup =
+                activeFileGroupAction?.hash === group.hash &&
+                activeFileGroupAction.action === 'mark';
+              const ignoringThisGroup =
+                activeFileGroupAction?.hash === group.hash &&
+                activeFileGroupAction.action === 'ignore';
               const oldestFileId = group.files.reduce((oldest, file) =>
                 new Date(file.createdAt).getTime() < new Date(oldest.createdAt).getTime()
                   ? file
@@ -309,18 +363,55 @@ function DuplicateResults({
 
               return (
                 <div key={group.hash} className="overflow-hidden rounded-lg border">
-                  <div className="flex flex-col gap-1 border-b bg-muted/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-col gap-3 border-b bg-muted/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <h3 className="text-sm font-semibold text-foreground">
-                        Duplicate file set {index + 1}
+                        Duplicate file set {setNumber}
                       </h3>
                       <p className="text-xs text-muted-foreground">
                         {group.files.length} identical files · {formatFileSize(group.sizeBytes)} each
                       </p>
                     </div>
-                    <Badge variant="outline">
-                      {formatFileSize(group.reclaimableBytes)} reclaimable
-                    </Badge>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline">
+                        {formatFileSize(group.reclaimableBytes)} reclaimable
+                      </Badge>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        aria-label={
+                          ignoringThisGroup
+                            ? `Ignoring duplicates in file set ${setNumber}`
+                            : `Ignore duplicates in file set ${setNumber}`
+                        }
+                        onClick={() => onIgnoreFileGroup({ hash: group.hash, setNumber })}
+                        disabled={actionsDisabled}
+                      >
+                        {ignoringThisGroup ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <EyeOff className="mr-2 h-4 w-4" />
+                        )}
+                        {ignoringThisGroup ? 'Ignoring…' : 'Ignore duplicates'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        aria-label={
+                          markingThisGroup
+                            ? `Marking duplicates in file set ${setNumber}`
+                            : `Mark duplicates in file set ${setNumber}`
+                        }
+                        onClick={() => onMarkFileGroup({ hash: group.hash, setNumber })}
+                        disabled={actionsDisabled}
+                      >
+                        {markingThisGroup ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Tags className="mr-2 h-4 w-4" />
+                        )}
+                        {markingThisGroup ? 'Marking…' : 'Mark duplicates'}
+                      </Button>
+                    </div>
                   </div>
                   <div className="divide-y">
                     {group.files.map((file) => (
@@ -352,7 +443,8 @@ function DuplicateResults({
               Whole-model duplicates
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Ready models whose complete file sets match exactly.
+              Ready models whose complete file sets match exactly. These matches are shown for
+              reference and do not have separate review actions.
             </p>
           </div>
 
