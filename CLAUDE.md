@@ -1,113 +1,144 @@
 # Alexandria — Claude Code Instructions
 
+Self-hosted personal library for 3D-printing model collections. npm workspaces + Turborepo.
+
+| Workspace | What it is |
+|-----------|-----------|
+| `apps/backend` | Fastify + TypeScript. Drizzle/Postgres, BullMQ workers on Redis, services under `src/services/`, thin routes under `src/routes/` |
+| `apps/frontend` | React + Vite + Tailwind + shadcn/ui |
+| `packages/shared` | Canonical types, Zod validation schemas, shared constants |
+| `tools/telegram-importer` | Standalone Python CLI, not part of the npm workspace |
+
+---
+
+## Commands
+
+Run everything through npm/turbo from the repo root:
+
+```
+npm run dev:up      # infra + migrate + seed + both dev servers (one command)
+npm run dev         # dev servers only, infra already running
+npm run services:up # Postgres + Redis only (needed for integration tests)
+npm test            # all tests
+npm run lint
+npm run build
+```
+
+Single workspace: `npm test -w @alexandria/backend` (or `@alexandria/frontend`).
+
+**Do not run `npx vitest` from the repo root.** There is no root `vitest.config.*`, so a root
+invocation runs frontend tests without `jsdom` and without `src/test/setup.ts`, and drops the
+backend's `fileParallelism: false` / single-fork settings that the shared-DB integration tests
+depend on. Always go through `npm test`.
+
+Backend tests need Postgres and Redis running (`npm run services:up`). Do **not** export
+`DATABASE_URL` for them — `apps/backend/vitest.config.ts` pins the test DB to
+`postgresql://alexandria:alexandria@localhost:5433/alexandria_test`, and overriding it points
+the suite at the dev database.
+
+---
+
+## Gotchas
+
+**Drizzle migrations are hand-authored.** `db:generate` is not the working path — meta snapshots
+stopped being produced long ago and the generator can't resolve the schema's `.js` ESM imports.
+To add a migration: write the `.sql` file in `apps/backend/src/db/migrations/`, add a matching
+entry to `meta/_journal.json` (`idx`, `tag`, `when`), then apply with `db:migrate`.
+
+**A migration with a too-low `when` is silently skipped.** The migrator only applies entries whose
+`when` exceeds the newest already-applied timestamp, and entry `0008` was authored out of order,
+so the bar is higher than wall-clock time. Set each new `when` above the current maximum in
+`_journal.json` (currently `1784771953000`). "Migrations complete" prints either way — verify the
+table or column actually exists afterwards.
+
+**Two databases exist** on `localhost:5433`: `alexandria` (dev) and `alexandria_test` (vitest).
+A schema change must be migrated into both, or integration tests run against a stale schema:
+`DATABASE_URL=…/alexandria_test npm run db:migrate -w @alexandria/backend`.
+
+---
+
 ## Git Workflow (MANDATORY)
 
-**Never commit directly to `main`.** Every task (bug fix, feature, refactor) must use a branch and a PR.
+**Never commit directly to `main`.** Every task uses a branch and a PR. **Never self-merge** —
+leave PRs open for review.
 
-### Branch Naming
-
-| Type | Format |
+| Type | Branch format |
 |------|--------|
 | Bug fix with issue | `fix/{issue-number}-{short-slug}` |
 | Feature with issue | `feat/{issue-number}-{short-slug}` |
 | Bug fix without issue | `fix/{short-slug}` |
 | Feature without issue | `feat/{short-slug}` |
 
-### Standard Task Flow
-
 ```
 git checkout main && git pull
 git checkout -b fix/<number>-<slug>   # or feat/
 # ... do work ...
 git add <files>
-git commit -m "fix: ..."              # conventional commit format
-gh pr create --title "..." --body "..."
+git commit -m "fix: ..."
+gh pr create --title "..." --body "..."   # include "Closes #<number>" when there's an issue
 ```
 
-### Commit Format
-
-Follow `docs/CONVENTIONS.md` for conventional commit messages:
-- `fix: ...` for bug fixes
-- `feat: ...` for new features
-- `refactor: ...` for internal changes
-- `test: ...` for test-only changes
-- `docs: ...` for documentation
-
-**Never self-merge.** Leave PRs open for review.
+Commit messages are conventional commits — `<type>: <description>`, with an optional `(<scope>)`.
+Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`.
 
 ---
 
-## Before Starting Any Task — Load These Docs
+## Docs — Look Up, Don't Preload
 
-| Doc | When to load |
+These are references, not required reading. Open the section you need; don't load whole files
+speculatively (`API.md` alone is ~2,400 lines).
+
+| Doc | Go here for |
 |-----|-------------|
-| `docs/ARCHITECTURE.md` | Every task |
-| `docs/CONVENTIONS.md` | Every task |
-| `docs/TYPES.md` | When touching API contracts or shared types |
-| `docs/API.md` | When adding or modifying endpoints |
-| `docs/AGENTS.md` | When delegating to sub-agents |
+| `docs/ARCHITECTURE.md` | Service boundaries, startup sequence, component map, decision log. The source of truth for structure — read the relevant section before any structural change |
+| `docs/CONVENTIONS.md` | Naming, route/service patterns, error handling, logging, storage paths, testing style |
+| `docs/TYPES.md` | Canonical type definitions — read before changing an API contract or shared type |
+| `docs/API.md` | Endpoint reference — read the specific endpoints you're touching |
+| `docs/STORAGE.md` | Local vs S3-compatible storage, path layout, migration |
+| `docs/DEPLOYMENT.md`, `docs/HOSTED_DATABASE.md` | Docker Compose deployment, hosted Postgres |
+
+If something doesn't fit the architecture, don't improvise — propose a specific update to
+`docs/ARCHITECTURE.md` with rationale, make it an explicit change, then implement against it.
+
+`docs/PLAN.md` and `docs/AGENTS.md` describe the original phased build-out and are historical.
+Don't take process direction from them.
+
+Never speculate about code you haven't opened. If a file is referenced, read it first.
 
 ---
 
-## Working on a Bug
+## Subagents
 
-### Doc Checklist
-1. `docs/ARCHITECTURE.md` — locate the service boundary where the bug lives
-2. `docs/CONVENTIONS.md` — confirm correct patterns before writing fixes
-3. `docs/TYPES.md` — verify type contracts aren't violated by the fix
-
-### Agent Delegation Matrix
+Delegate for **substantial, scoped work** — a whole feature layer, a new service, a broad review —
+where an isolated context window genuinely helps. Work directly on small changes, single-file
+edits, and anything spanning several domains at once; a cold subagent re-derives context you
+already have and usually costs more than it returns.
 
 | Area | Agent |
 |------|-------|
-| React component / hook / page / API client | `frontend` |
-| Fastify route / service / middleware / worker | `backend-service` |
-| DB schema / migration / query | `database` |
+| React pages / components / hooks / API client | `frontend` |
+| Fastify routes / services / middleware / workers | `backend-service` |
+| Schema / migrations / query optimization | `database` |
 | Test coverage | `testing` |
-| Review (always run at end) | `reviewer` |
-| Cross-cutting (spans multiple domains) | Work directly; delegate sub-tasks |
+| Architectural drift and convention review | `reviewer` |
+| Doc updates after a feature lands | `documentation` |
 
-### Bug Fix Process
-1. Fetch issue: `gh issue view <number>`
-2. Create branch: `git checkout main && git pull && git checkout -b fix/<number>-<slug>`
-3. Read relevant source files (don't guess — read first)
-4. Delegate to the appropriate domain agent, or work directly for cross-cutting changes
-5. Run tests: `npx vitest run` (with `DATABASE_URL` if integration tests)
-6. Invoke `reviewer` agent
-7. Create PR: `gh pr create` with `Closes #<number>` in the body
+When delegating, hand over only the relevant architecture section, types, and source files.
+
+Run `reviewer` at the end of a feature or a non-trivial fix — not for a typo or a one-line change.
+Run `documentation` when a change alters an endpoint, a type contract, or the architecture.
 
 ---
 
-## Working on a Feature
+## Task Flow
 
-### Doc Checklist
-1. `docs/ARCHITECTURE.md` — understand service boundaries and where the feature fits
-2. `docs/TYPES.md` — identify new or changed types, update shared types first
-3. `docs/CONVENTIONS.md` — confirm correct patterns before writing new code
-4. `docs/API.md` — review endpoint contracts; update for any new endpoints
-
-### Agent Delegation Matrix
-
-| Area | Agent |
-|------|-------|
-| React pages / components / hooks | `frontend` |
-| Backend services / routes / workers | `backend-service` |
-| DB columns / tables / migrations | `database` |
-| Multi-domain feature | Delegate each domain; coordinate from main session |
-| Tests | `testing` |
-| Review (always run at end) | `reviewer` |
-| Docs update (always run at end) | `documentation` |
-
-### Feature Process
-1. Fetch issue: `gh issue view <number>`
-2. Create branch: `git checkout main && git pull && git checkout -b feat/<number>-<slug>`
-3. Check if `docs/ARCHITECTURE.md` needs an update before writing code
-4. Delegate to domain agents for each layer (database → backend → frontend)
-5. Coordinate results and resolve any cross-layer dependencies
-6. Run tests
-7. Invoke `reviewer` agent
-8. Invoke `documentation` agent to update `docs/API.md`, `docs/ARCHITECTURE.md`, etc.
-9. Create PR with `Closes #<number>` in the body
+1. If there's an issue: `gh issue view <number>`
+2. Branch from up-to-date `main`
+3. Read the relevant source and the doc sections that cover it
+4. Implement — directly, or delegated per the table above
+5. `npm test` (plus `npm run lint` / `npm run build` when the change is broad)
+6. `reviewer`, and `documentation` if docs are affected
+7. `gh pr create`, with `Closes #<number>` when an issue exists
 
 ---
 
