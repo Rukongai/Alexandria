@@ -33,6 +33,7 @@ interface ModelDetailPanelProps {
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
   onDeleteFolder?: (path: string, name: string) => void;
+  onSplitFolder?: (path: string, name: string) => void;
   allCollections: CollectionDetail[];
   collectionsLoading: boolean;
   collectionsError: boolean;
@@ -64,6 +65,7 @@ export function ModelDetailPanel({
   onRenameFolder,
   onMoveFolder,
   onDeleteFolder,
+  onSplitFolder,
   allCollections,
   collectionsLoading,
   collectionsError,
@@ -127,6 +129,7 @@ export function ModelDetailPanel({
           onRenameFolder={onRenameFolder}
           onMoveFolder={onMoveFolder}
           onDeleteFolder={onDeleteFolder}
+          onSplitFolder={onSplitFolder}
         />
       )}
     </div>

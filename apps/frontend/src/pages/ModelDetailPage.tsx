@@ -1,8 +1,8 @@
 import * as React from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, AlertTriangle, Download, GitMerge, Loader2, Upload, X } from 'lucide-react';
-import type { ModelCard, ModelDetail } from '@alexandria/shared';
+import type { ModelCard, ModelDetail, SplitModelFolderRequest } from '@alexandria/shared';
 import { addModelsToCollection, getCollections } from '../api/collections';
 import {
   createModelFolder,
@@ -13,12 +13,14 @@ import {
   getModelFiles,
   getModels,
   mergeModels,
+  splitModelFolder,
   updateModelFile,
   updateModelFolder,
   uploadModelFiles,
 } from '../api/models';
 import { ModelHero } from '../components/models/ModelHero';
 import { ModelDetailPanel } from '../components/models/ModelDetailPanel';
+import { SplitFolderDialog } from '../components/models/SplitFolderDialog';
 import { ModelBreadcrumb } from '../components/models/ModelBreadcrumb';
 import { ModelViewer3DModal } from '../components/models/ModelViewer3DModal';
 import { TextFilePreviewModal } from '../components/models/TextFilePreviewModal';
@@ -73,6 +75,7 @@ export function ModelDetailPage() {
   const { id } = useParams<{ id: string }>();
   useAssistantTarget({ modelIds: id ? [id] : [] });
   const libPath = useLibraryPath();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -153,6 +156,10 @@ export function ModelDetailPage() {
   const [activeTextFile, setActiveTextFile] = React.useState<TextFileRef | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = React.useState(false);
   const [mergeDialogOpen, setMergeDialogOpen] = React.useState(false);
+  const [splitFolderTarget, setSplitFolderTarget] = React.useState<{
+    path: string;
+    name: string;
+  } | null>(null);
   const [selectedImageFileId, setSelectedImageFileId] = React.useState<string | null>(null);
 
   const fileMutation = useMutation({
@@ -215,6 +222,33 @@ export function ModelDetailPage() {
   const activeFileActionStatus = fileMutation.isPending
     ? fileActionStatus(fileMutation.variables)
     : undefined;
+
+  const splitFolderMutation = useMutation({
+    mutationFn: async ({ path, name }: SplitModelFolderRequest) => {
+      if (!id) throw new Error('Model id is required');
+      return splitModelFolder(id, { path, name });
+    },
+    onSuccess: async (result, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['model', result.sourceModelId] }),
+        queryClient.invalidateQueries({ queryKey: ['model-files', result.sourceModelId] }),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['search'] }),
+      ]);
+      toast({
+        title: `${variables.name} created`,
+        description: `${result.movedFileCount} file${result.movedFileCount === 1 ? '' : 's'} moved to the new model.`,
+      });
+      navigate(libPath(`/models/${result.newModelId}`));
+    },
+    onError: (error) => {
+      toast({
+        title: 'Could not split folder',
+        description: error instanceof Error ? error.message : undefined,
+        variant: 'destructive',
+      });
+    },
+  });
 
   function runFileAction(action: FileAction): Promise<void> {
     return fileMutation.mutateAsync(action).then(() => undefined);
@@ -357,6 +391,7 @@ export function ModelDetailPage() {
               onRenameFolder={(path, name) => fileMutation.mutate({ type: 'rename-folder', path, name })}
               onMoveFolder={(path, parentPath) => runFileAction({ type: 'move-folder', path, parentPath })}
               onDeleteFolder={(path, name) => fileMutation.mutate({ type: 'delete-folder', path, name })}
+              onSplitFolder={(path, name) => setSplitFolderTarget({ path, name })}
               allCollections={collectionsQuery.data ?? []}
               collectionsLoading={collectionsQuery.isLoading}
               collectionsError={collectionsQuery.isError}
@@ -380,6 +415,20 @@ export function ModelDetailPage() {
         open={textPreviewOpen}
         onOpenChange={setTextPreviewOpen}
         file={activeTextFile}
+      />
+      <SplitFolderDialog
+        open={Boolean(splitFolderTarget)}
+        folderPath={splitFolderTarget?.path ?? ''}
+        initialName={splitFolderTarget?.name ?? ''}
+        onOpenChange={(open) => {
+          if (!open) setSplitFolderTarget(null);
+        }}
+        onConfirm={(name) => {
+          if (!splitFolderTarget) return Promise.reject(new Error('Folder is required'));
+          return splitFolderMutation
+            .mutateAsync({ path: splitFolderTarget.path, name })
+            .then(() => undefined);
+        }}
       />
 
       {model && (

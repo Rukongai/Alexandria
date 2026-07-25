@@ -477,6 +477,13 @@ interface ImageFile {
   thumbnailUrl: string;
   originalUrl: string;
 }
+
+// Returned after moving one folder into a newly created model
+interface SplitModelFolderResponse {
+  sourceModelId: string;
+  newModelId: string;
+  movedFileCount: number;
+}
 ```
 
 ### File Tree Types
@@ -868,6 +875,11 @@ interface UpdateModelRequest {
   name?: string;
   description?: string | null;
   previewImageFileId?: string | null; // set to a ModelFile UUID to pin cover; null to revert to fallback
+}
+
+interface SplitModelFolderRequest {
+  path: string; // relative folder path; 1–1000 characters before service-level normalization
+  name: string; // trimmed new-model name; 1–255 characters
 }
 ```
 

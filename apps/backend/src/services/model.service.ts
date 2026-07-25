@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { eq, asc, and, inArray, sql } from 'drizzle-orm';
 import type {
   ModelSourceType,
@@ -6,6 +7,7 @@ import type {
   FileType,
   UpdateModelRequest,
   MergeModelsResponse,
+  SplitModelFolderResponse,
   UpdateModelFileRequest,
   UpdateModelFolderRequest,
 } from '@alexandria/shared';
@@ -24,8 +26,10 @@ import { conflict, notFound, validationError } from '../utils/errors.js';
 import type { Model } from '../db/schema/model.js';
 import { libraryService } from './library.service.js';
 import { storageService } from './storage.service.js';
+import { generateSlug } from '../utils/slug.js';
 
 export interface CreateModelData {
+  id?: string;
   name: string;
   slug: string;
   description?: string | null;
@@ -111,7 +115,12 @@ export class ModelService {
   }
 
   private descendantFilter(column: unknown, folderPath: string) {
-    return sql`${column} = ${folderPath} or ${column} like ${`${folderPath}/%`}`;
+    return sql`${column} = ${folderPath} or ${this.strictDescendantFilter(column, folderPath)}`;
+  }
+
+  private strictDescendantFilter(column: unknown, folderPath: string) {
+    const prefix = `${folderPath}/`;
+    return sql`left(${column}, ${prefix.length}) = ${prefix}`;
   }
 
   private uniqueRelativePath(requestedPath: string, usedPaths: Set<string>): string {
@@ -147,6 +156,7 @@ export class ModelService {
     const [row] = await executor
       .insert(models)
       .values({
+        ...(data.id ? { id: data.id } : {}),
         name: data.name,
         slug: data.slug,
         description: data.description ?? null,
@@ -233,8 +243,11 @@ export class ModelService {
       .where(eq(models.id, modelId));
   }
 
-  async recalculateModelStats(modelId: string): Promise<void> {
-    const [stats] = await db
+  async recalculateModelStats(
+    modelId: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
+    const [stats] = await executor
       .select({
         fileCount: sql<number>`cast(count(${modelFiles.id}) as int)`,
         totalSizeBytes: sql<number>`cast(coalesce(sum(${modelFiles.sizeBytes}), 0) as bigint)`,
@@ -242,7 +255,7 @@ export class ModelService {
       .from(modelFiles)
       .where(eq(modelFiles.modelId, modelId));
 
-    await db
+    await executor
       .update(models)
       .set({
         fileCount: Number(stats?.fileCount ?? 0),
@@ -441,13 +454,17 @@ export class ModelService {
       .orderBy(asc(modelFolders.path));
   }
 
-  private async ensureFolderAncestors(modelId: string, folderPath: string): Promise<void> {
+  private async ensureFolderAncestors(
+    modelId: string,
+    folderPath: string,
+    executor: DatabaseExecutor = db,
+  ): Promise<void> {
     if (!folderPath) return;
     const paths = folderPath
       .split('/')
       .map((_, index, segments) => segments.slice(0, index + 1).join('/'));
 
-    const fileConflicts = await db
+    const fileConflicts = await executor
       .select({ id: modelFiles.id })
       .from(modelFiles)
       .where(and(eq(modelFiles.modelId, modelId), inArray(modelFiles.relativePath, paths)));
@@ -455,7 +472,7 @@ export class ModelService {
       throw conflict('A file already exists at that folder path');
     }
 
-    await db.insert(modelFolders)
+    await executor.insert(modelFolders)
       .values(paths.map((pathValue) => ({ modelId, path: pathValue })))
       .onConflictDoNothing();
   }
@@ -514,7 +531,10 @@ export class ModelService {
       db
         .select({ id: modelFiles.id, relativePath: modelFiles.relativePath })
         .from(modelFiles)
-        .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${currentPath}/%`}`)),
+        .where(and(
+          eq(modelFiles.modelId, modelId),
+          this.strictDescendantFilter(modelFiles.relativePath, currentPath),
+        )),
       db
         .select({ id: modelFolders.id, path: modelFolders.path })
         .from(modelFolders)
@@ -617,20 +637,30 @@ export class ModelService {
     }
 
     await this.assertFileDestinationAvailable(modelId, relativePath, fileId);
-    if (parentPath) {
-      await this.ensureFolderAncestors(modelId, parentPath);
-    }
-
     await storageService.copy(file.storagePath, storagePath);
     try {
-      await db
-        .update(modelFiles)
-        .set({ filename, relativePath, storagePath })
-        .where(eq(modelFiles.id, file.id));
-      await db
-        .update(models)
-        .set({ updatedAt: new Date() })
-        .where(eq(models.id, modelId));
+      await db.transaction(async (tx) => {
+        if (parentPath) {
+          await this.ensureFolderAncestors(modelId, parentPath, tx);
+        }
+        const [updatedFile] = await tx
+          .update(modelFiles)
+          .set({ filename, relativePath, storagePath })
+          .where(and(
+            eq(modelFiles.id, file.id),
+            eq(modelFiles.modelId, modelId),
+            eq(modelFiles.relativePath, file.relativePath),
+            eq(modelFiles.storagePath, file.storagePath),
+          ))
+          .returning({ id: modelFiles.id });
+        if (!updatedFile) {
+          throw conflict('File changed while it was being updated; try again');
+        }
+        await tx
+          .update(models)
+          .set({ updatedAt: new Date() })
+          .where(eq(models.id, modelId));
+      });
     } catch (err) {
       await storageService.delete(storagePath).catch(() => {});
       throw err;
@@ -669,15 +699,14 @@ export class ModelService {
     }
 
     await this.assertFolderDestinationAvailable(modelId, currentPath, nextPath);
-    if (parentPath) {
-      await this.ensureFolderAncestors(modelId, parentPath);
-    }
-
     const [filesInFolder, foldersInFolder] = await Promise.all([
       db
         .select()
         .from(modelFiles)
-        .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${currentPath}/%`}`))
+        .where(and(
+          eq(modelFiles.modelId, modelId),
+          this.strictDescendantFilter(modelFiles.relativePath, currentPath),
+        ))
         .orderBy(asc(modelFiles.relativePath)),
       db
         .select()
@@ -701,19 +730,39 @@ export class ModelService {
 
     try {
       await db.transaction(async (tx) => {
+        if (parentPath) {
+          await this.ensureFolderAncestors(modelId, parentPath, tx);
+        }
         for (const folderRow of foldersInFolder) {
           const pathValue = `${nextPath}${folderRow.path.slice(currentPath.length)}`;
-          await tx
+          const [updatedFolder] = await tx
             .update(modelFolders)
             .set({ path: pathValue })
-            .where(eq(modelFolders.id, folderRow.id));
+            .where(and(
+              eq(modelFolders.id, folderRow.id),
+              eq(modelFolders.modelId, modelId),
+              eq(modelFolders.path, folderRow.path),
+            ))
+            .returning({ id: modelFolders.id });
+          if (!updatedFolder) {
+            throw conflict('Folder changed while it was being updated; try again');
+          }
         }
 
         for (const move of fileMoves) {
-          await tx
+          const [updatedFile] = await tx
             .update(modelFiles)
             .set({ relativePath: move.relativePath, storagePath: move.storagePath })
-            .where(eq(modelFiles.id, move.file.id));
+            .where(and(
+              eq(modelFiles.id, move.file.id),
+              eq(modelFiles.modelId, modelId),
+              eq(modelFiles.relativePath, move.file.relativePath),
+              eq(modelFiles.storagePath, move.file.storagePath),
+            ))
+            .returning({ id: modelFiles.id });
+          if (!updatedFile) {
+            throw conflict('Folder changed while it was being updated; try again');
+          }
         }
 
         await tx
@@ -739,7 +788,18 @@ export class ModelService {
       throw notFound(`File not found: ${fileId}`);
     }
 
-    await db.delete(modelFiles).where(eq(modelFiles.id, file.id));
+    const [deletedFile] = await db
+      .delete(modelFiles)
+      .where(and(
+        eq(modelFiles.id, file.id),
+        eq(modelFiles.modelId, modelId),
+        eq(modelFiles.relativePath, file.relativePath),
+        eq(modelFiles.storagePath, file.storagePath),
+      ))
+      .returning({ id: modelFiles.id });
+    if (!deletedFile) {
+      throw conflict('File changed while it was being deleted; try again');
+    }
     await this.recalculateModelStats(modelId);
     await storageService.delete(file.storagePath).catch(() => {});
   }
@@ -758,12 +818,18 @@ export class ModelService {
     const files = await db
       .select()
       .from(modelFiles)
-      .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${folderPath}/%`}`));
+      .where(and(
+        eq(modelFiles.modelId, modelId),
+        this.strictDescendantFilter(modelFiles.relativePath, folderPath),
+      ));
 
     await db.transaction(async (tx) => {
       await tx
         .delete(modelFiles)
-        .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${folderPath}/%`}`));
+        .where(and(
+          eq(modelFiles.modelId, modelId),
+          this.strictDescendantFilter(modelFiles.relativePath, folderPath),
+        ));
       await tx
         .delete(modelFolders)
         .where(and(eq(modelFolders.modelId, modelId), this.descendantFilter(modelFolders.path, folderPath)));
@@ -773,11 +839,229 @@ export class ModelService {
     await Promise.all(files.map((file) => storageService.delete(file.storagePath).catch(() => {})));
   }
 
+  async splitModelFolder(
+    sourceModelId: string,
+    requestedPath: string,
+    requestedName: string,
+    userId: string,
+    libraryId: string,
+  ): Promise<SplitModelFolderResponse> {
+    const folderPath = this.normalizeFolderPath(requestedPath);
+    const name = requestedName.trim();
+    if (!name) {
+      throw validationError('Model name is required', 'name');
+    }
+    if (name.length > 255) {
+      throw validationError('Model name must be 255 characters or fewer', 'name');
+    }
+
+    const source = await this.requireOwnedModel(sourceModelId, userId, libraryId);
+    if (source.status !== 'ready') {
+      throw validationError('Source model must be ready before splitting', 'sourceModelId');
+    }
+
+    const [folder, files, folders] = await Promise.all([
+      db
+        .select({ id: modelFolders.id })
+        .from(modelFolders)
+        .where(and(eq(modelFolders.modelId, sourceModelId), eq(modelFolders.path, folderPath)))
+        .limit(1),
+      db
+        .select()
+        .from(modelFiles)
+        .where(and(
+          eq(modelFiles.modelId, sourceModelId),
+          this.strictDescendantFilter(modelFiles.relativePath, folderPath),
+        ))
+        .orderBy(asc(modelFiles.relativePath)),
+      db
+        .select()
+        .from(modelFolders)
+        .where(and(
+          eq(modelFolders.modelId, sourceModelId),
+          this.descendantFilter(modelFolders.path, folderPath),
+        ))
+        .orderBy(asc(modelFolders.path)),
+    ]);
+
+    if (folder.length === 0 && files.length === 0) {
+      throw notFound(`Folder not found: ${folderPath}`);
+    }
+    if (files.length === 0) {
+      throw validationError('Folder must contain at least one file before it can be split', 'path');
+    }
+
+    const newModelId = randomUUID();
+    const fileIds = files.map((file) => file.id);
+    const movedFileIds = new Set(fileIds);
+    const thumbnailRows = await db
+      .select()
+      .from(thumbnails)
+      .where(inArray(thumbnails.sourceFileId, fileIds));
+    const fileMoves = files.map((file) => {
+      const relativePath = file.relativePath.slice(folderPath.length + 1);
+      return {
+        file,
+        relativePath,
+        storagePath: `models/${newModelId}/${relativePath}`,
+      };
+    });
+    const thumbnailMoves = thumbnailRows.map((thumbnail) => ({
+      thumbnail,
+      storagePath: `thumbnails/${newModelId}/${path.posix.basename(thumbnail.storagePath)}`,
+    }));
+    const copiedPaths: string[] = [];
+
+    try {
+      for (const move of [...fileMoves, ...thumbnailMoves]) {
+        const sourcePath = 'file' in move ? move.file.storagePath : move.thumbnail.storagePath;
+        await storageService.copy(sourcePath, move.storagePath);
+        copiedPaths.push(move.storagePath);
+      }
+
+      await db.transaction(async (tx) => {
+        const [lockedSource] = await this.lockOwnedModels(
+          [sourceModelId],
+          userId,
+          libraryId,
+          tx,
+        );
+        if (lockedSource.status !== 'ready') {
+          throw validationError('Source model must be ready before splitting', 'sourceModelId');
+        }
+
+        const currentFiles = await tx
+          .select({
+            id: modelFiles.id,
+            relativePath: modelFiles.relativePath,
+            storagePath: modelFiles.storagePath,
+          })
+          .from(modelFiles)
+          .where(and(
+            eq(modelFiles.modelId, sourceModelId),
+            this.strictDescendantFilter(modelFiles.relativePath, folderPath),
+          ))
+          .orderBy(asc(modelFiles.relativePath))
+          .for('update');
+        const unchanged = currentFiles.length === files.length && currentFiles.every((file, index) =>
+          file.id === files[index]?.id &&
+          file.relativePath === files[index]?.relativePath &&
+          file.storagePath === files[index]?.storagePath,
+        );
+        if (!unchanged) {
+          throw conflict('Folder changed while it was being split; try again');
+        }
+
+        const currentFolders = await tx
+          .select({ id: modelFolders.id, path: modelFolders.path })
+          .from(modelFolders)
+          .where(and(
+            eq(modelFolders.modelId, sourceModelId),
+            this.descendantFilter(modelFolders.path, folderPath),
+          ))
+          .orderBy(asc(modelFolders.path))
+          .for('update');
+        const foldersUnchanged = currentFolders.length === folders.length &&
+          currentFolders.every((folderRow, index) =>
+            folderRow.id === folders[index]?.id && folderRow.path === folders[index]?.path,
+          );
+        if (!foldersUnchanged) {
+          throw conflict('Folder changed while it was being split; try again');
+        }
+
+        await this.createModel({
+          id: newModelId,
+          name,
+          slug: generateSlug(name),
+          userId,
+          libraryId,
+          sourceType: 'manual',
+          status: 'ready',
+        }, tx);
+
+        for (const folderRow of folders) {
+          if (folderRow.path === folderPath) {
+            await tx.delete(modelFolders).where(eq(modelFolders.id, folderRow.id));
+            continue;
+          }
+          await tx
+            .update(modelFolders)
+            .set({
+              modelId: newModelId,
+              path: folderRow.path.slice(folderPath.length + 1),
+            })
+            .where(eq(modelFolders.id, folderRow.id));
+        }
+
+        for (const move of fileMoves) {
+          await tx
+            .update(modelFiles)
+            .set({
+              modelId: newModelId,
+              relativePath: move.relativePath,
+              storagePath: move.storagePath,
+            })
+            .where(eq(modelFiles.id, move.file.id));
+        }
+
+        for (const move of thumbnailMoves) {
+          await tx
+            .update(thumbnails)
+            .set({ storagePath: move.storagePath })
+            .where(eq(thumbnails.id, move.thumbnail.id));
+        }
+
+        if (lockedSource.previewImageFileId && movedFileIds.has(lockedSource.previewImageFileId)) {
+          await tx
+            .update(models)
+            .set({
+              previewImageFileId: null,
+              previewCropX: null,
+              previewCropY: null,
+              previewCropScale: null,
+            })
+            .where(eq(models.id, sourceModelId));
+          await tx
+            .update(models)
+            .set({
+              previewImageFileId: lockedSource.previewImageFileId,
+              previewCropX: lockedSource.previewCropX,
+              previewCropY: lockedSource.previewCropY,
+              previewCropScale: lockedSource.previewCropScale,
+            })
+            .where(eq(models.id, newModelId));
+        }
+
+        await this.recalculateModelStats(sourceModelId, tx);
+        await this.recalculateModelStats(newModelId, tx);
+      });
+    } catch (error) {
+      await Promise.all(copiedPaths.map((storagePath) =>
+        storageService.delete(storagePath).catch(() => {})));
+      throw error;
+    }
+
+    await Promise.all([
+      ...fileMoves.map((move) => storageService.delete(move.file.storagePath).catch(() => {})),
+      ...thumbnailMoves.map((move) =>
+        storageService.delete(move.thumbnail.storagePath).catch(() => {})),
+    ]);
+
+    return {
+      sourceModelId,
+      newModelId,
+      movedFileCount: files.length,
+    };
+  }
+
   private async folderHasFiles(modelId: string, folderPath: string): Promise<boolean> {
     const [file] = await db
       .select({ id: modelFiles.id })
       .from(modelFiles)
-      .where(and(eq(modelFiles.modelId, modelId), sql`${modelFiles.relativePath} like ${`${folderPath}/%`}`))
+      .where(and(
+        eq(modelFiles.modelId, modelId),
+        this.strictDescendantFilter(modelFiles.relativePath, folderPath),
+      ))
       .limit(1);
     return Boolean(file);
   }

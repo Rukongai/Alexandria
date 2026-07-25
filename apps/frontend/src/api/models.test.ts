@@ -11,9 +11,28 @@ vi.mock('./client', () => ({
 }));
 
 import { del, post, postForLibrary, putRaw } from './client';
-import { scanMultipartUpload, scanUpload } from './models';
+import { scanMultipartUpload, scanUpload, splitModelFolder } from './models';
 
 const envelope = <T,>(data: T) => ({ data, meta: null, errors: null });
+
+describe('splitModelFolder', () => {
+  it('posts the folder path and new model name and unwraps the response', async () => {
+    const response = {
+      sourceModelId: 'source-1',
+      newModelId: 'new-1',
+      movedFileCount: 4,
+    };
+    vi.mocked(post).mockResolvedValueOnce(envelope(response));
+
+    await expect(
+      splitModelFolder('source-1', { path: 'variants/large', name: 'Large Variant' }),
+    ).resolves.toEqual(response);
+    expect(post).toHaveBeenCalledWith('/models/source-1/folders/split', {
+      path: 'variants/large',
+      name: 'Large Variant',
+    });
+  });
+});
 
 describe('scanMultipartUpload', () => {
   beforeEach(() => {

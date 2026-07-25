@@ -1282,6 +1282,52 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
 
 ---
 
+### POST /models/:id/folders/split
+
+Move all contents of one folder into a new model. The selected folder itself is removed; files directly inside it become root files in the new model, and descendant folders are rebased beneath the new root. Persisted nested folders are retained even when they are empty.
+
+**Auth required:** Yes. The source model must belong to the authenticated user and the active library selected by `X-Library-Id` (or the user's default library when the header is omitted), and it must have `status: "ready"`.
+
+**Path parameter:** `id` — source model UUID
+
+**Request body:**
+
+```json
+{
+  "path": "bundle/parts",
+  "name": "Printable Parts"
+}
+```
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| `path` | string | Required relative folder path, 1–1000 characters. Leading/trailing slashes and whitespace around path segments are normalized; empty, `.`, `..`, control-character, and over-255-character segments are rejected. The folder must exist and contain at least one file. |
+| `name` | string | Required new model name, trimmed, 1–255 characters. |
+
+**Response (201):**
+
+```json
+{
+  "data": {
+    "sourceModelId": "33333333-3333-4333-8333-333333333333",
+    "newModelId": "44444444-4444-4444-8444-444444444444",
+    "movedFileCount": 2
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`data` is a `SplitModelFolderResponse`. Existing `ModelFile` and `Thumbnail` IDs and their associations are preserved. File and thumbnail objects are copied to storage keys belonging to the new model, then their database rows are reassigned in one transaction. If a moved image was the source model's selected preview, that selection and its crop settings move to the new model; otherwise the source preview is unchanged. File count and total size are recalculated for both models.
+
+The new model has `sourceType: "manual"` and `status: "ready"`. It starts without the source model's metadata, collection memberships, description, or original-filename provenance; those values and relationships remain on the source model.
+
+Storage copies happen before the database transaction. The transaction locks the source and confirms that the selected file and folder rows did not change while copying; a concurrent change returns `409 CONFLICT`. A copy or transaction failure leaves database state unchanged and triggers best-effort cleanup of every object whose copy completed successfully. After commit, removal of the source storage objects is best-effort and does not change the successful response.
+
+The endpoint returns `400 VALIDATION_ERROR` when the source is not ready, the name/path is invalid, or the folder contains no files. It returns `404 NOT_FOUND` when the owned active-library source or requested folder does not exist.
+
+---
+
 ### GET /models/:id/download
 
 Download all files belonging to a model as a ZIP archive. The archive is assembled and streamed from managed storage; the original directory structure is preserved and the full archive is never buffered in server memory.
