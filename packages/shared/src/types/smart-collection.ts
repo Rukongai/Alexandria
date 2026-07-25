@@ -18,6 +18,7 @@ export type BuiltinRuleField =
   | 'name' // models.search_vector / models.name
   | 'description' // models.search_vector
   | 'status' // models.status
+  | 'manualPreview' // models.preview_image_file_id (user-pinned cover)
   | 'fileType' // model_files.file_type (EXISTS)
   | 'collection' // collection_models membership
   | 'tag'; // model_tags + tags membership
@@ -26,6 +27,7 @@ export const BUILTIN_RULE_FIELDS: readonly BuiltinRuleField[] = [
   'name',
   'description',
   'status',
+  'manualPreview',
   'fileType',
   'collection',
   'tag',
@@ -60,7 +62,7 @@ export type RuleOperator =
   | 'notHasTag'
   | 'inCollection'
   | 'notInCollection'
-  | 'exists' // metadata field has any value
+  | 'exists' // field has a value (metadata or supported built-in)
   | 'notExists';
 
 export const RULE_OPERATORS: readonly RuleOperator[] = [
@@ -107,6 +109,7 @@ export const LEGAL_OPERATORS_BY_BUILTIN: Record<BuiltinRuleField, readonly RuleO
   name: ['contains', 'equals'],
   description: ['contains'],
   status: ['is', 'isNot'],
+  manualPreview: ['exists', 'notExists'],
   fileType: ['has', 'notHas'],
   collection: ['inCollection', 'notInCollection'],
   tag: ['hasTag', 'notHasTag'],

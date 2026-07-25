@@ -19,12 +19,13 @@ import type { DraftCondition } from '../../hooks/use-smart-collection-draft';
 
 // Builtin fields exposed in the composer. `collection` is supported by the rule
 // engine but omitted here in v1 (it needs a collection picker, not a raw id).
-const BUILTIN_FIELD_OPTIONS: { field: string; label: string }[] = [
+const BUILTIN_FIELD_OPTIONS: { field: BuiltinRuleField; label: string }[] = [
   { field: 'name', label: 'Name' },
   { field: 'description', label: 'Description' },
   { field: 'tag', label: 'Tag' },
   { field: 'status', label: 'Status' },
   { field: 'fileType', label: 'File type' },
+  { field: 'manualPreview', label: 'Manually set preview' },
 ];
 
 const OPERATOR_LABELS: Record<RuleOperator, string> = {

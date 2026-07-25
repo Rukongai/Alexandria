@@ -13,10 +13,10 @@ import { validationError } from '../utils/errors.js';
 // build its own conditions via `buildLeafCondition` too, so there is a single
 // source of truth for "what SQL a filter on dimension X looks like".
 //
-// The compiler is pure: no I/O, no DB access, no context needed. All v1
-// operators are text comparisons, so it never needs a metadata field's type to
-// emit SQL. Validation that a field exists and that its operator is legal for
-// its type happens in SmartCollectionService before compilation.
+// The compiler is pure: no I/O, no DB access, no context needed. It never needs
+// a metadata field's type to emit SQL. Validation that a field exists and that
+// its operator is legal for its type happens in SmartCollectionService before
+// compilation.
 // ---------------------------------------------------------------------------
 
 /**
@@ -92,6 +92,12 @@ function buildBuiltinCondition(leaf: RuleCondition): SQL {
     case 'status': {
       if (op === 'is') return sql`${models.status} = ${requireValue(leaf)}`;
       if (op === 'isNot') return sql`${models.status} <> ${requireValue(leaf)}`;
+      return illegal(leaf);
+    }
+
+    case 'manualPreview': {
+      if (op === 'exists') return sql`${models.previewImageFileId} IS NOT NULL`;
+      if (op === 'notExists') return sql`${models.previewImageFileId} IS NULL`;
       return illegal(leaf);
     }
 

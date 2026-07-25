@@ -247,6 +247,7 @@ type BuiltinRuleField =
   | 'name'         // full-text search / exact match on model name
   | 'description'  // ILIKE substring match on description
   | 'status'       // models.status column
+  | 'manualPreview' // whether previewImageFileId is explicitly set
   | 'fileType'     // EXISTS in model_files for the given file_type
   | 'collection'   // membership in a collection (by UUID value)
   | 'tag';         // tag membership (by name, case-insensitive)
@@ -267,9 +268,15 @@ type RuleOperator =
   | 'notHasTag'
   | 'inCollection'     // collection membership
   | 'notInCollection'
-  | 'exists'           // metadata field has any value (no value required)
+  | 'exists'           // field/state is set (no value required)
   | 'notExists';
 ```
+
+For the built-in `manualPreview` field, `exists` matches models with an explicitly pinned
+preview image (`previewImageFileId` is non-null), while `notExists` matches models without one
+(`previewImageFileId` is null). Both operators take a `null` value. This rule does not test
+whether the model has image files; a model without a pinned preview uses the automatic
+first-image fallback when an image is available.
 
 Legal operator combinations — which operators are valid for which fields — are defined in `LEGAL_OPERATORS_BY_BUILTIN` and `LEGAL_OPERATORS_BY_METADATA_TYPE` in `packages/shared/src/types/smart-collection.ts`. The shared validator enforces built-in legality; metadata legality is checked server-side once the field definition is resolved.
 

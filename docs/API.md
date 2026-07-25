@@ -2113,7 +2113,20 @@ Create a smart collection.
 | `description` | string (optional) | Maximum 2000 characters |
 | `definition` | RuleNode | Required; a valid rule tree (see below) |
 
-**Rule tree validation:** The tree must not exceed depth 3 (group nesting), 50 total nodes, or 20 children per group. A bare condition or an empty root group (`{ kind: "group", op: "and", children: [] }`) is valid. For leaf conditions: the operator must be legal for the field (e.g., `contains` and `equals` for `name`; `hasTag`/`notHasTag` for `tag`). Operators `exists` and `notExists` take a null value; all others require a non-empty string. Metadata field slugs are validated server-side against the live field definitions; unknown slugs return `400`.
+**Rule tree validation:** The tree must not exceed depth 3 (group nesting), 50 total nodes, or 20 children per group. A bare condition or an empty root group (`{ kind: "group", op: "and", children: [] }`) is valid. For leaf conditions: the operator must be legal for the field (e.g., `contains` and `equals` for `name`; `hasTag`/`notHasTag` for `tag`). Operators `exists` and `notExists` take a null value; all others require a non-empty string. For the built-in `manualPreview` field, `exists` tests `previewImageFileId IS NOT NULL` and `notExists` tests `previewImageFileId IS NULL`. This tests whether a preview was explicitly pinned, not whether the model has any image files. Metadata field slugs are validated server-side against the live field definitions; unknown slugs return `400`.
+
+For example, this leaf matches models with a manually set preview:
+
+```json
+{
+  "kind": "condition",
+  "field": { "source": "builtin", "field": "manualPreview" },
+  "operator": "exists",
+  "value": null
+}
+```
+
+Use `notExists` with the same null value to match models without a manually set preview, including models that have no image files.
 
 **Response (201):** Returns the created `SmartCollectionDetail` (includes a live `modelCount`).
 
