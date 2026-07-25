@@ -19,9 +19,10 @@ import {
   STL_EXTENSIONS,
 } from '@alexandria/shared';
 import { detectArchiveExtension, stripArchiveExtension } from '../utils/archive.js';
+import { forEachWithConcurrency } from '../utils/concurrency.js';
 import { validationError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
-import type { IStorageService } from './storage.service.js';
+import { uploadConcurrencyFor, type IStorageService } from './storage.service.js';
 
 const logger = createLogger('FileProcessingService');
 
@@ -709,7 +710,7 @@ export class FileProcessingService {
     storage: IStorageService,
     onProgress?: (progress: ManifestStorageProgress) => void | Promise<void>,
   ): Promise<void> {
-    let completedBytes = 0;
+    const totalFiles = manifest.entries.length;
     const progressReporter = createCoalescedProgressReporter(onProgress, (error) => {
       logger.warn(
         { modelId, error: String(error) },
@@ -717,58 +718,70 @@ export class FileProcessingService {
       );
     });
 
-    for (let index = 0; index < manifest.entries.length; index++) {
-      const entry = manifest.entries[index];
-      const storagePath = `models/${modelId}/${entry.relativePath}`;
-      const sourcePath = path.join(extractDir, entry.relativePath);
-      const readStream = fs.createReadStream(sourcePath);
-      let currentFileBytes = 0;
-      let lastReportedFileBytes = 0;
-      let lastReportedAt = Date.now();
+    // Several files are in flight at once, so progress is tracked in aggregate
+    // rather than per-file: a running byte total across all uploads plus a
+    // count of finished files. `currentFilename` is the most recently started
+    // upload — with concurrent transfers there is no single current file, and
+    // it exists only to give the UI something to name.
+    let transferredBytes = 0;
+    let completedFiles = 0;
+    let currentFilename = manifest.entries[0]?.filename ?? '';
+    let lastReportedBytes = 0;
+    let lastReportedAt = Date.now();
 
-      await progressReporter.flush({
-        completedFiles: index,
-        totalFiles: manifest.entries.length,
-        completedBytes,
-        totalBytes: manifest.totalSizeBytes,
-        currentFilename: entry.filename,
-      });
+    const snapshot = (): ManifestStorageProgress => ({
+      completedFiles,
+      totalFiles,
+      completedBytes: transferredBytes,
+      totalBytes: manifest.totalSizeBytes,
+      currentFilename,
+    });
 
-      await storage.store(storagePath, readStream, (transferredBytes) => {
-        const boundedBytes = Math.min(
-          entry.sizeBytes,
-          Math.max(0, Math.trunc(transferredBytes)),
-        );
-        if (boundedBytes <= currentFileBytes) return;
-        currentFileBytes = boundedBytes;
-
-        const now = Date.now();
-        const shouldReport =
-          boundedBytes === entry.sizeBytes ||
-          boundedBytes - lastReportedFileBytes >= STORAGE_PROGRESS_MIN_BYTES ||
-          now - lastReportedAt >= STORAGE_PROGRESS_MAX_INTERVAL_MS;
-        if (!shouldReport) return;
-
-        lastReportedFileBytes = boundedBytes;
-        lastReportedAt = now;
-        progressReporter.enqueue({
-          completedFiles: index,
-          totalFiles: manifest.entries.length,
-          completedBytes: completedBytes + currentFileBytes,
-          totalBytes: manifest.totalSizeBytes,
-          currentFilename: entry.filename,
-        });
-      });
-
-      completedBytes += entry.sizeBytes;
-      await progressReporter.flush({
-        completedFiles: index + 1,
-        totalFiles: manifest.entries.length,
-        completedBytes,
-        totalBytes: manifest.totalSizeBytes,
-        currentFilename: entry.filename,
-      });
+    if (totalFiles > 0) {
+      await progressReporter.flush(snapshot());
     }
+
+    await forEachWithConcurrency(
+      manifest.entries,
+      uploadConcurrencyFor(storage),
+      async (entry) => {
+        const storagePath = `models/${modelId}/${entry.relativePath}`;
+        const sourcePath = path.join(extractDir, entry.relativePath);
+        const readStream = fs.createReadStream(sourcePath);
+        let fileBytes = 0;
+        currentFilename = entry.filename;
+
+        await storage.store(storagePath, readStream, (reportedBytes) => {
+          const boundedBytes = Math.min(
+            entry.sizeBytes,
+            Math.max(0, Math.trunc(reportedBytes)),
+          );
+          if (boundedBytes <= fileBytes) return;
+
+          transferredBytes += boundedBytes - fileBytes;
+          fileBytes = boundedBytes;
+
+          const now = Date.now();
+          const shouldReport =
+            transferredBytes - lastReportedBytes >= STORAGE_PROGRESS_MIN_BYTES ||
+            now - lastReportedAt >= STORAGE_PROGRESS_MAX_INTERVAL_MS;
+          if (!shouldReport) return;
+
+          lastReportedBytes = transferredBytes;
+          lastReportedAt = now;
+          progressReporter.enqueue(snapshot());
+        });
+
+        // A backend may stop reporting short of the full size (or not report at
+        // all), so settle the file against its manifest size to keep the total
+        // honest.
+        transferredBytes += entry.sizeBytes - fileBytes;
+        completedFiles += 1;
+        lastReportedBytes = transferredBytes;
+        lastReportedAt = Date.now();
+        await progressReporter.flush(snapshot());
+      },
+    );
   }
 
   async scanDirectory(dir: string, rootDir: string): Promise<FileManifestEntry[]> {

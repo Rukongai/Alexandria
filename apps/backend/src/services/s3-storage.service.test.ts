@@ -1,9 +1,13 @@
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  UploadPartCopyCommand,
   type S3Client,
 } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
@@ -12,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../config/index.js';
 import { AppError } from '../utils/errors.js';
 import {
+  S3_COPY_PART_SIZE,
   S3_MULTIPART_PART_SIZE,
   S3_SINGLE_COPY_MAX_SIZE,
   S3StorageService,
@@ -62,6 +67,8 @@ async function toBuffer(value: Buffer | NodeJS.ReadableStream): Promise<Buffer> 
 
 class InMemoryS3Client {
   readonly objects = new Map<string, Buffer>();
+  readonly multipartUploads = new Map<string, Buffer[]>();
+  private nextUploadId = 1;
   readonly send = vi.fn(async (command: unknown) => {
     if (command instanceof GetObjectCommand) {
       const content = this.objects.get(command.input.Key!);
@@ -83,6 +90,38 @@ class InMemoryS3Client {
       const content = this.objects.get(sourceKey);
       if (!content) throw notFoundError();
       this.objects.set(command.input.Key!, Buffer.from(content));
+      return {};
+    }
+    if (command instanceof CreateMultipartUploadCommand) {
+      const uploadId = `upload-${this.nextUploadId++}`;
+      this.multipartUploads.set(uploadId, []);
+      return { UploadId: uploadId };
+    }
+    if (command instanceof UploadPartCopyCommand) {
+      const parts = this.multipartUploads.get(command.input.UploadId!);
+      if (!parts) throw new Error('Unknown upload id');
+
+      const decodedSource = decodeURIComponent(command.input.CopySource!);
+      const sourceKey = decodedSource.slice(decodedSource.indexOf('/') + 1);
+      const content = this.objects.get(sourceKey);
+      if (!content) throw notFoundError();
+
+      const [start, end] = (command.input.CopySourceRange ?? '')
+        .replace('bytes=', '')
+        .split('-')
+        .map(Number);
+      parts[command.input.PartNumber! - 1] = content.subarray(start, end + 1);
+      return { CopyPartResult: { ETag: `"part-${command.input.PartNumber}"` } };
+    }
+    if (command instanceof CompleteMultipartUploadCommand) {
+      const parts = this.multipartUploads.get(command.input.UploadId!);
+      if (!parts) throw new Error('Unknown upload id');
+      this.objects.set(command.input.Key!, Buffer.concat(parts.filter(Boolean)));
+      this.multipartUploads.delete(command.input.UploadId!);
+      return {};
+    }
+    if (command instanceof AbortMultipartUploadCommand) {
+      this.multipartUploads.delete(command.input.UploadId!);
       return {};
     }
     if (command instanceof HeadBucketCommand) return {};
@@ -187,7 +226,7 @@ describe('S3StorageService', () => {
       service.store('models/progress.stl', Buffer.from('content'), () => {
         throw new Error('observer failed');
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ etag: undefined, partSize: S3_MULTIPART_PART_SIZE });
   });
 
   it('should use a native copy command with encoded and prefixed source and destination keys', async () => {
@@ -206,25 +245,71 @@ describe('S3StorageService', () => {
     });
   });
 
-  it('streams objects that exceed the single-request copy limit', async () => {
+  it('copies objects beyond the single-request limit server-side, without transferring bytes', async () => {
     client.objects.set('alexandria/models/large.stl', Buffer.from('source'));
-    client.send.mockResolvedValueOnce({ ContentLength: S3_SINGLE_COPY_MAX_SIZE + 1 });
+    const contentLength = S3_SINGLE_COPY_MAX_SIZE + 1;
+    client.send.mockResolvedValueOnce({ ContentLength: contentLength });
 
     await service.copy('models/large.stl', 'models/copied-large.stl');
 
+    // The whole point of the multipart-copy path: the bytes never travel
+    // through this process, so neither a download nor an upload is issued.
     expect(client.send.mock.calls.some(([command]) => command instanceof GetObjectCommand)).toBe(
-      true,
+      false,
     );
+    expect(uploadMocks.construct).not.toHaveBeenCalled();
     expect(client.send.mock.calls.some(([command]) => command instanceof CopyObjectCommand)).toBe(
       false,
     );
-    expect(uploadMocks.construct).toHaveBeenCalledWith(
-      expect.objectContaining({
-        params: expect.objectContaining({
-          Key: 'alexandria/models/copied-large.stl',
-        }),
-      }),
+
+    const copyParts = client.send.mock.calls
+      .map(([command]) => command)
+      .filter((command): command is UploadPartCopyCommand => command instanceof UploadPartCopyCommand);
+
+    const expectedParts = Math.ceil(contentLength / S3_COPY_PART_SIZE);
+    expect(copyParts).toHaveLength(expectedParts);
+    expect(copyParts[0].input).toMatchObject({
+      Key: 'alexandria/models/copied-large.stl',
+      PartNumber: 1,
+      CopySource: encodeURIComponent('model-library/alexandria/models/large.stl'),
+      CopySourceRange: `bytes=0-${S3_COPY_PART_SIZE - 1}`,
+    });
+    // The final range is clamped to the object's last byte rather than running
+    // past the end of it.
+    expect(copyParts.at(-1)?.input).toMatchObject({
+      PartNumber: expectedParts,
+      CopySourceRange: `bytes=${S3_COPY_PART_SIZE * (expectedParts - 1)}-${contentLength - 1}`,
+    });
+
+    const complete = client.send.mock.calls
+      .map(([command]) => command)
+      .find((command): command is CompleteMultipartUploadCommand =>
+        command instanceof CompleteMultipartUploadCommand,
+      );
+    expect(complete?.input.MultipartUpload?.Parts).toHaveLength(expectedParts);
+  });
+
+  it('aborts the multipart copy when a range fails, leaving no dangling upload', async () => {
+    client.objects.set('alexandria/models/large.stl', Buffer.from('source'));
+    client.send.mockResolvedValueOnce({ ContentLength: S3_SINGLE_COPY_MAX_SIZE + 1 });
+    client.send.mockImplementationOnce(async () => ({ UploadId: 'upload-fail' }));
+    client.send.mockImplementationOnce(async () => {
+      throw new Error('range copy failed');
+    });
+
+    await expect(service.copy('models/large.stl', 'models/copied-large.stl')).rejects.toThrow(
+      AppError,
     );
+
+    const aborted = client.send.mock.calls
+      .map(([command]) => command)
+      .find((command): command is AbortMultipartUploadCommand =>
+        command instanceof AbortMultipartUploadCommand,
+      );
+    expect(aborted?.input).toMatchObject({
+      Key: 'alexandria/models/copied-large.stl',
+      UploadId: 'upload-fail',
+    });
   });
 
   it('should send delete for an absent key without first checking existence', async () => {

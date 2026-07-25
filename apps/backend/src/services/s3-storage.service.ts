@@ -1,23 +1,36 @@
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  UploadPartCopyCommand,
+  type CompletedPart,
   type S3Client,
 } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { Readable } from 'node:stream';
 import { storageError } from '../utils/errors.js';
+import { normalizeEtag } from '../utils/etag.js';
 import type {
   IStorageService,
   StorageData,
   StorageProgressCallback,
+  StoreResult,
 } from './storage.service.js';
 import { normalizeStoragePrefix, validateStorageKey } from './storage-key.js';
 
 export const S3_MULTIPART_PART_SIZE = 8 * 1024 * 1024;
 export const S3_SINGLE_COPY_MAX_SIZE = 5 * 1024 * 1024 * 1024;
+/**
+ * Range size per UploadPartCopy when an object is too large for a single
+ * CopyObject. Comfortably under S3's 5 GiB per-part ceiling, and at the 10,000
+ * part limit it covers objects far larger than anything Alexandria stores.
+ */
+export const S3_COPY_PART_SIZE = 1024 * 1024 * 1024;
 
 export interface S3StorageServiceOptions {
   client: S3Client;
@@ -27,6 +40,7 @@ export interface S3StorageServiceOptions {
 
 export class S3StorageService implements IStorageService {
   readonly kind = 's3' as const;
+  readonly uploadPartSize = S3_MULTIPART_PART_SIZE;
 
   private readonly client: S3Client;
   private readonly bucket: string;
@@ -46,7 +60,7 @@ export class S3StorageService implements IStorageService {
     filePath: string,
     data: StorageData,
     onProgress?: StorageProgressCallback,
-  ): Promise<void> {
+  ): Promise<StoreResult> {
     const key = this.objectKey(filePath);
 
     try {
@@ -65,7 +79,8 @@ export class S3StorageService implements IStorageService {
           reportStorageProgress(onProgress, loaded);
         }
       });
-      await upload.done();
+      const result = await upload.done();
+      return { etag: normalizeEtag(result.ETag), partSize: S3_MULTIPART_PART_SIZE };
     } catch (error) {
       throw storageError(`Failed to store file at ${filePath}: ${errorMessage(error)}`);
     }
@@ -113,11 +128,18 @@ export class S3StorageService implements IStorageService {
       const source = await this.client.send(
         new HeadObjectCommand({ Bucket: this.bucket, Key: sourceKey }),
       );
-      if (
-        source.ContentLength === undefined ||
-        source.ContentLength > S3_SINGLE_COPY_MAX_SIZE
-      ) {
+
+      if (source.ContentLength === undefined) {
+        // Without a length the object cannot be split into copy ranges, so fall
+        // back to streaming it through this process.
         await this.store(destinationPath, await this.retrieveStream(sourcePath));
+        return;
+      }
+
+      if (source.ContentLength > S3_SINGLE_COPY_MAX_SIZE) {
+        // Server-side multipart copy keeps the bytes inside the provider
+        // instead of pulling them down and pushing them straight back up.
+        await this.copyViaMultipart(sourceKey, destinationKey, source.ContentLength);
         return;
       }
 
@@ -125,13 +147,69 @@ export class S3StorageService implements IStorageService {
         new CopyObjectCommand({
           Bucket: this.bucket,
           Key: destinationKey,
-          CopySource: encodeURIComponent(`${this.bucket}/${sourceKey}`),
+          CopySource: this.copySource(sourceKey),
         }),
       );
     } catch (error) {
       throw storageError(
         `Failed to copy file from ${sourcePath} to ${destinationPath}: ${errorMessage(error)}`,
       );
+    }
+  }
+
+  private async copyViaMultipart(
+    sourceKey: string,
+    destinationKey: string,
+    contentLength: number,
+  ): Promise<void> {
+    const created = await this.client.send(
+      new CreateMultipartUploadCommand({ Bucket: this.bucket, Key: destinationKey }),
+    );
+    const uploadId = created.UploadId;
+    if (!uploadId) {
+      throw new Error('S3 did not return an upload ID for the multipart copy');
+    }
+
+    try {
+      const parts: CompletedPart[] = [];
+      for (let offset = 0; offset < contentLength; offset += S3_COPY_PART_SIZE) {
+        const end = Math.min(offset + S3_COPY_PART_SIZE, contentLength) - 1;
+        const partNumber = parts.length + 1;
+
+        const copied = await this.client.send(
+          new UploadPartCopyCommand({
+            Bucket: this.bucket,
+            Key: destinationKey,
+            UploadId: uploadId,
+            PartNumber: partNumber,
+            CopySource: this.copySource(sourceKey),
+            CopySourceRange: `bytes=${offset}-${end}`,
+          }),
+        );
+        parts.push({ ETag: copied.CopyPartResult?.ETag, PartNumber: partNumber });
+      }
+
+      await this.client.send(
+        new CompleteMultipartUploadCommand({
+          Bucket: this.bucket,
+          Key: destinationKey,
+          UploadId: uploadId,
+          MultipartUpload: { Parts: parts },
+        }),
+      );
+    } catch (error) {
+      // An abandoned multipart upload keeps billing for the ranges already
+      // copied, so always attempt to clear it before surfacing the failure.
+      await this.client
+        .send(
+          new AbortMultipartUploadCommand({
+            Bucket: this.bucket,
+            Key: destinationKey,
+            UploadId: uploadId,
+          }),
+        )
+        .catch(() => {});
+      throw error;
     }
   }
 
@@ -163,6 +241,10 @@ export class S3StorageService implements IStorageService {
     } catch (error) {
       throw storageError(`Failed to access S3 bucket ${this.bucket}: ${errorMessage(error)}`);
     }
+  }
+
+  private copySource(sourceKey: string): string {
+    return encodeURIComponent(`${this.bucket}/${sourceKey}`);
   }
 
   private objectKey(filePath: string): string {

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AppError } from '../utils/errors.js';
 
 export interface StorageContractService {
-  store(key: string, data: Buffer | NodeJS.ReadableStream): Promise<void>;
+  store(key: string, data: Buffer | NodeJS.ReadableStream): Promise<unknown>;
   retrieve(key: string): Promise<Buffer>;
   retrieveStream(key: string): Promise<Readable>;
   copy(sourceKey: string, destinationKey: string): Promise<void>;
