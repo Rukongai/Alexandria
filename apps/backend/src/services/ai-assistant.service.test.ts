@@ -125,7 +125,7 @@ describe('AiAssistantService tool-loop safety', () => {
     expect(SYSTEM_PROMPT).toContain('genuinely weak or conflicting');
     expect(SYSTEM_PROMPT).toContain('does not commit');
     expect(SYSTEM_PROMPT).toContain('preview_bulk_changes');
-    expect(SYSTEM_PROMPT).toContain('at most 8 tool calls in one provider response');
+    expect(SYSTEM_PROMPT).toContain('at most 12 tool calls in one provider response');
     expect(SYSTEM_PROMPT).toContain('at most 12 tool calls across the entire user request');
     expect(SYSTEM_PROMPT).toContain('at most 14 provider responses');
     expect(SYSTEM_PROMPT).toContain('current response is the final tool-capable one');
@@ -572,7 +572,40 @@ describe('AiAssistantService tool-loop safety', () => {
     await serviceWith(deps).chat({ message: 'Hello' }, USER_ID, LIBRARY_ID);
     const timeoutMs = deps.providers.createChatCompletion.mock.calls[0][2];
     expect(timeoutMs).toBeGreaterThan(0);
-    expect(timeoutMs).toBeLessThanOrEqual(45_000);
+    expect(timeoutMs).toBeLessThanOrEqual(90_000);
+  });
+
+  it('allows a multi-response tool loop to complete after more than 45 seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = makeDependencies();
+      let responseIndex = 0;
+      deps.providers.createChatCompletion.mockImplementation(() => {
+        const currentResponse = responseIndex;
+        responseIndex += 1;
+        return new Promise((resolve) => setTimeout(() => resolve(currentResponse === 0
+          ? { choices: [{ message: { content: null, tool_calls: [{
+            id: 'delayed-search',
+            type: 'function',
+            function: { name: 'search_library', arguments: JSON.stringify({ query: 'Mint' }) },
+          }] } }] }
+          : { choices: [{ message: { content: 'Finished after extended research.' } }] }), 25_000));
+      });
+      deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
+      const startedAt = Date.now();
+
+      const chat = serviceWith(deps).chat({ message: 'Research Mint' }, USER_ID, LIBRARY_ID);
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(25_000);
+
+      await expect(chat).resolves.toMatchObject({ message: 'Finished after extended research.' });
+      expect(Date.now() - startedAt).toBe(50_000);
+      expect(deps.providers.createChatCompletion.mock.calls[0][2]).toBeLessThanOrEqual(90_000);
+      expect(deps.providers.createChatCompletion.mock.calls[1][2]).toBeLessThanOrEqual(65_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('propagates client cancellation to the provider and releases its concurrency slot', async () => {
@@ -674,13 +707,34 @@ describe('AiAssistantService tool-loop safety', () => {
 
       const chat = serviceWith(deps).chat({ message: 'Hello' }, USER_ID, LIBRARY_ID);
       const rejection = expect(chat).rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
-      await vi.advanceTimersByTimeAsync(45_001);
+      await vi.advanceTimersByTimeAsync(90_001);
 
       await rejection;
     } finally {
       vi.useRealTimers();
     }
   });
+
+  it.each([9, 10, 11, 12])(
+    'should accept %i tool calls in one provider response',
+    async (callCount) => {
+      const deps = makeDependencies();
+      const calls = Array.from({ length: callCount }, (_, index) => ({
+        id: `accepted-${index}`,
+        type: 'function',
+        function: { name: 'search_library', arguments: JSON.stringify({ query: 'dragon' }) },
+      }));
+      deps.providers.createChatCompletion
+        .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls } }] })
+        .mockResolvedValueOnce({ choices: [{ message: { content: 'Finished the bounded search.' } }] });
+      deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
+
+      await expect(serviceWith(deps).chat({ message: 'Search broadly' }, USER_ID, LIBRARY_ID))
+        .resolves.toMatchObject({ message: 'Finished the bounded search.' });
+      expect(deps.search.searchModels).toHaveBeenCalledTimes(callCount);
+      expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('should repair one oversized tool batch without executing its calls', async () => {
     const deps = makeDependencies();
@@ -704,7 +758,7 @@ describe('AiAssistantService tool-loop safety', () => {
     };
     deps.proposals.createBulkPreview.mockResolvedValue(preview);
     deps.providers.createChatCompletion
-      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(9, 'invalid') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(13, 'invalid') } }] })
       .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [{
         id: 'bulk',
         type: 'function',
@@ -731,29 +785,216 @@ describe('AiAssistantService tool-loop safety', () => {
     const repairPayload = deps.providers.createChatCompletion.mock.calls[1][1];
     const repairInstruction = repairPayload.messages.at(-1);
     expect(repairInstruction).toMatchObject({ role: 'system' });
-    expect(repairInstruction.content).toContain('9 tool calls, so none were executed');
-    expect(repairInstruction.content).toContain('at most 8 tool calls');
+    expect(repairInstruction.content).toContain('13 tool calls, so none were executed');
+    expect(repairInstruction.content).toContain('at most 12 tool calls');
     expect(repairInstruction.content).toContain('preview_bulk_changes');
     expect(result.proposal).toEqual(preview);
   });
 
-  it('should fail after exactly one oversized tool-batch repair attempt', async () => {
+  it('should bound a repeated oversized repair, preserve one proposal, and synthesize', async () => {
     const deps = makeDependencies();
-    const calls = (prefix: string) => Array.from({ length: 9 }, (_, index) => ({
+    const calls = (count: number, prefix: string) => Array.from({ length: count }, (_, index) => ({
       id: `${prefix}-${index}`,
       type: 'function',
       function: { name: 'search_library', arguments: JSON.stringify({ query: 'dragon' }) },
     }));
+    const bulkInput = {
+      summary: 'Tag the active library',
+      target: { scope: 'active_library' },
+      metadataOperations: [{ fieldSlug: 'tags', action: 'add', value: ['terrain'] }],
+    };
+    const preview = {
+      proposalId: '99999999-9999-4999-8999-999999999999',
+      summary: bulkInput.summary,
+      changes: [{
+        type: 'bulk_metadata', modelIds: [MODEL_ID], operations: bulkInput.metadataOperations,
+      }],
+      expiresAt: '2026-07-21T12:15:00.000Z',
+    };
+    const repeatedRepair = [
+      ...calls(13, 'repair'),
+      {
+        id: 'repair-proposal',
+        type: 'function',
+        function: { name: 'preview_bulk_changes', arguments: JSON.stringify(bulkInput) },
+      },
+    ];
+    deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
+    deps.proposals.createBulkPreview.mockResolvedValue(preview);
     deps.providers.createChatCompletion
-      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls('first') } }] })
-      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls('repair') } }] });
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: calls(13, 'first') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: repeatedRepair } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Ready for review.' } }] });
 
     await expect(serviceWith(deps).chat({ message: 'Search broadly' }, USER_ID, LIBRARY_ID))
-      .rejects.toMatchObject({ code: 'PROCESSING_FAILED' });
-    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(2);
-    expect(deps.search.searchModels).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ message: 'Ready for review.', proposal: preview });
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(3);
+    expect(deps.search.searchModels).toHaveBeenCalledTimes(11);
     expect(deps.proposals.createPreview).not.toHaveBeenCalled();
-    expect(deps.proposals.createBulkPreview).not.toHaveBeenCalled();
+    expect(deps.proposals.createBulkPreview).toHaveBeenCalledOnce();
+
+    const synthesisPayload = deps.providers.createChatCompletion.mock.calls[2][1];
+    const repairToolMessages = synthesisPayload.messages.filter(
+      (message: { role: string; tool_call_id?: string }) =>
+        message.role === 'tool' && message.tool_call_id?.startsWith('repair'),
+    );
+    expect(repairToolMessages).toHaveLength(repeatedRepair.length);
+    const skippedResults = repairToolMessages.filter(
+      (message: { content: string }) => JSON.parse(message.content).result.skipped === true,
+    );
+    expect(skippedResults).toHaveLength(2);
+    expect(synthesisPayload.tools).toBeUndefined();
+  });
+
+  it('should reserve one proposal slot when a repeated oversized batch contains only reads', async () => {
+    const deps = makeDependencies();
+    const readCalls = (prefix: string) => Array.from({ length: 13 }, (_, index) => ({
+      id: `${prefix}-${index}`,
+      type: 'function',
+      function: { name: 'search_library', arguments: JSON.stringify({ query: 'Mint' }) },
+    }));
+    const proposalInput = {
+      summary: 'Fill Mint metadata',
+      changes: [{
+        type: 'set_metadata',
+        modelId: MODEL_ID,
+        modelName: 'Mint',
+        values: { tags: ['character'] },
+      }],
+    };
+    const preview = {
+      proposalId: '99999999-9999-4999-8999-999999999999',
+      summary: proposalInput.summary,
+      changes: proposalInput.changes,
+      expiresAt: '2026-07-21T12:15:00.000Z',
+    };
+    deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
+    deps.proposals.createPreview.mockResolvedValue(preview);
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: readCalls('first') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: readCalls('repair') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [{
+        id: 'proposal',
+        type: 'function',
+        function: { name: 'preview_changes', arguments: JSON.stringify(proposalInput) },
+      }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Mint metadata is ready for review.' } }] });
+
+    const result = await serviceWith(deps).chat({
+      message: "tag and fill out metadata on this. I don't know what Mint is from so try and look it up",
+      context: { modelId: MODEL_ID },
+    }, USER_ID, LIBRARY_ID);
+
+    expect(result).toMatchObject({
+      message: 'Mint metadata is ready for review.',
+      proposal: preview,
+    });
+    expect(deps.search.searchModels).toHaveBeenCalledTimes(11);
+    expect(deps.proposals.createPreview).toHaveBeenCalledOnce();
+    const proposalPayload = deps.providers.createChatCompletion.mock.calls[2][1];
+    expect(proposalPayload.messages.at(-1).content).toContain('final tool-capable response');
+    expect(proposalPayload.tools).toBeDefined();
+  });
+
+  it('should preserve the final-proposal instruction when the repair is request 13', async () => {
+    const deps = makeDependencies();
+    const oneRead = (index: number) => [{
+      id: `read-${index}`,
+      type: 'function',
+      function: { name: 'search_library', arguments: JSON.stringify({ query: 'Mint' }) },
+    }];
+    for (let index = 0; index < 11; index += 1) {
+      deps.providers.createChatCompletion.mockResolvedValueOnce({
+        choices: [{ message: { content: null, tool_calls: oneRead(index) } }],
+      });
+    }
+    const proposalInput = {
+      summary: 'Tag Mint',
+      changes: [{
+        type: 'set_metadata', modelId: MODEL_ID, modelName: 'Mint',
+        values: { tags: ['character'] },
+      }],
+    };
+    const preview = {
+      proposalId: '99999999-9999-4999-8999-999999999999',
+      summary: proposalInput.summary,
+      changes: proposalInput.changes,
+      expiresAt: '2026-07-21T12:15:00.000Z',
+    };
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [
+        ...oneRead(11), ...oneRead(12),
+      ] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [{
+        id: 'proposal', type: 'function',
+        function: { name: 'preview_changes', arguments: JSON.stringify(proposalInput) },
+      }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'Ready for review.' } }] });
+    deps.search.searchModels.mockResolvedValue({ models: [], total: 0, cursor: null, pageSize: 8 });
+    deps.proposals.createPreview.mockResolvedValue(preview);
+
+    await expect(serviceWith(deps).chat({ message: 'Research and tag Mint' }, USER_ID, LIBRARY_ID))
+      .resolves.toMatchObject({ message: 'Ready for review.', proposal: preview });
+
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(14);
+    const repairPayload = deps.providers.createChatCompletion.mock.calls[12][1];
+    expect(repairPayload.messages.some(
+      (item: { content?: string }) => item.content?.includes('final tool-capable response'),
+    )).toBe(true);
+    expect(repairPayload.messages.at(-1).content).toContain('at most 1 tool calls');
+  });
+
+  it('should fall back gracefully when selected results exhaust the result budget', async () => {
+    const deps = makeDependencies();
+    const oversizedReads = (prefix: string) => Array.from({ length: 13 }, (_, index) => ({
+      id: `${prefix}-${index}`,
+      type: 'function',
+      function: { name: 'search_library', arguments: JSON.stringify({ query: 'Mint' }) },
+    }));
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: oversizedReads('first') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: oversizedReads('repair') } }] });
+    deps.search.searchModels.mockResolvedValue({
+      models: [{ id: MODEL_ID, name: 'x'.repeat(20_000) }], total: 1, cursor: null, pageSize: 8,
+    });
+
+    const result = await serviceWith(deps).chat(
+      { message: 'Research Mint' }, USER_ID, LIBRARY_ID,
+    );
+
+    expect(result.message).toContain('could not gather enough reliable information');
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(deps.search.searchModels.mock.calls.length).toBeGreaterThan(0);
+    expect(deps.search.searchModels.mock.calls.length).toBeLessThan(11);
+  });
+
+  it('should fall back gracefully when actual bounded results exhaust provider context', async () => {
+    const deps = makeDependencies();
+    const oversizedReads = (prefix: string) => Array.from({ length: 13 }, (_, index) => ({
+      id: `${prefix}-${index}`,
+      type: 'function',
+      function: { name: 'search_library', arguments: JSON.stringify({ query: 'Mint' }) },
+    }));
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: oversizedReads('first') } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: oversizedReads('repair') } }] });
+    deps.search.searchModels.mockResolvedValue({
+      models: [{ id: MODEL_ID, name: 'x'.repeat(3_500) }], total: 1, cursor: null, pageSize: 8,
+    });
+
+    const result = await serviceWith(deps).chat({
+      message: 'Research Mint',
+      history: [
+        { role: 'user', content: 'a'.repeat(8_000) },
+        { role: 'assistant', content: 'b'.repeat(8_000) },
+        { role: 'user', content: 'c'.repeat(8_000) },
+      ],
+    }, USER_ID, LIBRARY_ID);
+
+    expect(result.message).toContain('could not gather enough reliable information');
+    expect(deps.providers.createChatCompletion).toHaveBeenCalledTimes(2);
+    expect(deps.search.searchModels.mock.calls.length).toBeGreaterThan(0);
+    expect(deps.search.searchModels.mock.calls.length).toBeLessThan(11);
   });
 
   it('should communicate and enforce the remaining cumulative tool budget during repair', async () => {
@@ -859,7 +1100,7 @@ describe('AiAssistantService tool-loop safety', () => {
         arguments: JSON.stringify({ query: `Mint origin ${index}` }),
       },
     });
-    const oversized = Array.from({ length: 9 }, (_, index) => researchCall(100 + index));
+    const oversized = Array.from({ length: 13 }, (_, index) => researchCall(100 + index));
     deps.providers.createChatCompletion.mockResolvedValueOnce({
       choices: [{ message: { content: null, tool_calls: oversized } }],
     });

@@ -25,7 +25,7 @@ import { stripArchiveExtension } from '../utils/archive.js';
 
 const logger = createLogger('AiAssistantService');
 const MAX_PROVIDER_REQUESTS = 14;
-const MAX_TOOL_CALLS_PER_TURN = 8;
+const MAX_TOOL_CALLS_PER_TURN = 12;
 const MAX_TOOL_RESULT_CHARS = 12_000;
 const MAX_TOOL_ARGUMENT_CHARS = 20_000;
 const MAX_TOTAL_TOOL_CALLS = 12;
@@ -33,7 +33,7 @@ const MAX_TOTAL_TOOL_ARGUMENT_CHARS = 40_000;
 const MAX_TOTAL_TOOL_RESULT_CHARS = 48_000;
 const MAX_PROVIDER_CONTEXT_CHARS = 64_000;
 const MAX_ASSISTANT_RESPONSE_CHARS = 16_000;
-const MAX_CHAT_DURATION_MS = 45_000;
+const MAX_CHAT_DURATION_MS = 90_000;
 const MAX_CHAT_REQUESTS_PER_WINDOW = 10;
 const MAX_CONCURRENT_CHATS_PER_USER = 2;
 const CHAT_RATE_WINDOW_MS = 60_000;
@@ -576,63 +576,73 @@ export class AiAssistantService {
           return buildSynthesisResponse(message.content, sources, proposal);
         }
         const allowedCallsThisTurn = Math.min(MAX_TOOL_CALLS_PER_TURN, remainingToolBudget);
+        let boundOversizedBatch = false;
         if (toolCalls.length > allowedCallsThisTurn) {
           if (oversizedToolBatchRepairUsed) {
-            throw processingError('AI provider repeatedly requested too many tools in one turn');
-          }
-          oversizedToolBatchRepairUsed = true;
-          logger.warn(
-            {
-              service: 'AiAssistantService',
-              userId,
-              libraryId,
-              toolCallCount: toolCalls.length,
-              toolNames: toolCallNames(toolCalls),
-              allowedCalls: allowedCallsThisTurn,
-            },
-            'AI provider tool batch exceeded its budget; requesting one repair',
-          );
-          const repairMessages: ProviderMessage[] = [
-            ...messages,
-            {
-              role: 'system',
-              content: `Your previous response requested ${toolCalls.length} tool calls, so none were executed. Retry once with at most ${allowedCallsThisTurn} tool calls. Combine uniform model edits with preview_bulk_changes. If no tool budget remains, answer without tool calls.`,
-            },
-          ];
-          if (providerRequestCount >= MAX_PROVIDER_REQUESTS) {
-            throw processingError('AI provider tool batch could not be repaired within the request budget');
-          }
-          const repairMustSynthesizeWithoutTools = providerRequestCount === MAX_PROVIDER_REQUESTS - 1;
-          const boundedRepairMessages: ProviderMessage[] = repairMustSynthesizeWithoutTools
-            ? [
-              ...repairMessages,
+            boundOversizedBatch = true;
+          } else {
+            oversizedToolBatchRepairUsed = true;
+            logger.warn(
+              {
+                service: 'AiAssistantService',
+                userId,
+                libraryId,
+                toolCallCount: toolCalls.length,
+                toolNames: toolCallNames(toolCalls),
+                allowedCalls: allowedCallsThisTurn,
+              },
+              'AI provider tool batch exceeded its budget; requesting one repair',
+            );
+            const repairBecomesLastToolCapable = providerRequestCount
+              === MAX_PROVIDER_REQUESTS - 2;
+            const repairMessages: ProviderMessage[] = [
+              ...providerMessages,
+              ...(repairBecomesLastToolCapable && !isLastToolCapableRequest
+                ? [{
+                  role: 'system' as const,
+                  content: 'This repair is the final tool-capable response. Stop exploratory research and create the best supported review proposal now, or answer without tools and explain the uncertainty.',
+                }]
+                : []),
               {
                 role: 'system',
-                content: 'This is the final provider response. Do not call tools. Give the most useful answer possible from the evidence already gathered and clearly identify any unfinished work.',
+                content: `Your previous response requested ${toolCalls.length} tool calls, so none were executed. Retry once with at most ${allowedCallsThisTurn} tool calls. Combine uniform model edits with preview_bulk_changes. If no tool budget remains, answer without tool calls.`,
               },
-            ]
-            : repairMessages;
-          if (JSON.stringify(boundedRepairMessages).length > MAX_PROVIDER_CONTEXT_CHARS) {
-            throw processingError('AI assistant exceeded the provider context budget');
-          }
-          providerRequestCount += 1;
-          response = await this.deps.providers.createChatCompletion(connection, {
-            model: connection.model,
-            messages: boundedRepairMessages,
-            ...(repairMustSynthesizeWithoutTools ? {} : {
-              tools: TOOL_DEFINITIONS,
-              tool_choice: 'auto',
-            }),
-          }, remainingRequestTime(deadline), requestSignal);
-          assertChatActive(deadline, requestSignal);
-          message = readAssistantMessage(response);
-          toolCalls = message.tool_calls ?? [];
-          logToolBatch(userId, libraryId, toolCalls, true);
-          if (repairMustSynthesizeWithoutTools) {
-            return buildSynthesisResponse(message.content, sources, proposal);
-          }
-          if (toolCalls.length > allowedCallsThisTurn) {
-            throw processingError('AI provider repeatedly requested too many tools in one turn');
+            ];
+            if (providerRequestCount >= MAX_PROVIDER_REQUESTS) {
+              throw processingError('AI provider tool batch could not be repaired within the request budget');
+            }
+            const repairMustSynthesizeWithoutTools = providerRequestCount === MAX_PROVIDER_REQUESTS - 1;
+            const boundedRepairMessages: ProviderMessage[] = repairMustSynthesizeWithoutTools
+              ? [
+                ...repairMessages,
+                {
+                  role: 'system',
+                  content: 'This is the final provider response. Do not call tools. Give the most useful answer possible from the evidence already gathered and clearly identify any unfinished work.',
+                },
+              ]
+              : repairMessages;
+            if (JSON.stringify(boundedRepairMessages).length > MAX_PROVIDER_CONTEXT_CHARS) {
+              throw processingError('AI assistant exceeded the provider context budget');
+            }
+            providerRequestCount += 1;
+            response = await this.deps.providers.createChatCompletion(connection, {
+              model: connection.model,
+              messages: boundedRepairMessages,
+              ...(repairMustSynthesizeWithoutTools ? {} : {
+                tools: TOOL_DEFINITIONS,
+                tool_choice: 'auto',
+              }),
+            }, remainingRequestTime(deadline), requestSignal);
+            assertChatActive(deadline, requestSignal);
+            message = readAssistantMessage(response);
+            toolCalls = message.tool_calls ?? [];
+            logToolBatch(userId, libraryId, toolCalls, true);
+            if (repairMustSynthesizeWithoutTools) {
+              return buildSynthesisResponse(message.content, sources, proposal);
+            }
+            if (toolCalls.length > allowedCallsThisTurn) {
+              boundOversizedBatch = true;
+            }
           }
         }
         if (toolCalls.length === 0) {
@@ -644,16 +654,29 @@ export class AiAssistantService {
             proposal,
           };
         }
-        totalToolCalls += toolCalls.length;
-        totalToolArgumentCharacters += toolCalls.reduce(
-          (sum, call) => sum + call.function.arguments.length,
-          0,
+        const executionIndexes = selectToolCallExecutionIndexes(
+          toolCalls,
+          allowedCallsThisTurn,
+          proposal !== null,
+          boundOversizedBatch,
         );
-        if (totalToolCalls > MAX_TOTAL_TOOL_CALLS) {
-          throw processingError('AI assistant exceeded the total tool-call budget');
-        }
-        if (totalToolArgumentCharacters > MAX_TOTAL_TOOL_ARGUMENT_CHARS) {
-          throw processingError('AI assistant exceeded the total tool-argument budget');
+        if (boundOversizedBatch && !canAppendBoundedToolTranscript(
+          messages,
+          message.content,
+          toolCalls,
+          totalToolResultCharacters,
+        )) {
+          logger.warn(
+            {
+              service: 'AiAssistantService',
+              userId,
+              libraryId,
+              toolCallCount: toolCalls.length,
+              toolNames: toolCallNames(toolCalls),
+            },
+            'Repeated oversized AI tool batch could not fit a bounded protocol transcript; returning synthesis fallback',
+          );
+          return buildSynthesisResponse(message.content, sources, proposal);
         }
 
         messages.push({
@@ -661,7 +684,43 @@ export class AiAssistantService {
           content: readContent(message.content) || null,
           tool_calls: toolCalls,
         });
-        for (const call of toolCalls) {
+        let proposalToolAttempted = false;
+        for (const [index, call] of toolCalls.entries()) {
+          const isProposalCall = isProposalToolCall(call);
+          const skipReason = !executionIndexes.has(index)
+            ? 'Skipped because this tool batch exceeded the remaining execution budget.'
+            : proposal !== null
+              ? 'Skipped because a review proposal has already been created.'
+              : isProposalCall && proposalToolAttempted
+                ? 'Skipped because only one proposal tool may be executed.'
+                : null;
+          if (skipReason) {
+            const content = serializeToolResult({ ok: false, skipped: true, error: skipReason });
+            const nextToolResultCharacters = totalToolResultCharacters + content.length;
+            if (nextToolResultCharacters > MAX_TOTAL_TOOL_RESULT_CHARS) {
+              if (boundOversizedBatch) {
+                return buildSynthesisResponse(message.content, sources, proposal);
+              }
+              throw processingError('AI assistant exceeded the total tool-result budget');
+            }
+            totalToolResultCharacters = nextToolResultCharacters;
+            messages.push({ role: 'tool', tool_call_id: call.id, content });
+            if (boundOversizedBatch
+              && JSON.stringify(messages).length > MAX_PROVIDER_CONTEXT_CHARS) {
+              return buildSynthesisResponse(message.content, sources, proposal);
+            }
+            continue;
+          }
+
+          if (isProposalCall) proposalToolAttempted = true;
+          totalToolCalls += 1;
+          totalToolArgumentCharacters += call.function.arguments.length;
+          if (totalToolCalls > MAX_TOTAL_TOOL_CALLS) {
+            throw processingError('AI assistant exceeded the total tool-call budget');
+          }
+          if (totalToolArgumentCharacters > MAX_TOTAL_TOOL_ARGUMENT_CHARS) {
+            throw processingError('AI assistant exceeded the total tool-argument budget');
+          }
           const result = await this.executeTool(
             call,
             userId,
@@ -675,15 +734,27 @@ export class AiAssistantService {
           if (result.sources) sources.push(...result.sources);
           if (result.proposal) proposal = result.proposal;
           const content = serializeToolResult(result.value);
-          totalToolResultCharacters += content.length;
-          if (totalToolResultCharacters > MAX_TOTAL_TOOL_RESULT_CHARS) {
+          const nextToolResultCharacters = totalToolResultCharacters + content.length;
+          if (nextToolResultCharacters > MAX_TOTAL_TOOL_RESULT_CHARS) {
+            if (boundOversizedBatch) {
+              return buildSynthesisResponse(message.content, sources, proposal);
+            }
             throw processingError('AI assistant exceeded the total tool-result budget');
           }
+          totalToolResultCharacters = nextToolResultCharacters;
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
             content,
           });
+          if (boundOversizedBatch
+            && JSON.stringify(messages).length > MAX_PROVIDER_CONTEXT_CHARS) {
+            return buildSynthesisResponse(message.content, sources, proposal);
+          }
+        }
+        if (boundOversizedBatch
+          && JSON.stringify(messages).length > MAX_PROVIDER_CONTEXT_CHARS) {
+          return buildSynthesisResponse(message.content, sources, proposal);
         }
       }
 
@@ -1060,6 +1131,65 @@ function serializeToolResult(value: unknown): string {
     previewLength = Math.floor(previewLength / 2);
   }
   return JSON.stringify({ security, truncated: true });
+}
+
+function isProposalToolCall(call: ToolCall): boolean {
+  return call.function.name === 'preview_changes'
+    || call.function.name === 'preview_bulk_changes';
+}
+
+function selectToolCallExecutionIndexes(
+  toolCalls: ToolCall[],
+  maxCalls: number,
+  alreadyHasProposal: boolean,
+  shouldReserveProposalSlot: boolean,
+): Set<number> {
+  const selected = new Set<number>();
+  if (maxCalls <= 0 || alreadyHasProposal) return selected;
+
+  const proposalIndex = toolCalls.findIndex(isProposalToolCall);
+  if (proposalIndex >= 0) selected.add(proposalIndex);
+
+  const nonProposalLimit = Math.max(
+    0,
+    maxCalls - selected.size - (shouldReserveProposalSlot && proposalIndex < 0 ? 1 : 0),
+  );
+  for (const [index, call] of toolCalls.entries()) {
+    if (selected.size >= nonProposalLimit + (proposalIndex >= 0 ? 1 : 0)) break;
+    if (!isProposalToolCall(call)) selected.add(index);
+  }
+  return selected;
+}
+
+function canAppendBoundedToolTranscript(
+  messages: ProviderMessage[],
+  assistantContent: unknown,
+  toolCalls: ToolCall[],
+  totalToolResultCharacters: number,
+): boolean {
+  const skippedContent = serializeToolResult({
+    ok: false,
+    skipped: true,
+    error: 'Skipped because this tool batch exceeded the remaining execution budget.',
+  });
+  if (totalToolResultCharacters + skippedContent.length * toolCalls.length
+    > MAX_TOTAL_TOOL_RESULT_CHARS) {
+    return false;
+  }
+  const boundedTranscript: ProviderMessage[] = [
+    ...messages,
+    {
+      role: 'assistant',
+      content: readContent(assistantContent) || null,
+      tool_calls: toolCalls,
+    },
+    ...toolCalls.map((call): ProviderMessage => ({
+      role: 'tool',
+      tool_call_id: call.id,
+      content: skippedContent,
+    })),
+  ];
+  return JSON.stringify(boundedTranscript).length <= MAX_PROVIDER_CONTEXT_CHARS;
 }
 
 function serializeGuaranteedTargetContext(value: unknown): string {
