@@ -116,11 +116,15 @@ export interface DeleteModelFolderRequest {
   path: string;
 }
 
-export interface SplitModelFolderRequest {
-  path: string;
+interface SplitModelRequestBase {
   name: string;
   metadataFieldSlugs?: string[];
 }
+
+export type SplitModelFolderRequest = SplitModelRequestBase & (
+  | { path: string; fileIds?: never }
+  | { fileIds: string[]; path?: never }
+);
 
 export interface SplitModelFolderResponse {
   sourceModelId: string;

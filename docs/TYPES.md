@@ -478,7 +478,7 @@ interface ImageFile {
   originalUrl: string;
 }
 
-// Returned after moving one folder into a newly created model
+// Returned after moving one folder or a selected set of files into a new model
 interface SplitModelFolderResponse {
   sourceModelId: string;
   newModelId: string;
@@ -941,12 +941,20 @@ interface UpdateModelRequest {
   previewImageFileId?: string | null; // set to a ModelFile UUID to pin cover; null to revert to fallback
 }
 
-interface SplitModelFolderRequest {
-  path: string; // relative folder path; 1–1000 characters before service-level normalization
+interface SplitModelRequestBase {
   name: string; // trimmed new-model name; 1–255 characters
   metadataFieldSlugs?: string[]; // selected source fields to copy; defaults to [] when omitted
 }
+
+type SplitModelFolderRequest = SplitModelRequestBase & (
+  | { path: string; fileIds?: never } // relative folder path; 1–1000 characters before normalization
+  | { fileIds: string[]; path?: never } // 1–500 unique ModelFile UUIDs
+);
 ```
+
+Exactly one selection field is required. `path` moves and rebases an entire folder, while
+`fileIds` moves all selected files into one new model without changing their relative paths.
+Every selected file must belong to the source model.
 
 `metadataFieldSlugs` accepts at most 100 unique slugs. Each slug is trimmed and must contain
 1–255 characters. An omitted array is accepted as `[]` for compatibility. The special `tags`

@@ -42,6 +42,26 @@ describe('splitModelFolder', () => {
       metadataFieldSlugs: ['artist', 'tags'],
     });
   });
+
+  it('posts selected file IDs as one split request', async () => {
+    const response = {
+      sourceModelId: 'source-1',
+      newModelId: 'new-1',
+      movedFileCount: 2,
+    };
+    vi.mocked(post).mockResolvedValueOnce(envelope(response));
+
+    await expect(
+      splitModelFolder('source-1', {
+        fileIds: ['file-1', 'file-2'],
+        name: 'Selected Parts',
+      }),
+    ).resolves.toEqual(response);
+    expect(post).toHaveBeenCalledWith('/models/source-1/folders/split', {
+      fileIds: ['file-1', 'file-2'],
+      name: 'Selected Parts',
+    });
+  });
 });
 
 describe('compressModelFolder', () => {

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 const storageMocks = vi.hoisted(() => ({
   copy: vi.fn(),
@@ -215,6 +215,87 @@ describe('ModelService – splitModelFolder', () => {
     expect(storageMocks.delete).toHaveBeenCalledWith(
       `thumbnails/${sourceModelId}/${imageFileId}_grid.webp`,
     );
+  });
+
+  it('should move selected files into one model while preserving their relative paths', async () => {
+    const [keepFile] = await db
+      .select({ id: modelFiles.id })
+      .from(modelFiles)
+      .where(and(
+        eq(modelFiles.modelId, sourceModelId),
+        eq(modelFiles.relativePath, 'keep.stl'),
+      ))
+      .limit(1);
+    if (!keepFile) throw new Error('Expected keep.stl fixture');
+
+    const result = await service.splitModelFiles(
+      sourceModelId,
+      [imageFileId, keepFile.id],
+      'Selected Files',
+      userId,
+      libraryId,
+    );
+
+    expect(result).toEqual({
+      sourceModelId,
+      newModelId: expect.any(String),
+      movedFileCount: 2,
+    });
+    expect((await service.getModelFiles(sourceModelId)).map((file) => file.relativePath))
+      .toEqual(['bundle/nested/part.stl']);
+    expect((await service.getModelFiles(result.newModelId)).map((file) => file.relativePath))
+      .toEqual(['bundle/cover.png', 'keep.stl']);
+    expect(await service.getModelById(sourceModelId)).toMatchObject({
+      fileCount: 1,
+      totalSizeBytes: 200,
+      previewImageFileId: null,
+    });
+    expect(await service.getModelById(result.newModelId)).toMatchObject({
+      name: 'Selected Files',
+      fileCount: 2,
+      totalSizeBytes: 400,
+      previewImageFileId: imageFileId,
+    });
+    expect(storageMocks.copy).toHaveBeenCalledWith(
+      `models/${sourceModelId}/bundle/cover.png`,
+      `models/${result.newModelId}/bundle/cover.png`,
+    );
+    expect(storageMocks.copy).toHaveBeenCalledWith(
+      `models/${sourceModelId}/keep.stl`,
+      `models/${result.newModelId}/keep.stl`,
+    );
+  });
+
+  it('should reject a selected file that does not belong to the source model', async () => {
+    const [otherModel] = await db.insert(models).values({
+      name: 'Other Model',
+      slug: `model-split-other-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      userId,
+      libraryId,
+      sourceType: 'manual',
+      status: 'ready',
+    }).returning();
+    const [otherFile] = await db.insert(modelFiles).values({
+      modelId: otherModel.id,
+      filename: 'other.stl',
+      relativePath: 'other.stl',
+      fileType: 'stl',
+      mimeType: 'model/stl',
+      sizeBytes: 10,
+      storagePath: `models/${otherModel.id}/other.stl`,
+      hash: 'other-file-hash',
+    }).returning();
+
+    await expect(service.splitModelFiles(
+      sourceModelId,
+      [imageFileId, otherFile.id],
+      'Invalid Selection',
+      userId,
+      libraryId,
+    )).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    expect(await db.select().from(models).where(eq(models.userId, userId))).toHaveLength(2);
+    expect(storageMocks.copy).not.toHaveBeenCalled();
   });
 
   it('should copy only the selected metadata fields and leave source metadata intact', async () => {

@@ -58,6 +58,7 @@ interface DetailPanelTestProps {
   collectionAddPending: boolean;
   onAddToCollections: (collectionIds: string[]) => Promise<void>;
   onSplitFolder: (path: string, name: string) => void;
+  onSplitFiles: (fileIds: string[], name: string) => void;
   fileActionsDisabled?: boolean;
   fileActionStatus?: string;
   onCompressFolder?: (path: string, name: string) => void;
@@ -71,6 +72,7 @@ vi.mock('../components/models/ModelDetailPanel', () => ({
     fileActionStatus,
     onCompressFolder,
     onSplitFolder,
+    onSplitFiles,
   }: DetailPanelTestProps) => (
     <>
       <button
@@ -84,6 +86,9 @@ vi.mock('../components/models/ModelDetailPanel', () => ({
       </button>
       <button type="button" onClick={() => onSplitFolder('variants/large', 'large')}>
         Split folder
+      </button>
+      <button type="button" onClick={() => onSplitFiles(['file-1', 'file-2'], 'body.stl')}>
+        Split selected files
       </button>
       <button
         type="button"
@@ -264,6 +269,34 @@ describe('ModelDetailPage mutations', () => {
     ]) {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey });
     }
+  });
+
+  it('splits selected files together and prefills the first filename', async () => {
+    vi.mocked(splitModelFolder).mockResolvedValue({
+      sourceModelId: 'model-1',
+      newModelId: 'model-new',
+      movedFileCount: 2,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    renderPage(queryClient);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Split selected files' }));
+
+    expect(screen.getByLabelText('New model name')).toHaveValue('body.stl');
+    expect(screen.getByRole('dialog')).toHaveTextContent(
+      'The selected 2 files will move together into a new model.',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Create Model' }));
+
+    await waitFor(() => {
+      expect(splitModelFolder).toHaveBeenCalledWith('model-1', {
+        fileIds: ['file-1', 'file-2'],
+        name: 'body.stl',
+        metadataFieldSlugs: [],
+      });
+    });
   });
 
   it('should show compression progress, refresh model data, and name the created archive', async () => {

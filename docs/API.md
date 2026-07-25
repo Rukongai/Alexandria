@@ -1284,13 +1284,19 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
 
 ### POST /models/:id/folders/split
 
-Move all contents of one folder into a new model. The selected folder itself is removed; files directly inside it become root files in the new model, and descendant folders are rebased beneath the new root. Persisted nested folders are retained even when they are empty.
+Move either one folder's contents or a selected set of files into one new model. The request must
+provide exactly one of `path` or `fileIds`. For a folder split, the selected folder itself is
+removed; files directly inside it become root files in the new model, and descendant folders are
+rebased beneath the new root. Persisted nested folders are retained even when they are empty. For
+a selected-file split, all selected files move together and keep their existing relative paths.
 
 **Auth required:** Yes. The source model must belong to the authenticated user and the active library selected by `X-Library-Id` (or the user's default library when the header is omitted), and it must have `status: "ready"`.
 
 **Path parameter:** `id` — source model UUID
 
 **Request body:**
+
+Folder selection:
 
 ```json
 {
@@ -1300,9 +1306,23 @@ Move all contents of one folder into a new model. The selected folder itself is 
 }
 ```
 
+Selected-file selection:
+
+```json
+{
+  "fileIds": [
+    "55555555-5555-4555-8555-555555555555",
+    "66666666-6666-4666-8666-666666666666"
+  ],
+  "name": "Selected Parts",
+  "metadataFieldSlugs": ["artist", "tags"]
+}
+```
+
 | Field | Type | Constraints |
 |-------|------|-------------|
-| `path` | string | Required relative folder path, 1–1000 characters. Leading/trailing slashes and whitespace around path segments are normalized; empty, `.`, `..`, control-character, and over-255-character segments are rejected. The folder must exist and contain at least one file. |
+| `path` | string | Relative folder path, 1–1000 characters. Required when `fileIds` is omitted and forbidden when `fileIds` is present. Leading/trailing slashes and whitespace around path segments are normalized; empty, `.`, `..`, control-character, and over-255-character segments are rejected. The folder must exist and contain at least one file. |
+| `fileIds` | string[] | 1–500 unique `ModelFile` UUIDs. Required when `path` is omitted and forbidden when `path` is present. Every file must belong to the source model. |
 | `name` | string | Required new model name, trimmed, 1–255 characters. |
 | `metadataFieldSlugs` | string[] | Metadata fields to copy from the source model. At most 100 unique slugs; each is trimmed, nonblank, and at most 255 characters. Omission is accepted as an empty array for compatibility. The special `tags` slug copies tag memberships. |
 
@@ -1328,11 +1348,12 @@ tag memberships. Metadata is copied inside the same database transaction as the 
 on the source model. Collection memberships, description, and original-filename or other source
 provenance are never copied.
 
-Storage copies happen before the database transaction. The transaction locks the source and selected metadata-field definitions, and confirms that the selected file and folder rows did not change while copying; a concurrent folder change returns `409 CONFLICT`, while a selected metadata field that was already deleted returns `400 VALIDATION_ERROR`. A copy or transaction failure leaves database state unchanged and triggers best-effort cleanup of every object whose copy completed successfully. After commit, removal of the source storage objects is best-effort and does not change the successful response.
+Storage copies happen before the database transaction. The transaction locks the source and selected metadata-field definitions, and confirms that the selected file rows, plus folder rows for a folder split, did not change while copying. A concurrent selection change returns `409 CONFLICT`, while a selected metadata field that was already deleted returns `400 VALIDATION_ERROR`. A copy or transaction failure leaves database state unchanged and triggers best-effort cleanup of every object whose copy completed successfully. After commit, removal of the source storage objects is best-effort and does not change the successful response.
 
-The endpoint returns `400 VALIDATION_ERROR` when the source is not ready, the name, path, or
-metadata-field selection is invalid, or the folder contains no files. It returns `404 NOT_FOUND`
-when the owned active-library source or requested folder does not exist.
+The endpoint returns `400 VALIDATION_ERROR` when the source is not ready; the name,
+metadata-field selection, or selected `path`/`fileIds` value is invalid; both selection fields or
+neither selection field are supplied; or the folder contains no files. It returns `404 NOT_FOUND`
+when the owned active-library source, requested folder, or one or more selected files do not exist.
 
 ---
 

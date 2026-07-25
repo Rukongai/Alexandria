@@ -30,6 +30,7 @@ interface ModelDetailPanelProps {
   onExtractArchive?: (fileId: string, name: string) => void;
   onMoveFiles?: (fileIds: string[], parentPath: string) => Promise<void>;
   onDeleteFiles?: (fileIds: string[]) => void;
+  onSplitFiles?: (fileIds: string[], initialName: string) => void;
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
   onCompressFolder?: (path: string, name: string) => void;
@@ -63,6 +64,7 @@ export function ModelDetailPanel({
   onExtractArchive,
   onMoveFiles,
   onDeleteFiles,
+  onSplitFiles,
   onRenameFolder,
   onMoveFolder,
   onCompressFolder,
@@ -128,6 +130,7 @@ export function ModelDetailPanel({
           onExtractArchive={onExtractArchive}
           onMoveFiles={onMoveFiles}
           onDeleteFiles={onDeleteFiles}
+          onSplitFiles={onSplitFiles}
           onRenameFolder={onRenameFolder}
           onMoveFolder={onMoveFolder}
           onCompressFolder={onCompressFolder}

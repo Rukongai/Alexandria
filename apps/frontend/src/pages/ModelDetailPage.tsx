@@ -159,10 +159,11 @@ export function ModelDetailPage() {
   const [activeTextFile, setActiveTextFile] = React.useState<TextFileRef | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = React.useState(false);
   const [mergeDialogOpen, setMergeDialogOpen] = React.useState(false);
-  const [splitFolderTarget, setSplitFolderTarget] = React.useState<{
-    path: string;
-    name: string;
-  } | null>(null);
+  const [splitTarget, setSplitTarget] = React.useState<
+    | { type: 'folder'; path: string; name: string }
+    | { type: 'files'; fileIds: string[]; name: string }
+    | null
+  >(null);
   const [selectedImageFileId, setSelectedImageFileId] = React.useState<string | null>(null);
 
   const fileMutation = useMutation({
@@ -231,9 +232,9 @@ export function ModelDetailPage() {
     : undefined;
 
   const splitFolderMutation = useMutation({
-    mutationFn: async ({ path, name, metadataFieldSlugs = [] }: SplitModelFolderRequest) => {
+    mutationFn: async (request: SplitModelFolderRequest) => {
       if (!id) throw new Error('Model id is required');
-      return splitModelFolder(id, { path, name, metadataFieldSlugs });
+      return splitModelFolder(id, request);
     },
     onSuccess: async (result, variables) => {
       await Promise.all([
@@ -251,7 +252,7 @@ export function ModelDetailPage() {
     },
     onError: (error) => {
       toast({
-        title: 'Could not split folder',
+        title: 'Could not split model',
         description: error instanceof Error ? error.message : undefined,
         variant: 'destructive',
       });
@@ -400,7 +401,8 @@ export function ModelDetailPage() {
               onMoveFolder={(path, parentPath) => runFileAction({ type: 'move-folder', path, parentPath })}
               onCompressFolder={(path, name) => fileMutation.mutate({ type: 'compress-folder', path, name })}
               onDeleteFolder={(path, name) => fileMutation.mutate({ type: 'delete-folder', path, name })}
-              onSplitFolder={(path, name) => setSplitFolderTarget({ path, name })}
+              onSplitFolder={(path, name) => setSplitTarget({ type: 'folder', path, name })}
+              onSplitFiles={(fileIds, name) => setSplitTarget({ type: 'files', fileIds, name })}
               allCollections={collectionsQuery.data ?? []}
               collectionsLoading={collectionsQuery.isLoading}
               collectionsError={collectionsQuery.isError}
@@ -426,17 +428,21 @@ export function ModelDetailPage() {
         file={activeTextFile}
       />
       <SplitFolderDialog
-        open={Boolean(splitFolderTarget)}
-        folderPath={splitFolderTarget?.path ?? ''}
-        initialName={splitFolderTarget?.name ?? ''}
+        open={Boolean(splitTarget)}
+        folderPath={splitTarget?.type === 'folder' ? splitTarget.path : undefined}
+        fileCount={splitTarget?.type === 'files' ? splitTarget.fileIds.length : undefined}
+        initialName={splitTarget?.name ?? ''}
         metadata={model?.metadata ?? []}
         onOpenChange={(open) => {
-          if (!open) setSplitFolderTarget(null);
+          if (!open) setSplitTarget(null);
         }}
         onConfirm={(name, metadataFieldSlugs) => {
-          if (!splitFolderTarget) return Promise.reject(new Error('Folder is required'));
+          if (!splitTarget) return Promise.reject(new Error('Split target is required'));
+          const request: SplitModelFolderRequest = splitTarget.type === 'folder'
+            ? { path: splitTarget.path, name, metadataFieldSlugs }
+            : { fileIds: splitTarget.fileIds, name, metadataFieldSlugs };
           return splitFolderMutation
-            .mutateAsync({ path: splitFolderTarget.path, name, metadataFieldSlugs })
+            .mutateAsync(request)
             .then(() => undefined);
         }}
       />
