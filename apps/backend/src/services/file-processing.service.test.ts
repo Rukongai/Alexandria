@@ -9,7 +9,7 @@ import archiver from 'archiver';
 import * as tar from 'tar';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { path7za } from '7zip-bin';
+import { path7z } from '7zip-bin-full';
 import Seven from 'node-7z';
 import {
   FileProcessingService,
@@ -51,6 +51,42 @@ function createTestZip(
 
     archive.finalize();
   });
+}
+
+function decodeUuencodedFixture(encoded: string): { filename: string; data: Buffer } {
+  const lines = encoded.replace(/\r\n/g, '\n').split('\n');
+  const headerIndex = lines.findIndex((line) => /^begin [0-7]{3} .+$/.test(line));
+  if (headerIndex === -1) throw new Error('Missing uuencode header');
+
+  const filename = lines[headerIndex].replace(/^begin [0-7]{3} /, '');
+  const decoded: number[] = [];
+  let foundEnd = false;
+
+  for (const line of lines.slice(headerIndex + 1)) {
+    if (line === 'end') {
+      foundEnd = true;
+      break;
+    }
+    if (line.length === 0) continue;
+
+    const byteCount = (line.charCodeAt(0) - 32) & 0x3f;
+    if (byteCount === 0) continue;
+    const lineBytes: number[] = [];
+    for (let index = 1; index < line.length && lineBytes.length < byteCount; index += 4) {
+      const a = (line.charCodeAt(index) - 32) & 0x3f;
+      const b = (line.charCodeAt(index + 1) - 32) & 0x3f;
+      const c = (line.charCodeAt(index + 2) - 32) & 0x3f;
+      const d = (line.charCodeAt(index + 3) - 32) & 0x3f;
+      lineBytes.push((a << 2) | (b >> 4));
+      if (lineBytes.length < byteCount) lineBytes.push(((b & 0x0f) << 4) | (c >> 2));
+      if (lineBytes.length < byteCount) lineBytes.push(((c & 0x03) << 6) | d);
+    }
+    if (lineBytes.length !== byteCount) throw new Error('Malformed uuencoded fixture line');
+    decoded.push(...lineBytes);
+  }
+
+  if (!foundEnd) throw new Error('Missing uuencode end marker');
+  return { filename, data: Buffer.from(decoded) };
 }
 
 // ---------------------------------------------------------------------------
@@ -703,7 +739,7 @@ describe('FileProcessingService – multipart archives', () => {
     process7z.mockRestore();
   });
 
-  it('colocates differently prefixed RAR volumes and extracts from part 1', async () => {
+  it('should colocate differently prefixed RAR volumes and extract them with 7-Zip from part 1', async () => {
     const firstSource = path.join(
       tmpDir,
       'upload_11111111-1111-4111-8111-111111111111_Nympha3D - 2026-02.part1.rar',
@@ -715,10 +751,10 @@ describe('FileProcessingService – multipart archives', () => {
     await fsPromises.writeFile(firstSource, 'part one');
     await fsPromises.writeFile(secondSource, 'part two');
     const expectedManifest = { entries: [], totalSizeBytes: 0 };
-    const processRar = vi
+    const process7z = vi
       .spyOn(service as unknown as {
-        processRar: (archivePath: string, extractDir: string) => Promise<FileManifest>;
-      }, 'processRar')
+        process7z: (archivePath: string, extractDir: string) => Promise<FileManifest>;
+      }, 'process7z')
       .mockImplementation(async (archivePath, extractDir) => {
         expect(path.basename(archivePath)).toBe('nympha3d - 2026-02.part1.rar');
         expect(extractDir).toBe(path.join(tmpDir, 'split-rar-output'));
@@ -741,8 +777,49 @@ describe('FileProcessingService – multipart archives', () => {
       'split',
     )).resolves.toEqual(expectedManifest);
 
-    expect(processRar).toHaveBeenCalledOnce();
-    processRar.mockRestore();
+    expect(process7z).toHaveBeenCalledOnce();
+    process7z.mockRestore();
+  });
+
+  it('should extract a real three-volume RAR fixture from part 1', async () => {
+    const fixtureRoot = new URL('./fixtures/', import.meta.url);
+    const sourceDir = path.join(tmpDir, 'real-rar-multivolume-source');
+    const extractDir = path.join(tmpDir, 'real-rar-multivolume-output');
+    await fsPromises.mkdir(sourceDir, { recursive: true });
+
+    const files: MultipartArchiveFile[] = [];
+    for (const part of [3, 1, 2]) {
+      const fixtureName = `test_rar_multivolume_single_file.part${part}.rar.uu`;
+      const encoded = await fsPromises.readFile(new URL(fixtureName, fixtureRoot), 'utf8');
+      const decoded = decodeUuencodedFixture(encoded);
+      expect(decoded.filename).toBe(fixtureName.replace(/\.uu$/, ''));
+      const tempFilePath = path.join(sourceDir, `upload-${part}-${decoded.filename}`);
+      await fsPromises.writeFile(tempFilePath, decoded.data);
+      files.push({
+        tempFilePath,
+        originalFilename: `LibarchiveAddingTest.part${part}.rar`,
+      });
+    }
+
+    const manifest = await service.processMultipartArchives(files, extractDir, 'split');
+    const outputPath = path.join(extractDir, 'LibarchiveAddingTest.html');
+    const content = await fsPromises.readFile(outputPath);
+    const hash = crypto.createHash('sha256').update(content).digest('hex');
+    const expectedHash = 'ee16390e87152d7dec632ae2b37566da6135966e46b5166e6f40a1c827fa61ad';
+
+    expect(manifest.entries).toEqual([
+      expect.objectContaining({
+        filename: 'LibarchiveAddingTest.html',
+        relativePath: 'LibarchiveAddingTest.html',
+        sizeBytes: 20_111,
+        hash: expectedHash,
+      }),
+    ]);
+    expect(manifest.totalSizeBytes).toBe(20_111);
+    expect(content).toHaveLength(20_111);
+    expect(hash).toBe(expectedHash);
+    expect(content.toString('utf8')).toMatch(/^<!DOCTYPE HTML PUBLIC "-\/\/W3C\/\/DTD HTML 4\.0 Transitional\/\/EN">/);
+    expect(content.toString('utf8')).toMatch(/<\/BODY>\n<\/HTML>$/);
   });
 
   it('removes the temporary split-parts directory when extraction fails', async () => {
@@ -780,13 +857,13 @@ describe('FileProcessingService – multipart archives', () => {
     await fsPromises.writeFile(partOne, 'part one');
     await fsPromises.writeFile(partTwo, 'part two');
     let entryPath: string | undefined;
-    const processRar = vi
+    const process7z = vi
       .spyOn(service as unknown as {
-        processRar: (archivePath: string, extractDir: string) => Promise<FileManifest>;
-      }, 'processRar')
+        process7z: (archivePath: string, extractDir: string) => Promise<FileManifest>;
+      }, 'process7z')
       .mockImplementation(async (archivePath) => {
         entryPath = archivePath;
-        throw new Error('RAR extraction failed');
+        throw new Error('RAR volume extraction failed');
       });
 
     await expect(service.processMultipartArchives(
@@ -796,11 +873,11 @@ describe('FileProcessingService – multipart archives', () => {
       ],
       path.join(tmpDir, 'failed-rar-output'),
       'split',
-    )).rejects.toThrow('RAR extraction failed');
+    )).rejects.toThrow('RAR volume extraction failed');
 
     expect(entryPath).toBeDefined();
     await expect(fsPromises.access(path.dirname(entryPath!))).rejects.toThrow();
-    processRar.mockRestore();
+    process7z.mockRestore();
   });
 
   it('extracts a real classic .z01 + terminal .zip fixture', async () => {
@@ -829,13 +906,13 @@ describe('FileProcessingService – multipart archives', () => {
     ]);
   });
 
-  it('extracts a real numbered .zip.001 fixture generated by bundled 7za', async () => {
+  it('should extract a real numbered .zip.001 fixture generated by full 7-Zip', async () => {
     const fixtureDir = path.join(tmpDir, 'real-numbered');
     const sourceDir = path.join(fixtureDir, 'source');
     await fsPromises.mkdir(sourceDir, { recursive: true });
     await fsPromises.writeFile(path.join(sourceDir, 'payload.stl'), crypto.randomBytes(180_000));
     const archivePath = path.join(fixtureDir, 'bundle.zip');
-    await execFileAsync(path7za, ['a', '-tzip', '-v64k', archivePath, 'payload.stl'], {
+    await execFileAsync(path7z, ['a', '-tzip', '-v64k', archivePath, 'payload.stl'], {
       cwd: sourceDir,
     });
     const names = (await fsPromises.readdir(fixtureDir)).filter((name) => /^bundle\.zip\.\d{3}$/i.test(name));
@@ -857,6 +934,13 @@ describe('FileProcessingService – multipart archives', () => {
 });
 
 describe('7-Zip extraction preflight', () => {
+  it('should bundle an extractor with RAR and RAR5 support', async () => {
+    const { stdout } = await execFileAsync(path7z, ['i']);
+
+    expect(stdout).toMatch(/^\s*\.\.\.F.*\sRar\s/m);
+    expect(stdout).toMatch(/^\s*\.\.\.F.*\sRar5\s/m);
+  });
+
   it.each([
     '../escape.stl',
     'safe/../../escape.stl',
