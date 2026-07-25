@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import sqlite3
+from contextlib import AsyncExitStack
 
 import pytest
 
@@ -507,7 +510,8 @@ async def test_should_abort_first_multipart_upload_when_final_hash_finds_duplica
         work_dir = tmp_path / "work"
 
         with pytest.raises(DuplicateModelFound, match=prior.import_key):
-            await importer._start_session(unit, work_dir)
+            async with AsyncExitStack() as holds:
+                await importer._start_session(unit, work_dir, holds)
 
         assert telegram.download_calls == [1, 2]
         assert len(alexandria.upload_calls) == 1
@@ -516,5 +520,310 @@ async def test_should_abort_first_multipart_upload_when_final_hash_finds_duplica
         assert current.content_signature == prior_signature
         assert alexandria.abort_calls == [["upload-1"]]
         assert list(work_dir.iterdir()) == []
+    finally:
+        tracker.close()
+
+
+class PipelineTelegram:
+    """Telegram double that records how many downloads overlap in time."""
+
+    channel_id = -100123
+
+    def __init__(
+        self,
+        *,
+        payloads: dict[int, bytes] | None = None,
+        delay: float = 0.0,
+    ) -> None:
+        self.payloads = payloads or {}
+        self.delay = delay
+        self.download_calls: list[int] = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def download(self, ref, directory):
+        self.download_calls.append(ref.message_id)
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"{ref.message_id}_{ref.filename}"
+            path.write_bytes(
+                self.payloads.get(ref.message_id, f"payload-{ref.message_id}".encode())
+            )
+            return path
+        finally:
+            self.in_flight -= 1
+
+    def message_link(self, _message_id: int):
+        return None
+
+
+class PipelineAlexandria:
+    """Alexandria double that walks each unit through a full happy-path import."""
+
+    def __init__(self, *, upload_delay: float = 0.0) -> None:
+        self.upload_delay = upload_delay
+        self.sessions: dict[str, dict] = {}
+        self.committed_models: list[str] = []
+        self.abort_calls: list[list[str]] = []
+        self._uploads = 0
+
+    async def get_model_status(self, model_id: str):
+        return {"modelId": model_id, "status": "ready"}
+
+    async def find_session_by_filename(self, _filename: str):
+        return None
+
+    async def upload_file(self, _path, upload_name: str, *, multipart: bool):
+        if self.upload_delay:
+            await asyncio.sleep(self.upload_delay)
+        self._uploads += 1
+        return f"upload-{self._uploads}"
+
+    async def complete_upload(self, upload_ids: list[str], *, multipart: bool):
+        session_id = f"session-{upload_ids[0]}"
+        self.sessions[session_id] = {
+            "id": session_id,
+            "status": "ready_for_review",
+            "detected": {},
+        }
+        return session_id
+
+    async def abort_uploads(self, upload_ids: list[str]) -> None:
+        self.abort_calls.append(list(upload_ids))
+
+    async def get_session(self, session_id: str):
+        return self.sessions[session_id]
+
+    async def wait_for_session(self, session_id: str, _statuses, **_kwargs):
+        return self.sessions[session_id]
+
+    async def commit(self, session_id: str, *, model_name: str, description: str):
+        model_id = f"model-{session_id}"
+        self.sessions[session_id] = {
+            "id": session_id,
+            "status": "committed",
+            "modelId": model_id,
+        }
+        self.committed_models.append(model_id)
+        return model_id
+
+
+def pipeline_importer(tmp_path, telegram, alexandria, concurrency: int):
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    importer = ChannelImporter(
+        telegram=telegram,  # type: ignore[arg-type]
+        alexandria=alexandria,  # type: ignore[arg-type]
+        tracker=tracker,
+        work_root=tmp_path / "work",
+        concurrency=concurrency,
+    )
+    return importer, tracker
+
+
+def test_should_reject_a_concurrency_below_one() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        ChannelImporter(
+            telegram=object(),  # type: ignore[arg-type]
+            alexandria=object(),  # type: ignore[arg-type]
+            tracker=object(),  # type: ignore[arg-type]
+            concurrency=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_should_download_several_models_at_once_up_to_the_concurrency(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram(delay=0.02)
+    alexandria = PipelineAlexandria()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 2)
+    try:
+        counts = await importer.run(
+            [media_ref(index, f"model-{index}.zip") for index in range(1, 5)]
+        )
+
+        assert counts == {"completed": 4}
+        assert len(alexandria.committed_models) == 4
+        assert telegram.max_in_flight == 2
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_import_strictly_in_order_at_the_default_concurrency(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram(delay=0.01)
+    alexandria = PipelineAlexandria()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1)
+    try:
+        await importer.run(
+            [media_ref(index, f"model-{index}.zip") for index in range(1, 5)]
+        )
+
+        assert telegram.max_in_flight == 1
+        assert telegram.download_calls == [1, 2, 3, 4]
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_deduplicate_concurrent_twins_by_telegram_identity(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram(delay=0.02)
+    alexandria = PipelineAlexandria()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 2)
+    try:
+        await importer.run(
+            [
+                media_ref(1, "dragon.zip", media_identity="document:777:100"),
+                media_ref(2, "dragon-forwarded.zip", media_identity="document:777:100"),
+            ]
+        )
+
+        assert len(alexandria.committed_models) == 1
+        assert telegram.download_calls == [1]
+        records = [
+            tracker.get(unit.key)
+            for unit in partition_logical_models(
+                -100123,
+                [
+                    media_ref(1, "dragon.zip", media_identity="document:777:100"),
+                    media_ref(
+                        2, "dragon-forwarded.zip", media_identity="document:777:100"
+                    ),
+                ],
+            )
+        ]
+        original, duplicate = records
+        assert original is not None and duplicate is not None
+        assert original.duplicate_of_import_key is None
+        assert duplicate.status == "completed"
+        assert duplicate.duplicate_of_import_key == original.import_key
+        assert duplicate.model_id == original.model_id
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_deduplicate_concurrent_twins_by_content_hash(
+    tmp_path,
+    media_ref,
+) -> None:
+    payload = b"identical archive bytes"
+    telegram = PipelineTelegram(payloads={1: payload, 2: payload}, delay=0.02)
+    # The upload delay keeps the winner mid-import while its twin reaches the
+    # content-signature check, which is exactly when the gate has to hold.
+    alexandria = PipelineAlexandria(upload_delay=0.02)
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 2)
+    try:
+        await importer.run(
+            [media_ref(1, "dragon.zip"), media_ref(2, "dragon-renamed.zip")]
+        )
+
+        # Telegram identity differs, so both are downloaded before the hashes match.
+        assert sorted(telegram.download_calls) == [1, 2]
+        assert len(alexandria.committed_models) == 1
+        units = partition_logical_models(
+            -100123,
+            [media_ref(1, "dragon.zip"), media_ref(2, "dragon-renamed.zip")],
+        )
+        statuses = [tracker.get(unit.key) for unit in units]
+        assert all(
+            record is not None and record.status == "completed" for record in statuses
+        )
+        duplicates = [
+            record
+            for record in statuses
+            if record is not None and record.duplicate_of_import_key is not None
+        ]
+        assert len(duplicates) == 1
+        assert duplicates[0].model_id == alexandria.committed_models[0]
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_keep_importing_later_models_when_one_fails(
+    tmp_path,
+    media_ref,
+) -> None:
+    class FailingTelegram(PipelineTelegram):
+        async def download(self, ref, directory):
+            if ref.message_id == 2:
+                raise RuntimeError("telegram refused the download")
+            return await super().download(ref, directory)
+
+    telegram = FailingTelegram(delay=0.01)
+    alexandria = PipelineAlexandria()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 3)
+    try:
+        counts = await importer.run(
+            [media_ref(index, f"model-{index}.zip") for index in range(1, 4)]
+        )
+
+        assert counts == {"completed": 2, "failed": 1}
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_collapse_every_concurrent_twin_onto_one_model(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram(delay=0.02)
+    alexandria = PipelineAlexandria()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 2)
+    try:
+        counts = await importer.run(
+            [
+                media_ref(index, f"copy-{index}.zip", media_identity="document:777:100")
+                for index in range(1, 4)
+            ]
+        )
+
+        assert counts == {"completed": 3}
+        assert len(alexandria.committed_models) == 1
+        assert telegram.download_calls == [1]
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_let_every_task_settle_before_reporting_an_unexpected_failure(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram(delay=0.02)
+    alexandria = PipelineAlexandria()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 3)
+    healthy_discover = tracker.discover
+
+    def discover(**kwargs):
+        # Fails outside _process_unit's own guard, so only run() can contain it.
+        if kwargs["logical_filename"] == "model-2.zip":
+            raise sqlite3.OperationalError("state database is locked")
+        return healthy_discover(**kwargs)
+
+    tracker.discover = discover  # type: ignore[method-assign]
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            await importer.run(
+                [media_ref(index, f"model-{index}.zip") for index in range(1, 4)]
+            )
+
+        tracker.discover = healthy_discover  # type: ignore[method-assign]
+        assert tracker.counts() == {"completed": 2}
+        assert len(alexandria.committed_models) == 2
+        assert telegram.in_flight == 0
     finally:
         tracker.close()

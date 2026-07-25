@@ -46,6 +46,8 @@ Plaintext HTTP is accepted automatically only for loopback hosts such as `localh
 
 Set `ALEXANDRIA_LIBRARY_ID` to import into a specific library owned by the Alexandria account. The importer sends it as `X-Library-Id` on all Alexandria requests. Omit it to use that account's default library.
 
+Set `TELEGRAM_IMPORT_CONCURRENCY` to import several models at the same time; it defaults to `1` and `--concurrency` overrides it. See [Concurrency](#concurrency) for the trade-offs.
+
 By default, the reusable Telegram login session and SQLite import state live under `$XDG_DATA_HOME/alexandria-telegram-importer`, or `~/.local/share/alexandria-telegram-importer` when `XDG_DATA_HOME` is unset. Override them with `TELEGRAM_SESSION_PATH` and `TELEGRAM_IMPORT_STATE_PATH`, or with the `--session` and `--state` command-line options.
 
 ## Preview and import
@@ -72,12 +74,27 @@ uv run alexandria-telegram-import \
   --alexandria-url http://localhost:3001 \
   --library-id 00000000-0000-4000-8000-000000000000 \
   --from-message-id 2500 \
+  --concurrency 3 \
   --verbose
 ```
 
-`--from-message-id N` considers only Telegram messages with IDs greater than `N`. `--poll-interval` changes the default two-second Alexandria session polling interval. Run `uv run alexandria-telegram-import --help` for all options.
+`--from-message-id N` considers only Telegram messages with IDs greater than `N`. `--poll-interval` changes the default two-second Alexandria session polling interval. `--concurrency N` sets how many models are imported at the same time. Run `uv run alexandria-telegram-import --help` for all options.
 
-During a real run, the importer processes models sequentially. It downloads a model, starts an Alexandria scan, waits for `ready_for_review`, appends the assigned attachments, commits the session with a derived name and Telegram-source description, and waits for `committed` before moving to the next model. The commit sets only that name and description; the importer does not assign a collection or map Telegram content into artist, tags, or custom metadata. A failure is recorded and the run continues with later models. The command exits with status 1 when the state database contains failed or completion-uncertain imports after the run.
+During a real run, each model is downloaded, scanned by Alexandria, held until `ready_for_review`, given its assigned attachments, committed with a derived name and Telegram-source description, and awaited until `committed`. The commit sets only that name and description; the importer does not assign a collection or map Telegram content into artist, tags, or custom metadata. A failure is recorded and the run continues with the remaining models. The command exits with status 1 when the state database contains failed or completion-uncertain imports after the run.
+
+## Concurrency
+
+`--concurrency N`, or `TELEGRAM_IMPORT_CONCURRENCY`, sets how many logical models the importer works on at once. It defaults to `1`, which imports one model at a time in Telegram message order and matches the behavior of earlier versions. Values below 1 are rejected.
+
+Raising it overlaps the slow parts of independent models — one model downloads while another uploads or waits on an Alexandria scan — and is the main lever for importing a large channel faster. The costs scale with `N`:
+
+- Up to `N` models occupy the work directory at once, so peak local disk use is roughly `N` times the largest model rather than one model.
+- Telegram sees up to `N` concurrent download streams, which makes `FloodWaitError` throttling more likely. The importer already backs off and retries a download up to three times, but a value far above single digits invites sustained rate limiting on a large channel.
+- Alexandria receives up to `N` concurrent upload and scan workloads.
+
+Parts of one split archive are still downloaded and uploaded one at a time, which bounds disk use per model and preserves the abort path when a set turns out to be a duplicate. Attachments for a model are likewise appended one at a time. Concurrency applies between logical models, not inside one.
+
+Interleaved concurrent runs make log output non-sequential; every import log line names the model it refers to. The final `Import state:` summary is unaffected.
 
 ## Exact grouping rules
 
@@ -112,6 +129,8 @@ For both layers, a single-file model's signature represents that one file. A mul
 
 The importer checks only completed records in its local SQLite state whose stored Alexandria model ID still resolves to a `ready` model in the selected library. On a match, it does not create another Alexandria model. Instead, it marks the new local import record completed, points it to the existing model ID, and records which import key it duplicates. A dry run does not open the state database and therefore reports grouping only, not duplicate decisions.
 
+Both layers match against *completed* records, so concurrent imports of the same media need extra coordination: without it, two models running at once would each find no completed match and each create an Alexandria model. The importer holds each signature it is working on for the duration of that import. A concurrent model with the same signature waits, and by the time it looks the first has completed, so it deduplicates against that model as it would on a later run. Twins are therefore collapsed onto one Alexandria model at any `--concurrency` value. A Telegram-identity twin waits before downloading and never transfers the media; a content-hash twin has already downloaded by the time the hashes can be compared, so it transfers the bytes and then discards them. If the model holding a signature fails, the waiting model finds nothing completed and imports normally.
+
 Split archives are downloaded, hashed, and uploaded one part at a time. The SHA-256 decision cannot be made until the final part has been hashed, so earlier parts may already have initialized Alexandria uploads when the whole set proves to be a duplicate. In that case the importer aborts every upload ID initialized for the set and removes the local part files. Server abort is best-effort if Alexandria becomes unreachable; its normal upload expiry remains the fallback.
 
 These signatures deliberately exclude attachments. Attachments remain scoped to the logical model selected by the grouping rules and are appended only when that model is actually imported. If a model is skipped as a duplicate, differently grouped or newly added attachments are not appended to the existing Alexandria model.
@@ -130,7 +149,7 @@ This state is local coordination, not a global exactly-once guarantee:
 - Editing a caption or adding an attachment does not change a completed model's key, so a rerun does not update that model. Changing which model-message IDs form a split set does change the key.
 - Duplicate discovery does not scan Alexandria's finished model catalog. It compares local SQLite signatures, then asks Alexandria only whether the candidate record's stored model ID is still ready.
 - An Alexandria error session without a model is discarded and may be retried on the next run. If the error session already has a model ID, the importer records the failure but cannot automatically roll back or recreate that model.
-- The importer holds an exclusive operating-system lock for its state file. A concurrent process using the same state exits instead of racing the same Telegram models. Separate state databases use separate work roots.
+- The importer holds an exclusive operating-system lock for its state file. A concurrent process using the same state exits instead of racing the same Telegram models. Separate state databases use separate work roots. Signature coordination is in-process only, so it protects models within one run; it is the state-file lock that keeps a second process out.
 - If a recorded session disappears after Alexandria returned a model ID, the importer verifies that model's status. It marks a ready model complete, but records `completion_uncertain` and refuses to upload again when it cannot prove the prior model is ready.
 
 The state database uses SQLite WAL mode with full synchronous writes, but it cannot make the Telegram download and Alexandria HTTP operations atomic with the local state update. The deterministic upload filename and session lookup cover the normal interruption windows; they do not eliminate every duplicate possibility after state loss, session expiry, or manual server-side deletion.

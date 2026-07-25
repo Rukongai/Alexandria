@@ -21,6 +21,18 @@ def _data_dir() -> Path:
     return Path.home() / ".local" / "share" / "alexandria-telegram-importer"
 
 
+def _concurrency(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"concurrency must be an integer, got {value!r}"
+        ) from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("concurrency must be at least 1")
+    return parsed
+
+
 def _channel(value: str | None) -> str | int | None:
     if value is None or not value.strip():
         return None
@@ -59,6 +71,15 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--from-message-id", type=int, default=0)
     result.add_argument("--poll-interval", type=float, default=2.0)
+    result.add_argument(
+        "--concurrency",
+        type=_concurrency,
+        default=os.getenv("TELEGRAM_IMPORT_CONCURRENCY", "1"),
+        help=(
+            "Number of Telegram models to import at the same time. Higher values "
+            "trade disk use and Telegram rate-limit risk for throughput (default 1)"
+        ),
+    )
     result.add_argument(
         "--dry-run",
         action="store_true",
@@ -110,6 +131,7 @@ async def run(args: argparse.Namespace) -> int:
             alexandria=alexandria,
             tracker=tracker,
             work_root=args.state.parent / f"{args.state.name}.work",
+            concurrency=args.concurrency,
         ).run(refs)
         print(
             "Import state: "

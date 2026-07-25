@@ -6,11 +6,13 @@ import logging
 import shutil
 import tempfile
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
 from .alexandria import AlexandriaClient, AlexandriaError, session_filenames
+from .concurrency import SignatureGate
 from .grouping import (
     ARCHIVE_EXTENSIONS,
     build_bundles,
@@ -143,6 +145,19 @@ def build_description(
     return description if len(description) <= 2000 else description[:1999] + "…"
 
 
+def _work_items(
+    bundles: Iterable[ImportBundle],
+) -> Iterator[tuple[LogicalModel, tuple[MediaRef, ...], tuple[LogicalModel, ...]]]:
+    """Flatten bundles into one unit of work per logical model, in discovery order."""
+    for bundle in bundles:
+        for index, unit in enumerate(bundle.models):
+            yield (
+                unit,
+                bundle.attachments if index == 0 else (),
+                bundle.models[1:] if index == 0 else (),
+            )
+
+
 class ChannelImporter:
     def __init__(
         self,
@@ -151,28 +166,50 @@ class ChannelImporter:
         alexandria: AlexandriaClient,
         tracker: ImportTracker,
         work_root: Path | None = None,
+        concurrency: int = 1,
     ) -> None:
+        if concurrency < 1:
+            raise ValueError("Import concurrency must be at least 1")
         self.telegram = telegram
         self.alexandria = alexandria
         self.tracker = tracker
         self.work_root = work_root
+        self.concurrency = concurrency
+        self._signatures = SignatureGate()
 
     async def run(self, refs: list[MediaRef]) -> dict[str, int]:
         self._cleanup_stale_work()
         bundles = list(build_bundles(self.telegram.channel_id, refs))
         total_units = sum(len(bundle.models) for bundle in bundles)
         log.info(
-            "Discovered %d importable models in %d bundles", total_units, len(bundles)
+            "Discovered %d importable models in %d bundles; importing %d at a time",
+            total_units,
+            len(bundles),
+            self.concurrency,
         )
-        for bundle in bundles:
-            await self._process_bundle(bundle)
-        return self.tracker.counts()
+        # Semaphore acquisition is FIFO, so a concurrency of 1 keeps the original
+        # strict discovery order.
+        slots = asyncio.Semaphore(self.concurrency)
 
-    async def _process_bundle(self, bundle: ImportBundle) -> None:
-        for index, unit in enumerate(bundle.models):
-            attachments = bundle.attachments if index == 0 else ()
-            related = bundle.models[1:] if index == 0 else ()
-            await self._process_unit(unit, attachments, related)
+        async def guarded(
+            unit: LogicalModel,
+            attachments: tuple[MediaRef, ...],
+            related: tuple[LogicalModel, ...],
+        ) -> None:
+            async with slots:
+                await self._process_unit(unit, attachments, related)
+
+        results = await asyncio.gather(
+            *(guarded(*item) for item in _work_items(bundles)),
+            return_exceptions=True,
+        )
+        # Plain gather propagates the first failure while its siblings keep
+        # running, which would leave tasks writing to a tracker and HTTP client
+        # the caller is about to close. Collect every result, then re-raise.
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return self.tracker.counts()
 
     async def _process_unit(
         self,
@@ -197,31 +234,46 @@ class ChannelImporter:
         log.info("Importing %s", unit.logical_filename)
         try:
             validate_logical_model(unit)
-            dedupe_eligible = (
-                record.status in {"discovered", "failed", "downloading", "uploading"}
-                and record.session_id is None
-                and record.model_id is None
-            )
-            if dedupe_eligible and record.telegram_signature:
-                duplicate = await self._find_ready_duplicate(
-                    "telegram_signature",
-                    record.telegram_signature,
-                    exclude_import_key=unit.key,
+            # Signatures are held for the rest of this import so a concurrent twin
+            # waits here and then sees this model as a completed duplicate source.
+            # A holder always owns a concurrency slot, so waiting on one cannot
+            # deadlock against the semaphore.
+            async with AsyncExitStack() as holds:
+                if record.telegram_signature:
+                    await holds.enter_async_context(
+                        self._signatures.hold(
+                            "telegram_signature", record.telegram_signature
+                        ),
+                    )
+                dedupe_eligible = (
+                    record.status
+                    in {"discovered", "failed", "downloading", "uploading"}
+                    and record.session_id is None
+                    and record.model_id is None
                 )
-                if duplicate:
-                    self._record_duplicate(unit, duplicate, "Telegram media identity")
-                    return
-            with tempfile.TemporaryDirectory(
-                prefix=f"alexandria-tg-{unit.key[:8]}-",
-                dir=self.work_root,
-            ) as temp:
-                await self._resume_or_import(
-                    unit,
-                    attachments,
-                    related,
-                    record,
-                    Path(temp),
-                )
+                if dedupe_eligible and record.telegram_signature:
+                    duplicate = await self._find_ready_duplicate(
+                        "telegram_signature",
+                        record.telegram_signature,
+                        exclude_import_key=unit.key,
+                    )
+                    if duplicate:
+                        self._record_duplicate(
+                            unit, duplicate, "Telegram media identity"
+                        )
+                        return
+                with tempfile.TemporaryDirectory(
+                    prefix=f"alexandria-tg-{unit.key[:8]}-",
+                    dir=self.work_root,
+                ) as temp:
+                    await self._resume_or_import(
+                        unit,
+                        attachments,
+                        related,
+                        record,
+                        Path(temp),
+                        holds,
+                    )
         except DuplicateModelFound as duplicate:
             self._record_duplicate(unit, duplicate.original, duplicate.signature_type)
         except CompletionUncertain as error:
@@ -300,10 +352,11 @@ class ChannelImporter:
         related: tuple[LogicalModel, ...],
         record: ImportRecord,
         work_dir: Path,
+        holds: AsyncExitStack,
     ) -> None:
         session = await self._recover_session(record)
         if session is None:
-            session = await self._start_session(unit, work_dir)
+            session = await self._start_session(unit, work_dir, holds)
             record = self.tracker.update(
                 unit.key,
                 "scanning",
@@ -435,7 +488,7 @@ class ChannelImporter:
         return session
 
     async def _start_session(
-        self, unit: LogicalModel, work_dir: Path
+        self, unit: LogicalModel, work_dir: Path, holds: AsyncExitStack
     ) -> dict[str, Any]:
         self.tracker.update(unit.key, "downloading")
         multipart = unit.multipart
@@ -460,6 +513,11 @@ class ChannelImporter:
                     if len(content_hashes) == len(unit.parts):
                         signature = content_signature(unit, content_hashes)
                         self.tracker.set_content_signature(unit.key, signature)
+                        # Always acquired after the Telegram hold, so two units
+                        # can never take the two holds in opposing orders.
+                        await holds.enter_async_context(
+                            self._signatures.hold("content_signature", signature),
+                        )
                         duplicate = await self._find_ready_duplicate(
                             "content_signature",
                             signature,

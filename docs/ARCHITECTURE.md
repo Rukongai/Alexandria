@@ -121,6 +121,18 @@ the utility requests a best-effort abort for all of their upload IDs before reco
 and removes its local part files. On startup, the SQLite tracker adds missing nullable signature and
 duplicate-link columns and creates lookup indexes, so existing state files migrate in place.
 
+Logical models are imported under a configurable concurrency limit that defaults to one, preserving
+the original sequential message order. Concurrency applies between models, not within one: the parts
+of a split archive and a model's attachments are still transferred one at a time, which bounds local
+disk use per model and preserves the abort path for a duplicate set. Because both duplicate layers
+match only completed records, concurrent imports of identical media would otherwise each miss the
+other and create separate models. An in-process gate holds each signature for the duration of its
+import, so a concurrent twin waits and then resolves against the completed original. The gate is
+acquired Telegram-signature first and content-signature second, and a holder always owns a
+concurrency slot, so neither the gate nor the semaphore can deadlock the run. This coordination is
+in-process only; the existing exclusive lock on the state file remains what prevents a second
+importer process from racing the same channel.
+
 ---
 
 ## Data Model: Library Scope
