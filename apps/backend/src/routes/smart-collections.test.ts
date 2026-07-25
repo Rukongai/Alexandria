@@ -13,6 +13,7 @@
  *   over-deep tree → 400.
  * - Status-default regression: tree without status → only ready models; a tree
  *   whose rule references status='processing' surfaces processing models.
+ * - Manual-preview rules: exists/notExists distinguish pinned previews from fallback images.
  * - Library isolation: a model in another library never appears.
  * - Auth guard: no cookie → 401.
  */
@@ -151,6 +152,36 @@ beforeAll(async () => {
     sizeBytes: 1000,
     storagePath: `models/${dragonModelId}/dragon.stl`,
     hash: 'a'.repeat(64),
+  });
+
+  const [dragonPreview] = await db
+    .insert(modelFiles)
+    .values({
+      modelId: dragonModelId,
+      filename: 'dragon-preview.png',
+      relativePath: 'dragon-preview.png',
+      fileType: 'image',
+      mimeType: 'image/png',
+      sizeBytes: 2000,
+      storagePath: `models/${dragonModelId}/dragon-preview.png`,
+      hash: 'b'.repeat(64),
+    })
+    .returning();
+  await db
+    .update(models)
+    .set({ previewImageFileId: dragonPreview.id })
+    .where(eq(models.id, dragonModelId));
+
+  // This image supplies a fallback preview, but is intentionally not pinned.
+  await db.insert(modelFiles).values({
+    modelId: modelIds[1],
+    filename: 'fantasy-preview.png',
+    relativePath: 'fantasy-preview.png',
+    fileType: 'image',
+    mimeType: 'image/png',
+    sizeBytes: 2000,
+    storagePath: `models/${modelIds[1]}/fantasy-preview.png`,
+    hash: 'c'.repeat(64),
   });
 
   // Dragon tag on the dragon model
@@ -326,6 +357,47 @@ describe('POST /smart-collections/preview — dry run', () => {
     const body = res.json();
     // empty root = match all READY models in the library (2 of 3; one is processing)
     expect(body.meta.total).toBe(2);
+  });
+});
+
+describe('manual preview rules', () => {
+  it('should return only models with a manually set preview when using exists', async () => {
+    const res = await authedPost('/smart-collections/preview', {
+      definition: {
+        kind: 'condition',
+        field: { source: 'builtin', field: 'manualPreview' },
+        operator: 'exists',
+        value: null,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.errors).toBeNull();
+    expect(body.meta.total).toBe(1);
+    expect(body.data.map((model: { id: string }) => model.id)).toEqual([dragonModelId]);
+  });
+
+  it('should include a model with only a fallback image when using notExists', async () => {
+    const createRes = await authedPost('/smart-collections', {
+      name: 'Models without manual previews',
+      definition: {
+        kind: 'condition',
+        field: { source: 'builtin', field: 'manualPreview' },
+        operator: 'notExists',
+        value: null,
+      },
+    });
+
+    expect(createRes.statusCode).toBe(201);
+    expect(createRes.json().data.modelCount).toBe(1);
+
+    const res = await authedGet(`/smart-collections/${createRes.json().data.id}/models`);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.errors).toBeNull();
+    expect(body.meta.total).toBe(1);
+    expect(body.data.map((model: { id: string }) => model.id)).toEqual([modelIds[1]]);
   });
 });
 

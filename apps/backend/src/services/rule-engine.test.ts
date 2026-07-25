@@ -68,6 +68,15 @@ describe('buildLeafCondition — builtin fields', () => {
     expect(renderLeaf(cond(builtin('status'), 'isNot', 'ready')).sql).toContain('<>');
   });
 
+  it('manualPreview/exists and notExists check for an explicitly pinned cover', () => {
+    expect(renderLeaf(cond(builtin('manualPreview'), 'exists')).sql).toContain(
+      '"preview_image_file_id" IS NOT NULL',
+    );
+    expect(renderLeaf(cond(builtin('manualPreview'), 'notExists')).sql).toContain(
+      '"preview_image_file_id" IS NULL',
+    );
+  });
+
   it('fileType/has is an EXISTS subquery; notHas negates it', () => {
     const has = renderLeaf(cond(builtin('fileType'), 'has', 'stl'));
     expect(has.sql).toContain('EXISTS');
