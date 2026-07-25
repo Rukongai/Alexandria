@@ -270,6 +270,7 @@ describe('FileTree', () => {
       type: 'file',
       fileType: 'stl',
       id: `file-${index}`,
+      isDuplicate: false,
     }));
     render(<FileTree tree={manyFiles} modelId="m1" onSplitFiles={vi.fn()} />);
 
