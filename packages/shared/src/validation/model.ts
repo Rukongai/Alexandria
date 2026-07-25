@@ -54,6 +54,12 @@ export const deleteModelFolderSchema = z.object({
 export const splitModelFolderSchema = z.object({
   path: relativePathSchema,
   name: z.string().trim().min(1).max(255),
+  metadataFieldSlugs: z.array(z.string().trim().min(1).max(255))
+    .max(100)
+    .refine((slugs) => new Set(slugs).size === slugs.length, {
+      message: 'Metadata field slugs must be unique',
+    })
+    .default([]),
 });
 
 export const compressModelFolderSchema = z.object({

@@ -322,6 +322,65 @@ export class MetadataService {
   // Metadata Value Operations
   // ---------------------------------------------------------------------------
 
+  async copyModelMetadata(
+    sourceModelId: string,
+    destinationModelId: string,
+    requestedFieldSlugs: string[],
+    executor: DatabaseExecutor,
+  ): Promise<void> {
+    const fieldSlugs = [...new Set(
+      requestedFieldSlugs.map((slug) => slug.trim()).filter(Boolean),
+    )];
+    if (fieldSlugs.length === 0) return;
+
+    const fields = await executor
+      .select()
+      .from(metadataFieldDefinitions)
+      .where(inArray(metadataFieldDefinitions.slug, fieldSlugs))
+      .for('key share');
+    const fieldsBySlug = new Map(fields.map((field) => [field.slug, field]));
+    const missingSlug = fieldSlugs.find((slug) => !fieldsBySlug.has(slug));
+    if (missingSlug) {
+      throw validationError(`Metadata field not found: ${missingSlug}`, 'metadataFieldSlugs');
+    }
+
+    const genericFieldIds = fields
+      .filter((field) => !this.isTagField(field))
+      .map((field) => field.id);
+    if (genericFieldIds.length > 0) {
+      const metadataRows = await executor
+        .select({
+          fieldDefinitionId: modelMetadata.fieldDefinitionId,
+          value: modelMetadata.value,
+        })
+        .from(modelMetadata)
+        .where(and(
+          eq(modelMetadata.modelId, sourceModelId),
+          inArray(modelMetadata.fieldDefinitionId, genericFieldIds),
+        ));
+      if (metadataRows.length > 0) {
+        await executor.insert(modelMetadata).values(metadataRows.map((row) => ({
+          modelId: destinationModelId,
+          fieldDefinitionId: row.fieldDefinitionId,
+          value: row.value,
+        })));
+      }
+    }
+
+    if (fields.some((field) => this.isTagField(field))) {
+      const tagRows = await executor
+        .select({ tagId: modelTags.tagId })
+        .from(modelTags)
+        .where(eq(modelTags.modelId, sourceModelId));
+      if (tagRows.length > 0) {
+        await executor.insert(modelTags).values(tagRows.map((row) => ({
+          modelId: destinationModelId,
+          tagId: row.tagId,
+        })));
+      }
+    }
+  }
+
   async getModelMetadata(
     modelId: string,
     executor: DatabaseExecutor = db,

@@ -1,6 +1,8 @@
 import * as React from 'react';
+import type { MetadataValue } from '@alexandria/shared';
 import { Loader2, Scissors } from 'lucide-react';
 import { Button } from '../ui/button';
+import { Checkbox } from '../ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -16,24 +18,51 @@ interface SplitFolderDialogProps {
   open: boolean;
   folderPath: string;
   initialName: string;
+  metadata: MetadataValue[];
   onOpenChange: (open: boolean) => void;
-  onConfirm: (name: string) => Promise<void>;
+  onConfirm: (name: string, metadataFieldSlugs: string[]) => Promise<void>;
+}
+
+function isPopulatedMetadata(field: MetadataValue): boolean {
+  return Array.isArray(field.value)
+    ? field.value.length > 0
+    : field.value.trim().length > 0;
 }
 
 export function SplitFolderDialog({
   open,
   folderPath,
   initialName,
+  metadata,
   onOpenChange,
   onConfirm,
 }: SplitFolderDialogProps) {
   const [name, setName] = React.useState(initialName);
+  const [selectedMetadataSlugs, setSelectedMetadataSlugs] = React.useState<Set<string>>(
+    new Set(),
+  );
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const trimmedName = name.trim();
+  const populatedMetadata = React.useMemo(
+    () => metadata.filter(isPopulatedMetadata),
+    [metadata],
+  );
 
   React.useEffect(() => {
-    if (open) setName(initialName);
+    if (open) {
+      setName(initialName);
+      setSelectedMetadataSlugs(new Set());
+    }
   }, [open, initialName, folderPath]);
+
+  function setMetadataSelected(fieldSlug: string, selected: boolean) {
+    setSelectedMetadataSlugs((current) => {
+      const next = new Set(current);
+      if (selected) next.add(fieldSlug);
+      else next.delete(fieldSlug);
+      return next;
+    });
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -41,7 +70,7 @@ export function SplitFolderDialog({
 
     setIsSubmitting(true);
     try {
-      await onConfirm(trimmedName);
+      await onConfirm(trimmedName, [...selectedMetadataSlugs]);
       onOpenChange(false);
     } catch {
       // The mutation owner reports the error. Keep the dialog open for retry.
@@ -86,9 +115,72 @@ export function SplitFolderDialog({
             />
           </div>
 
+          {populatedMetadata.length > 0 && (
+            <fieldset className="flex flex-col gap-2" disabled={isSubmitting}>
+              <legend className="sr-only">Copy metadata</legend>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm font-medium text-foreground">Copy metadata</span>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={selectedMetadataSlugs.size === populatedMetadata.length}
+                    onClick={() =>
+                      setSelectedMetadataSlugs(
+                        new Set(populatedMetadata.map((field) => field.fieldSlug)),
+                      )
+                    }
+                  >
+                    Select all
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={selectedMetadataSlugs.size === 0}
+                    onClick={() => setSelectedMetadataSlugs(new Set())}
+                  >
+                    Clear all
+                  </Button>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Choose which details to carry over to the new model.
+              </p>
+              <div className="max-h-52 space-y-1 overflow-y-auto rounded-md border border-border p-2">
+                {populatedMetadata.map((field) => (
+                  <div
+                    key={field.fieldSlug}
+                    className="rounded-md px-2 py-1.5 hover:bg-muted/50"
+                  >
+                    <Checkbox
+                      id={`split-metadata-${field.fieldSlug}`}
+                      aria-describedby={`split-metadata-value-${field.fieldSlug}`}
+                      checked={selectedMetadataSlugs.has(field.fieldSlug)}
+                      onChange={(event) =>
+                        setMetadataSelected(field.fieldSlug, event.currentTarget.checked)
+                      }
+                      label={field.fieldName}
+                    />
+                    <p
+                      id={`split-metadata-value-${field.fieldSlug}`}
+                      className="ml-6 mt-1 truncate text-xs text-muted-foreground"
+                      title={field.displayValue}
+                    >
+                      {field.displayValue}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </fieldset>
+          )}
+
           <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-            Metadata and collection memberships stay with the current model; they are not copied
-            to the new model.
+            Collection memberships stay with the current model and are never copied to the new
+            model.
           </p>
 
           <DialogFooter>

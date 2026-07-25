@@ -30,11 +30,16 @@ describe('splitModelFolder', () => {
     vi.mocked(post).mockResolvedValueOnce(envelope(response));
 
     await expect(
-      splitModelFolder('source-1', { path: 'variants/large', name: 'Large Variant' }),
+      splitModelFolder('source-1', {
+        path: 'variants/large',
+        name: 'Large Variant',
+        metadataFieldSlugs: ['artist', 'tags'],
+      }),
     ).resolves.toEqual(response);
     expect(post).toHaveBeenCalledWith('/models/source-1/folders/split', {
       path: 'variants/large',
       name: 'Large Variant',
+      metadataFieldSlugs: ['artist', 'tags'],
     });
   });
 });
