@@ -25,6 +25,14 @@ function deferredPromise() {
 }
 
 describe('FileTree', () => {
+  it('shows full file and folder names as hover tooltips', () => {
+    render(<FileTree tree={TREE} modelId="m1" />);
+
+    expect(screen.getByText('parts')).toHaveAttribute('title', 'parts');
+    expect(screen.getByText('body.stl')).toHaveAttribute('title', 'body.stl');
+    expect(screen.getByText('readme.txt')).toHaveAttribute('title', 'readme.txt');
+  });
+
   it('fires onOpenStl with the reconstructed relative path for a nested STL', () => {
     const onOpenStl = vi.fn();
     render(<FileTree tree={TREE} modelId="m1" onOpenStl={onOpenStl} />);

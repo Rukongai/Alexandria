@@ -372,7 +372,9 @@ function FileNode({
             ) : (
               <Folder className="h-4 w-4 text-muted-foreground flex-shrink-0" />
             )}
-            <span className="font-medium text-foreground truncate">{node.name}</span>
+            <span className="font-medium text-foreground truncate" title={node.name}>
+              {node.name}
+            </span>
             {node.children && (
               <span className="text-xs text-muted-foreground ml-auto">
                 {node.children.length}
@@ -536,6 +538,7 @@ function FileNode({
           'truncate flex-1 min-w-0',
           isSelectedImage ? 'text-primary font-medium' : 'text-foreground',
         )}
+        title={node.name}
       >
         {node.name}
       </span>
