@@ -6,6 +6,7 @@ import logging
 import shutil
 import tempfile
 import zipfile
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -22,6 +23,13 @@ from .grouping import (
     validate_logical_model,
 )
 from .models import ImportBundle, LogicalModel, MediaRef
+from .progress import (
+    ModelProgress,
+    NullProgress,
+    ProgressReporter,
+    guarded_model,
+    guarded_reporter,
+)
 from .telegram_source import TelegramSource
 from .tracker import ImportRecord, ImportTracker
 
@@ -167,6 +175,7 @@ class ChannelImporter:
         tracker: ImportTracker,
         work_root: Path | None = None,
         concurrency: int = 1,
+        progress: ProgressReporter | None = None,
     ) -> None:
         if concurrency < 1:
             raise ValueError("Import concurrency must be at least 1")
@@ -175,7 +184,13 @@ class ChannelImporter:
         self.tracker = tracker
         self.work_root = work_root
         self.concurrency = concurrency
+        self.progress: ProgressReporter = progress or NullProgress()
         self._signatures = SignatureGate()
+        # Outcomes for this run only. The tracker's counts span every run against
+        # the same state file, so a resumed import would otherwise open at 100%.
+        self._outcomes: Counter[str] = Counter()
+        self._settled = 0
+        self._total_units = 0
 
     async def run(self, refs: list[MediaRef]) -> dict[str, int]:
         self._cleanup_stale_work()
@@ -187,6 +202,9 @@ class ChannelImporter:
             len(bundles),
             self.concurrency,
         )
+        self._outcomes = Counter()
+        self._settled = 0
+        self._total_units = total_units
         # Semaphore acquisition is FIFO, so a concurrency of 1 keeps the original
         # strict discovery order.
         slots = asyncio.Semaphore(self.concurrency)
@@ -199,10 +217,12 @@ class ChannelImporter:
             async with slots:
                 await self._process_unit(unit, attachments, related)
 
-        results = await asyncio.gather(
-            *(guarded(*item) for item in _work_items(bundles)),
-            return_exceptions=True,
-        )
+        with guarded_reporter(self.progress):
+            self._report_totals()
+            results = await asyncio.gather(
+                *(guarded(*item) for item in _work_items(bundles)),
+                return_exceptions=True,
+            )
         # Plain gather propagates the first failure while its siblings keep
         # running, which would leave tasks writing to a tracker and HTTP client
         # the caller is about to close. Collect every result, then re-raise.
@@ -210,6 +230,18 @@ class ChannelImporter:
             if isinstance(result, BaseException):
                 raise result
         return self.tracker.counts()
+
+    def _settle(self, outcome: str) -> None:
+        """Record one logical model reaching a terminal state, exactly once."""
+        self._outcomes[outcome] += 1
+        self._settled += 1
+        self._report_totals()
+
+    def _report_totals(self) -> None:
+        try:
+            self.progress.totals(self._settled, self._total_units, dict(self._outcomes))
+        except Exception as error:  # noqa: BLE001 - a display fault is not an import fault
+            log.debug("Progress reporter could not record totals: %s", error)
 
     async def _process_unit(
         self,
@@ -229,9 +261,29 @@ class ChannelImporter:
         )
         if record.status == "completed":
             log.info("Skipping completed model %s", unit.logical_filename)
+            self._settle("skipped")
             return
 
         log.info("Importing %s", unit.logical_filename)
+        with guarded_model(
+            self.progress, unit.logical_filename, parts=len(unit.parts)
+        ) as handle:
+            # Settling outside _import_unit keeps the tally out of the reach of
+            # its own error handling: a reporter fault during the tally update
+            # must not be re-read as an import failure.
+            self._settle(
+                await self._import_unit(unit, attachments, related, record, handle)
+            )
+
+    async def _import_unit(
+        self,
+        unit: LogicalModel,
+        attachments: tuple[MediaRef, ...],
+        related: tuple[LogicalModel, ...],
+        record: ImportRecord,
+        handle: ModelProgress,
+    ) -> str:
+        """Import one logical model, returning the outcome it settled on."""
         try:
             validate_logical_model(unit)
             # Signatures are held for the rest of this import so a concurrent twin
@@ -261,7 +313,7 @@ class ChannelImporter:
                         self._record_duplicate(
                             unit, duplicate, "Telegram media identity"
                         )
-                        return
+                        return "duplicates"
                 with tempfile.TemporaryDirectory(
                     prefix=f"alexandria-tg-{unit.key[:8]}-",
                     dir=self.work_root,
@@ -273,9 +325,12 @@ class ChannelImporter:
                         record,
                         Path(temp),
                         holds,
+                        handle,
                     )
+            return "completed"
         except DuplicateModelFound as duplicate:
             self._record_duplicate(unit, duplicate.original, duplicate.signature_type)
+            return "duplicates"
         except CompletionUncertain as error:
             self.tracker.update(unit.key, "completion_uncertain", error=str(error))
             log.error(
@@ -283,10 +338,12 @@ class ChannelImporter:
                 unit.logical_filename,
                 error,
             )
+            return "uncertain"
         # One bad Telegram post must not prevent independent later models from importing.
         except Exception as error:  # noqa: BLE001
             self.tracker.update(unit.key, "failed", error=str(error))
             log.error("Failed to import %s: %s", unit.logical_filename, error)
+            return "failed"
 
     def _record_duplicate(
         self,
@@ -353,10 +410,11 @@ class ChannelImporter:
         record: ImportRecord,
         work_dir: Path,
         holds: AsyncExitStack,
+        handle: ModelProgress,
     ) -> None:
         session = await self._recover_session(record)
         if session is None:
-            session = await self._start_session(unit, work_dir, holds)
+            session = await self._start_session(unit, work_dir, holds, handle)
             record = self.tracker.update(
                 unit.key,
                 "scanning",
@@ -384,6 +442,7 @@ class ChannelImporter:
             await self._handle_error_session(unit, session)
 
         if status == "scanning":
+            handle.phase("scanning")
             session = await self.alexandria.wait_for_session(
                 session_id,
                 {"ready_for_review", "committed"},
@@ -408,6 +467,8 @@ class ChannelImporter:
                     for item in attachments
                     if attachment_upload_name(item) not in present_names
                 )
+                uploaded = 0
+                handle.attachments(uploaded, len(missing))
                 for offset in range(0, len(missing), 100):
                     batch = missing[offset : offset + 100]
                     for item in batch:
@@ -420,6 +481,8 @@ class ChannelImporter:
                             )
                         finally:
                             attachment_path.unlink(missing_ok=True)
+                        uploaded += 1
+                        handle.attachments(uploaded, len(missing))
                 self.tracker.update(
                     unit.key, "attachments_uploaded", session_id=session_id
                 )
@@ -441,6 +504,7 @@ class ChannelImporter:
             status = "committing"
 
         if status == "committing":
+            handle.phase("committing")
             session = await self.alexandria.wait_for_session(session_id, {"committed"})
             if session["status"] == "error":
                 await self._handle_error_session(unit, session)
@@ -488,7 +552,11 @@ class ChannelImporter:
         return session
 
     async def _start_session(
-        self, unit: LogicalModel, work_dir: Path, holds: AsyncExitStack
+        self,
+        unit: LogicalModel,
+        work_dir: Path,
+        holds: AsyncExitStack,
+        handle: ModelProgress,
     ) -> dict[str, Any]:
         self.tracker.update(unit.key, "downloading")
         multipart = unit.multipart
@@ -497,10 +565,14 @@ class ChannelImporter:
         content_hashes: list[str] = []
         try:
             for part, name in zip(unit.parts, names, strict=True):
-                downloaded = await self.telegram.download(part, work_dir)
+                with handle.transfer("download", part.filename) as transfer:
+                    downloaded = await self.telegram.download(
+                        part, work_dir, on_progress=transfer.advance
+                    )
                 upload_path = downloaded
                 upload_name = name
                 try:
+                    handle.phase("hashing")
                     part_hash, actual_size = await asyncio.to_thread(
                         _hash_file, downloaded
                     )
@@ -528,6 +600,7 @@ class ChannelImporter:
                     if not multipart and not unit.logical_filename.lower().endswith(
                         ARCHIVE_EXTENSIONS
                     ):
+                        handle.phase("packaging")
                         upload_path = work_dir / upload_filename(
                             self.telegram.channel_id, unit
                         )
@@ -542,13 +615,15 @@ class ChannelImporter:
                             )
                         upload_name = upload_path.name
                     self.tracker.update(unit.key, "uploading")
-                    upload_ids.append(
-                        await self.alexandria.upload_file(
-                            upload_path,
-                            upload_name,
-                            multipart=multipart,
-                        ),
-                    )
+                    with handle.transfer("upload", upload_name) as transfer:
+                        upload_ids.append(
+                            await self.alexandria.upload_file(
+                                upload_path,
+                                upload_name,
+                                multipart=multipart,
+                                on_progress=transfer.advance,
+                            ),
+                        )
                 finally:
                     downloaded.unlink(missing_ok=True)
                     if upload_path != downloaded:

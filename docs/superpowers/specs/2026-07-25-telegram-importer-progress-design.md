@@ -62,8 +62,8 @@ class ProgressReporter(Protocol):
     def totals(self, done: int, total: int, counts: dict[str, int]) -> None: ...
 ```
 
-`kind` is `"download"` or `"upload"`. `phase` names are `"scanning"`, `"committing"`,
-`"attachments"`.
+`kind` is `"download"` or `"upload"`. `phase` names are `"hashing"`, `"packaging"`,
+`"scanning"`, `"committing"`, `"attachments"`, and the neutral `"working"`.
 
 Three implementations:
 
@@ -86,13 +86,19 @@ parameter is optional and defaults to the no-op, so no existing construction sit
 changes.
 
 - `run` computes `total_units` (already does) and calls `progress.totals` once before
-  dispatch, then after each unit settles.
-- `_process_unit` wraps its body in `with self.progress.model(unit.logical_filename,
-  parts=len(unit.parts)) as handle:` and threads `handle` into `_resume_or_import` and
-  `_start_session`.
+  dispatch, then after each unit settles. The tally counts this run only, rather than
+  reusing `tracker.counts()`, whose rows span every run against the same state file — a
+  resumed import would otherwise open at 100%.
+- `_process_unit` wraps its body in `with guarded_model(self.progress,
+  unit.logical_filename, parts=len(unit.parts)) as handle:` and threads `handle` into
+  `_resume_or_import` and `_start_session`. It settles the outcome that `_import_unit`
+  returns.
 - `_start_session` opens a `handle.transfer("download", part.filename)` around each
   `telegram.download`, and a `handle.transfer("upload", upload_name)` around each
-  `alexandria.upload_file`.
+  `alexandria.upload_file`. Between those it reports the `hashing` and `packaging` phases,
+  which are minutes of real work on a large model and would otherwise leave the row showing
+  a stale transfer label. Leaving a `transfer` context reverts the row to a neutral
+  `working` phase for the same reason.
 - `_resume_or_import` calls `handle.phase("scanning")` before the `ready_for_review` wait
   and `handle.phase("committing")` before the `committed` wait, and updates
   `handle.attachments(done, total)` in the attachment loop.
@@ -100,9 +106,11 @@ changes.
 ### Transport hooks
 
 - `TelegramSource.download(ref, directory, *, on_progress=None)` — forwarded to Telethon's
-  `progress_callback`, which is already called on the event loop. Retries reset the
-  transfer: on `FloodWaitError` the handle is told to restart at zero so the bar does not
-  appear to jump backwards.
+  `progress_callback`, which is already called on the event loop. A retried download
+  restarts Telethon's byte count at zero; because `advance` takes absolute bytes, the
+  handles detect the rewind themselves and rebase their rate clock, so the retry's
+  `FloodWaitError` sleep is not charged against its throughput. No explicit `restart()`
+  call is needed on the transport side.
 - `AlexandriaClient.upload_file(path, upload_name, *, multipart, on_progress=None)` —
   passed through to `_upload_part`, which calls it with cumulative bytes after each 10 MB
   chunk PUT succeeds. Chunk retries do not double-count, because the callback fires after
@@ -112,21 +120,21 @@ Both parameters default to `None`, keeping the transports usable without a repor
 
 ## Rendering
 
-Dependency: `rich>=13.0` added to `[project].dependencies`. Pure Python, one transitive
-dependency (`markdown-it-py`). It is the only mainstream option that composes an overall
+Dependency: `rich>=13.0` added to `[project].dependencies`. Pure Python; it pulls
+`markdown-it-py`, `mdurl`, and `pygments`. It is the only mainstream option that composes an overall
 bar, per-worker bars, and indeterminate spinners in one live region with clean logging
 interleave. `tqdm` can stack bars but offers no phase/spinner composition.
 
-`RichDashboard` holds a single `Live` wrapping a `Group` of:
+`RichDashboard` is itself the `Live` renderable: its `__rich__` builds a `Group` of
 
-1. a total `Progress` with one task — bar, `47/143 models`, elapsed;
-2. a `Text` summary line rendered from `tracker.counts()`;
-3. a worker `Progress` — one task per active model, with `DownloadColumn` and
-   `TransferSpeedColumn` for transfers, swapped to a spinner and elapsed for
-   `scanning`/`committing`.
+1. a `Table.grid` header — a `ProgressBar` and `47/143 models`;
+2. a `Text` summary line rendered from this run's outcome tally;
+3. a `Table.grid` of worker rows, each a `ProgressBar` for transfers or a `Spinner` with
+   elapsed time for the waiting phases.
 
-Two `Progress` instances rather than one, because the total bar and worker rows need
-different column sets.
+`rich.progress.Progress` is deliberately not used. Its task model renders one fixed column
+set for every task, which cannot express rows that alternate between a byte bar and a
+spinner; composing the grids directly is both shorter and exact.
 
 All output goes to `Console(stderr=True)`. `stdout` stays clean for `describe_plan`'s
 dry-run output and the final `Import state:` line, so `--dry-run > plan.txt` is unchanged.
@@ -143,6 +151,18 @@ jump a line mid-transfer.
 
 Refresh is capped at 10 Hz. Telethon fires its callback far more often than that; rich's
 own refresh throttling absorbs it.
+
+`Live` refreshes from its own thread, so `__rich__` runs off the event loop while the
+import is adding and removing rows. The renderer takes one `list()` snapshot of the row
+values — atomic under the GIL — rather than iterating the live dict, which could raise and
+kill the refresh thread for the rest of the run. `redirect_stdout=False` keeps `Live` from
+routing standard output through the live region.
+
+`__enter__` installs the live region and then the log handler; `__exit__` reverses that
+order, because a restored handler holds the pre-redirect stream and would otherwise write
+straight through an active region. Both the live region and the handler swap unwind
+themselves if anything raises part-way, including a `KeyboardInterrupt` between removing
+the old handlers and installing the new one.
 
 ## Non-TTY fallback
 
@@ -187,10 +207,17 @@ regression.
 
 ## Error handling
 
-- The dashboard must never break an import. Every reporter call site is best-effort: the
-  `model` context manager releases its slot in a `finally`, and `RichDashboard` guards
-  `Live.start`/`stop` so a terminal that rejects the live region falls back to
-  `LogProgress` rather than aborting the run.
+- The dashboard must never break an import. Two helpers in `progress.py` enforce this at
+  the call sites: `guarded_reporter` wraps the reporter's own start/stop, and
+  `guarded_model` wraps each model row, degrading to `NullModelProgress` if the reporter
+  cannot open one. `ChannelImporter._report_totals` swallows reporter faults the same way.
+  `RichDashboard` additionally guards `Live.start`/`stop`, stopping a partially started
+  region before falling back to `LogProgress`.
+- `_settle` is called from `_process_unit`, outside `_import_unit`'s own `try`/`except`.
+  `_import_unit` returns the outcome it settled on rather than settling itself. Otherwise a
+  reporter fault raised while recording a completed model would be caught by that same
+  `except Exception`, overwriting a completed row in the state file with `failed` and
+  counting the model twice.
 - A transfer that raises mid-flight leaves its `transfer` context via `finally`, removing
   the row. The failure is reported by the existing `except Exception` handler in
   `_process_unit`.
@@ -217,8 +244,10 @@ Extensions to existing tests:
 - `test_alexandria.py` — `upload_file` invokes `on_progress` once per chunk with
   cumulative byte counts, and does not double-count across a chunk retry.
 - `test_importer.py` — a recording fake reporter asserts the phase sequence for one model
-  (`download` → `upload` → `scanning` → `committing`) and that `totals` is called after
-  each unit settles.
+  (`download` → `hashing` → `upload` → `scanning` → `committing`, with `packaging` added for
+  a bare model file) and that `totals` is called after each unit settles. Further cases
+  drive a reporter that raises from `totals`, from `model`, and from `__enter__`, and assert
+  the import still completes and settles once.
 
 `RichDashboard` is a thin adapter over rich; it gets a smoke test that constructs it with
 `Console(file=StringIO(), force_terminal=True)`, drives one model through every phase, and

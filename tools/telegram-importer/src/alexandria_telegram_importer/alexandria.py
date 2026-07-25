@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import math
 import mimetypes
+from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -90,7 +91,12 @@ class AlexandriaClient:
         log.info("Logged into Alexandria as %s", user.get("email", email))
 
     async def _upload_part(
-        self, path: Path, upload_filename: str, *, multipart: bool
+        self,
+        path: Path,
+        upload_filename: str,
+        *,
+        multipart: bool,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> str:
         size = path.stat().st_size
         total_chunks = max(1, math.ceil(size / CHUNK_SIZE))
@@ -108,6 +114,9 @@ class AlexandriaClient:
         )
         upload_id = self._data(response)["uploadId"]
 
+        if on_progress:
+            on_progress(0, size)
+        sent = 0
         with path.open("rb") as handle:
             for index in range(total_chunks):
                 chunk = handle.read(CHUNK_SIZE)
@@ -124,6 +133,11 @@ class AlexandriaClient:
                         if attempt == 2:
                             raise
                         await asyncio.sleep(2**attempt)
+                # Reported after the successful PUT, so retried chunks are
+                # counted once.
+                sent += len(chunk)
+                if on_progress:
+                    on_progress(sent, size)
         return upload_id
 
     async def upload_archive(
@@ -150,10 +164,17 @@ class AlexandriaClient:
             raise
 
     async def upload_file(
-        self, path: Path, upload_name: str, *, multipart: bool
+        self,
+        path: Path,
+        upload_name: str,
+        *,
+        multipart: bool,
+        on_progress: Callable[[int, int], None] | None = None,
     ) -> str:
         log.info("Uploading %s (%d bytes)", upload_name, path.stat().st_size)
-        return await self._upload_part(path, upload_name, multipart=multipart)
+        return await self._upload_part(
+            path, upload_name, multipart=multipart, on_progress=on_progress
+        )
 
     async def complete_upload(self, upload_ids: list[str], *, multipart: bool) -> str:
         if multipart:

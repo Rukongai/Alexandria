@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
 
 import pytest
 
@@ -18,6 +18,7 @@ from alexandria_telegram_importer.importer import (
     telegram_media_signature,
     upload_filename,
 )
+from alexandria_telegram_importer.progress import NullModelProgress
 from alexandria_telegram_importer.tracker import ImportRecord, ImportTracker
 
 
@@ -213,7 +214,7 @@ class DedupTelegram:
         self.payloads = payloads or {}
         self.download_calls: list[int] = []
 
-    async def download(self, ref, directory):
+    async def download(self, ref, directory, *, on_progress=None):
         self.download_calls.append(ref.message_id)
         if ref.message_id not in self.payloads:
             raise AssertionError("duplicate should have been skipped before download")
@@ -251,7 +252,9 @@ class DedupAlexandria:
     async def get_session(self, session_id: str):
         return self.sessions[session_id]
 
-    async def upload_file(self, _path, upload_name: str, *, multipart: bool):
+    async def upload_file(
+        self, _path, upload_name: str, *, multipart: bool, on_progress=None
+    ):
         self.upload_calls.append(upload_name)
         return f"upload-{len(self.upload_calls)}"
 
@@ -511,7 +514,9 @@ async def test_should_abort_first_multipart_upload_when_final_hash_finds_duplica
 
         with pytest.raises(DuplicateModelFound, match=prior.import_key):
             async with AsyncExitStack() as holds:
-                await importer._start_session(unit, work_dir, holds)
+                await importer._start_session(
+                    unit, work_dir, holds, NullModelProgress()
+                )
 
         assert telegram.download_calls == [1, 2]
         assert len(alexandria.upload_calls) == 1
@@ -541,7 +546,7 @@ class PipelineTelegram:
         self.in_flight = 0
         self.max_in_flight = 0
 
-    async def download(self, ref, directory):
+    async def download(self, ref, directory, *, on_progress=None):
         self.download_calls.append(ref.message_id)
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
@@ -577,7 +582,9 @@ class PipelineAlexandria:
     async def find_session_by_filename(self, _filename: str):
         return None
 
-    async def upload_file(self, _path, upload_name: str, *, multipart: bool):
+    async def upload_file(
+        self, _path, upload_name: str, *, multipart: bool, on_progress=None
+    ):
         if self.upload_delay:
             await asyncio.sleep(self.upload_delay)
         self._uploads += 1
@@ -612,7 +619,7 @@ class PipelineAlexandria:
         return model_id
 
 
-def pipeline_importer(tmp_path, telegram, alexandria, concurrency: int):
+def pipeline_importer(tmp_path, telegram, alexandria, concurrency: int, progress=None):
     tracker = ImportTracker(tmp_path / "state.sqlite3")
     importer = ChannelImporter(
         telegram=telegram,  # type: ignore[arg-type]
@@ -620,8 +627,86 @@ def pipeline_importer(tmp_path, telegram, alexandria, concurrency: int):
         tracker=tracker,
         work_root=tmp_path / "work",
         concurrency=concurrency,
+        progress=progress,
     )
     return importer, tracker
+
+
+class RecordingTransfer:
+    def __init__(self, events: list, kind: str, label: str) -> None:
+        self.events = events
+        self.kind = kind
+        self.label = label
+
+    def advance(self, received: int, total: int) -> None:
+        self.events.append(("advance", self.kind, self.label, received, total))
+
+
+class RecordingModelProgress:
+    def __init__(self, events: list, label: str) -> None:
+        self.events = events
+        self.label = label
+
+    def phase(self, name: str) -> None:
+        self.events.append(("phase", self.label, name))
+
+    @contextmanager
+    def transfer(self, kind: str, label: str):
+        self.events.append(("transfer_start", self.label, kind, label))
+        try:
+            yield RecordingTransfer(self.events, kind, label)
+        finally:
+            self.events.append(("transfer_end", self.label, kind, label))
+
+    def attachments(self, done: int, total: int) -> None:
+        self.events.append(("attachments", self.label, done, total))
+
+
+class RecordingProgress:
+    """Reporter double that records the sequence the importer drives it through."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+        self.totals_calls: list[tuple[int, int, dict]] = []
+        self.entered = False
+        self.exited = False
+        self.open_models = 0
+        self.max_open_models = 0
+
+    def __enter__(self):
+        self.entered = True
+        return self
+
+    def __exit__(self, *exc_info):
+        self.exited = True
+        return False
+
+    @contextmanager
+    def model(self, label: str, *, parts: int):
+        self.events.append(("model_start", label, parts))
+        self.open_models += 1
+        self.max_open_models = max(self.max_open_models, self.open_models)
+        try:
+            yield RecordingModelProgress(self.events, label)
+        finally:
+            self.open_models -= 1
+            self.events.append(("model_end", label))
+
+    def totals(self, done: int, total: int, counts) -> None:
+        self.totals_calls.append((done, total, dict(counts)))
+
+
+def phases_for(progress: RecordingProgress, label: str) -> list[str]:
+    sequence = []
+    for event in progress.events:
+        if (
+            event[0] == "transfer_start"
+            and event[1] == label
+            or event[0] == "phase"
+            and event[1] == label
+        ):
+            sequence.append(event[2])
+    return sequence
 
 
 def test_should_reject_a_concurrency_below_one() -> None:
@@ -757,10 +842,10 @@ async def test_should_keep_importing_later_models_when_one_fails(
     media_ref,
 ) -> None:
     class FailingTelegram(PipelineTelegram):
-        async def download(self, ref, directory):
+        async def download(self, ref, directory, *, on_progress=None):
             if ref.message_id == 2:
                 raise RuntimeError("telegram refused the download")
-            return await super().download(ref, directory)
+            return await super().download(ref, directory, on_progress=on_progress)
 
     telegram = FailingTelegram(delay=0.01)
     alexandria = PipelineAlexandria()
@@ -825,5 +910,255 @@ async def test_should_let_every_task_settle_before_reporting_an_unexpected_failu
         assert tracker.counts() == {"completed": 2}
         assert len(alexandria.committed_models) == 2
         assert telegram.in_flight == 0
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_drive_progress_through_every_phase_of_one_model(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram()
+    alexandria = PipelineAlexandria()
+    progress = RecordingProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1, progress)
+    try:
+        await importer.run([media_ref(1, "model-1.zip")])
+
+        assert progress.entered and progress.exited
+        assert phases_for(progress, "model-1.zip") == [
+            "download",
+            "hashing",
+            "upload",
+            "committing",
+        ]
+        assert ("model_end", "model-1.zip") in progress.events
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_report_run_totals_as_each_model_settles(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram()
+    alexandria = PipelineAlexandria()
+    progress = RecordingProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1, progress)
+    try:
+        await importer.run(
+            [media_ref(index, f"model-{index}.zip") for index in range(1, 4)]
+        )
+
+        assert progress.totals_calls[0] == (0, 3, {})
+        assert progress.totals_calls[-1] == (3, 3, {"completed": 3})
+        assert [call[0] for call in progress.totals_calls] == [0, 1, 2, 3]
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_count_a_failed_model_separately_in_run_totals(
+    tmp_path,
+    media_ref,
+) -> None:
+    class FailingTelegram(PipelineTelegram):
+        async def download(self, ref, directory, *, on_progress=None):
+            if ref.message_id == 2:
+                raise RuntimeError("telegram refused the download")
+            return await super().download(ref, directory, on_progress=on_progress)
+
+    telegram = FailingTelegram()
+    alexandria = PipelineAlexandria()
+    progress = RecordingProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1, progress)
+    try:
+        await importer.run(
+            [media_ref(index, f"model-{index}.zip") for index in range(1, 4)]
+        )
+
+        assert progress.totals_calls[-1] == (3, 3, {"completed": 2, "failed": 1})
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_count_a_resumed_run_from_zero_rather_than_the_state_file(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram()
+    alexandria = PipelineAlexandria()
+    progress = RecordingProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1, progress)
+    refs = [media_ref(index, f"model-{index}.zip") for index in range(1, 3)]
+    try:
+        await importer.run(refs)
+        progress.totals_calls.clear()
+
+        await importer.run(refs)
+
+        # The tracker already holds two completed rows from the first run; the
+        # second run must still open at zero and settle them as skipped.
+        assert progress.totals_calls[0] == (0, 2, {})
+        assert progress.totals_calls[-1] == (2, 2, {"skipped": 2})
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_open_one_progress_model_per_concurrent_import(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram(delay=0.02)
+    alexandria = PipelineAlexandria()
+    progress = RecordingProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 3, progress)
+    try:
+        await importer.run(
+            [media_ref(index, f"model-{index}.zip") for index in range(1, 5)]
+        )
+
+        assert progress.max_open_models == 3
+        assert progress.open_models == 0
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_report_the_packaging_phase_for_a_bare_model_file(
+    tmp_path,
+    media_ref,
+) -> None:
+    telegram = PipelineTelegram()
+    alexandria = PipelineAlexandria()
+    progress = RecordingProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1, progress)
+    try:
+        # A bare .stl is zipped before upload, unlike an archive that ships as-is.
+        await importer.run([media_ref(1, "model-1.stl")])
+
+        assert phases_for(progress, "model-1.stl") == [
+            "download",
+            "hashing",
+            "packaging",
+            "upload",
+            "committing",
+        ]
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_report_the_scanning_phase_while_alexandria_scans(
+    tmp_path,
+    media_ref,
+) -> None:
+    class ScanningAlexandria(PipelineAlexandria):
+        async def complete_upload(self, upload_ids, *, multipart: bool):
+            session_id = await super().complete_upload(upload_ids, multipart=multipart)
+            # A real session starts in "scanning" and only later becomes
+            # reviewable, which is what puts a model on the scanning phase.
+            self.sessions[session_id]["status"] = "scanning"
+            return session_id
+
+        async def wait_for_session(self, session_id: str, statuses, **kwargs):
+            session = self.sessions[session_id]
+            session["status"] = (
+                "ready_for_review" if "ready_for_review" in statuses else "committed"
+            )
+            return session
+
+    telegram = PipelineTelegram()
+    alexandria = ScanningAlexandria()
+    progress = RecordingProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1, progress)
+    try:
+        await importer.run([media_ref(1, "model-1.zip")])
+
+        assert phases_for(progress, "model-1.zip") == [
+            "download",
+            "hashing",
+            "upload",
+            "scanning",
+            "committing",
+        ]
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_still_settle_a_model_when_the_reporter_fails(
+    tmp_path,
+    media_ref,
+) -> None:
+    class BrokenProgress(RecordingProgress):
+        def totals(self, done: int, total: int, counts) -> None:
+            super().totals(done, total, counts)
+            raise RuntimeError("the display exploded")
+
+    telegram = PipelineTelegram()
+    alexandria = PipelineAlexandria()
+    progress = BrokenProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1, progress)
+    try:
+        counts = await importer.run([media_ref(1, "model-1.zip")])
+
+        # A display fault must not be re-read as an import failure, nor counted
+        # twice on the way back out.
+        assert counts == {"completed": 1}
+        assert progress.totals_calls[-1] == (1, 1, {"completed": 1})
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_import_every_model_when_the_reporter_cannot_open_rows(
+    tmp_path,
+    media_ref,
+) -> None:
+    class UnopenableProgress(RecordingProgress):
+        @contextmanager
+        def model(self, label: str, *, parts: int):
+            raise RuntimeError("the display exploded")
+            yield  # pragma: no cover - unreachable, keeps this a generator
+
+    telegram = PipelineTelegram()
+    alexandria = PipelineAlexandria()
+    importer, tracker = pipeline_importer(
+        tmp_path, telegram, alexandria, 2, UnopenableProgress()
+    )
+    try:
+        counts = await importer.run(
+            [media_ref(index, f"model-{index}.zip") for index in range(1, 4)]
+        )
+
+        assert counts == {"completed": 3}
+    finally:
+        tracker.close()
+
+
+@pytest.mark.asyncio
+async def test_should_import_every_model_when_the_reporter_cannot_start(
+    tmp_path,
+    media_ref,
+) -> None:
+    class UnstartableProgress(RecordingProgress):
+        def __enter__(self):
+            raise RuntimeError("the display exploded")
+
+    telegram = PipelineTelegram()
+    alexandria = PipelineAlexandria()
+    progress = UnstartableProgress()
+    importer, tracker = pipeline_importer(tmp_path, telegram, alexandria, 1, progress)
+    try:
+        counts = await importer.run([media_ref(1, "model-1.zip")])
+
+        assert counts == {"completed": 1}
+        # Never started, so it is never stopped either.
+        assert progress.exited is False
     finally:
         tracker.close()
