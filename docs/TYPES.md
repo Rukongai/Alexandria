@@ -961,6 +961,10 @@ interface UpdateModelRequest {
   previewImageFileId?: string | null; // set to a ModelFile UUID to pin cover; null to revert to fallback
 }
 
+interface DeleteModelFilesRequest {
+  fileIds: string[]; // 1–500 unique ModelFile UUIDs owned by the target model
+}
+
 interface SplitModelRequestBase {
   name: string; // trimmed new-model name; 1–255 characters
   metadataFieldSlugs?: string[]; // selected source fields to copy; defaults to [] when omitted

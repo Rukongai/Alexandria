@@ -121,6 +121,10 @@ export interface DeleteModelFolderRequest {
   path: string;
 }
 
+export interface DeleteModelFilesRequest {
+  fileIds: string[];
+}
+
 interface SplitModelRequestBase {
   name: string;
   metadataFieldSlugs?: string[];

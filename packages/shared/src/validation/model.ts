@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { MAX_SPLIT_FILE_COUNT } from '../constants/index.js';
+import {
+  MAX_MODEL_FILE_SELECTION_COUNT,
+  MAX_SPLIT_FILE_COUNT,
+} from '../constants/index.js';
 
 const relativePathSchema = z.string().min(1).max(1000);
 const optionalParentPathSchema = z.string().max(1000).optional();
@@ -50,6 +53,13 @@ export const updateModelFolderSchema = z
 
 export const deleteModelFolderSchema = z.object({
   path: relativePathSchema,
+});
+
+export const deleteModelFilesSchema = z.object({
+  fileIds: z.array(z.string().uuid()).min(1).max(MAX_MODEL_FILE_SELECTION_COUNT)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'File IDs must be unique',
+    }),
 });
 
 export const splitModelFolderSchema = z.object({

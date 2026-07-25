@@ -1287,6 +1287,37 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
 
 ---
 
+### POST /models/:id/files/delete
+
+Delete a selected set of files from one model. The model must belong to the authenticated user and the active library selected by `X-Library-Id`, or the user's default library when the header is omitted.
+
+**Auth required:** Yes. The model must belong to the authenticated user and active library.
+
+**Path parameter:** `id` — model UUID
+
+**Request body:**
+
+```json
+{
+  "fileIds": [
+    "55555555-5555-4555-8555-555555555555",
+    "66666666-6666-4666-8666-666666666666"
+  ]
+}
+```
+
+`fileIds` must contain 1–500 unique `ModelFile` UUIDs. Every selected file must belong to the model identified by `id`.
+
+**Response (200):** Returns the updated `ModelDetail`, in the same shape as `GET /models/:id`.
+
+The database operation is atomic. Before deleting anything, the service verifies that the complete selection still belongs to the model. It then deletes all selected file rows, recalculates the model's file count and total size, and reconciles duplicate-review flags in one transaction. A failure in any of these steps rolls back the complete selection; the endpoint never commits a partial database deletion.
+
+After the transaction commits, the service batch-deletes the selected files' and their thumbnails' managed-storage objects on a best-effort basis. Cleanup failures are logged but do not roll back the database deletion or change the successful response.
+
+The endpoint returns `400 VALIDATION_ERROR` when `fileIds` contains fewer than 1 or more than 500 values, contains duplicates, or contains a value that is not a UUID. It returns `404 NOT_FOUND` when the model is not owned by the authenticated user in the active library, or when one or more selected files do not belong to that model. It returns `409 CONFLICT` when the selected files change concurrently between verification and deletion. All of these failures leave the database selection unchanged.
+
+---
+
 ### POST /models/:id/folders/split
 
 Move either one folder's contents or a selected set of files into one new model. The request must

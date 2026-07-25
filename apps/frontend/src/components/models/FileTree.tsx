@@ -20,7 +20,12 @@ import {
   Scissors,
   Copy,
 } from 'lucide-react';
-import { MAX_SPLIT_FILE_COUNT, type FileTreeNode, type FileType } from '@alexandria/shared';
+import {
+  MAX_MODEL_FILE_SELECTION_COUNT,
+  MAX_SPLIT_FILE_COUNT,
+  type FileTreeNode,
+  type FileType,
+} from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
 import { Model3DIcon } from '../icons';
@@ -1020,7 +1025,14 @@ export function FileTree({
                 setSelectedFileIds(new Set());
               }
             }}
-            disabled={disabled || selectedFiles.length === 0}
+            disabled={
+              disabled ||
+              selectedFiles.length === 0 ||
+              selectedFiles.length > MAX_MODEL_FILE_SELECTION_COUNT
+            }
+            title={selectedFiles.length > MAX_MODEL_FILE_SELECTION_COUNT
+              ? `Select no more than ${MAX_MODEL_FILE_SELECTION_COUNT} files to delete`
+              : 'Delete selected files'}
             className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
           >
             <Trash2 className="h-3.5 w-3.5" />

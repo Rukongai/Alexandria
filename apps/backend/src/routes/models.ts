@@ -15,6 +15,7 @@ import type {
   UpdateModelFileRequest,
   UpdateModelFolderRequest,
   DeleteModelFolderRequest,
+  DeleteModelFilesRequest,
   SplitModelFolderRequest,
   CompressModelFolderRequest,
   ExtractImportSessionArchiveRequest,
@@ -23,6 +24,7 @@ import type {
 import {
   createModelFolderSchema,
   deleteModelFolderSchema,
+  deleteModelFilesSchema,
   splitModelFolderSchema,
   compressModelFolderSchema,
   importConfigSchema,
@@ -641,6 +643,21 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const { id, fileId } = request.params as { id: string; fileId: string };
       await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
       await modelService.deleteModelFile(id, fileId);
+      const detail = await presenterService.buildModelDetail(id);
+
+      return reply.status(200).send({ data: detail, meta: null, errors: null });
+    },
+  );
+
+  // POST /:id/files/delete — delete selected files from a model atomically
+  app.post(
+    '/:id/files/delete',
+    { preHandler: [requireAuth, requireLibrary, validate(deleteModelFilesSchema)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as DeleteModelFilesRequest;
+      await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
+      await modelService.deleteModelFiles(id, body.fileIds);
       const detail = await presenterService.buildModelDetail(id);
 
       return reply.status(200).send({ data: detail, meta: null, errors: null });
