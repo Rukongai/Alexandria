@@ -64,17 +64,26 @@ A self-hosted personal library for managing 3D printing model collections. Think
 
 ## Quick Start
 
-Requires Docker and Docker Compose.
+Requires Docker and Docker Compose 2.20.3 or later.
 
 ```bash
 git clone <repo-url> alexandria
 cd alexandria
 cp .env.example .env
 
-# Replace SESSION_SECRET and AI_ENCRYPTION_KEY with long random values.
+# Set POSTGRES_PASSWORD, SESSION_SECRET, AI_ENCRYPTION_KEY, and
+# SEED_ADMIN_PASSWORD to distinct random values before starting.
+# Generate each value separately with: openssl rand -hex 32
 
-# Start all services (Postgres, Redis, backend, frontend)
-docker compose -f docker/docker-compose.yml up --build
+# Pull the published images and start Postgres, Redis, backend, and frontend.
+docker compose pull
+docker compose up -d --no-build --wait
+```
+
+To build the backend and frontend images from the current checkout instead:
+
+```bash
+docker compose up -d --build --wait
 ```
 
 On first startup, the backend automatically runs database migrations and seeds the default admin account and metadata fields. No manual seeding step is required.
@@ -83,11 +92,28 @@ Services are available at:
 
 - Frontend: http://localhost:80
 - Backend API: http://localhost:3001
-- Postgres: localhost:5433 (user: `alexandria`, password: `alexandria`, db: `alexandria`)
+- Postgres: localhost:5433 (user: `alexandria`, password: your `.env` value, db: `alexandria`)
 
-Default login: `admin@alexandria.local` / `changeme`
+Default email: `admin@alexandria.local`. The initial password is the required `SEED_ADMIN_PASSWORD` value from `.env`.
 
 To use a custom admin account, set `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` in your environment before the first startup. The seed is idempotent — it uses `ON CONFLICT DO NOTHING`, so re-running it does not overwrite existing data.
+
+Useful lifecycle commands:
+
+```bash
+docker compose logs -f
+docker compose down          # Keep all named-volume data
+docker compose down --volumes # Also delete Alexandria's database, queue, and stored files
+```
+
+Postgres, Redis, and managed model storage use the existing `docker_pgdata`, `docker_redisdata`, and `docker_storagedata` named volumes, so data survives container replacement and the switch from the previous explicit Compose-file command. `HTTP_PORT`, `BACKEND_PORT`, `POSTGRES_PORT`, and `REDIS_PORT` in `.env` control the host-side ports. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for upgrades, rollback constraints, configuration, backups, and production considerations.
+
+### Published container images
+
+GitHub Actions validates both production images on relevant pull requests and manual runs without publishing them. Pushes to `main` or a version tag first stage both multi-architecture (`linux/amd64` and `linux/arm64`) images, then promote public tags only after both builds succeed. Main publishes `latest`, `main`, and commit-specific `sha-...` tags. A tag such as `v1.2.0` publishes `1.2.0`, `1.2`, and a commit-specific tag; set `ALEXANDRIA_IMAGE_TAG` in `.env` to pin Compose to one of those versions.
+
+- `ghcr.io/rukongai/alexandria-backend`
+- `ghcr.io/rukongai/alexandria-frontend`
 
 ---
 
@@ -101,6 +127,8 @@ npm run dev
 ```
 
 `npm run dev` runs Turborepo's dev task across all packages. The backend uses `tsx watch` and the frontend uses Vite's dev server with hot reload. The frontend dev server proxies `/api/*` requests to `http://localhost:3000`.
+
+To start Postgres and Redis, apply migrations and seed data, then run the development servers in one command, use `npm run dev:up`. Blank deployment secrets in `.env.example` receive local-development-only defaults in this script; the production Compose stack still requires explicit secrets.
 
 To run a single app:
 
@@ -160,6 +188,10 @@ alexandria/
 │   ├── Dockerfile.backend
 │   └── Dockerfile.frontend
 │
+├── .github/workflows/
+│   └── docker-build.yml    Container validation and GHCR publishing
+├── compose.yaml            Root Docker Compose entry point
+├── .dockerignore           Docker build-context exclusions
 └── docs/                   Architecture, API reference, types, conventions
 ```
 
@@ -194,8 +226,21 @@ Seed variables (read on every startup and by `npm run db:seed`):
 | Variable | Default | Description |
 |---|---|---|
 | `SEED_ADMIN_EMAIL` | `admin@alexandria.local` | Admin account email |
-| `SEED_ADMIN_PASSWORD` | `changeme` | Admin account password |
+| `SEED_ADMIN_PASSWORD` | _(required by Compose)_ | Initial admin account password |
 | `SEED_ADMIN_DISPLAY_NAME` | `Admin` | Admin display name |
+
+Docker Compose also reads these deployment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALEXANDRIA_IMAGE_TAG` | `latest` | Published backend and frontend image tag |
+| `HTTP_PORT` | `80` | Frontend/Nginx host port |
+| `BACKEND_PORT` | `3001` | Direct backend API host port |
+| `POSTGRES_PORT` | `5433` | PostgreSQL host port |
+| `REDIS_PORT` | `6379` | Redis host port |
+| `POSTGRES_USER` | `alexandria` | PostgreSQL user; choose before first startup |
+| `POSTGRES_PASSWORD` | _(required by Compose)_ | PostgreSQL password; choose before first startup |
+| `POSTGRES_DB` | `alexandria` | PostgreSQL database name; choose before first startup |
 
 S3 credentials are resolved through the AWS SDK default credential chain. For a simple deployment, set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and, for temporary credentials, `AWS_SESSION_TOKEN`. Workload roles, shared AWS configuration, and the other standard providers are also supported. The backend validates S3 bucket access before migrations or HTTP startup and exits if validation fails.
 
@@ -214,7 +259,11 @@ Tests run with Vitest and live alongside source files. Integration tests require
 ```bash
 # Start only the infrastructure services for testing. Compose still resolves
 # the backend environment, so provide a test-only encryption value.
-AI_ENCRYPTION_KEY=test-only-not-for-production docker compose -f docker/docker-compose.yml up -d postgres redis
+AI_ENCRYPTION_KEY=test-only-not-for-production \
+POSTGRES_PASSWORD=test-only-database-password \
+SESSION_SECRET=test-only-session-secret \
+SEED_ADMIN_PASSWORD=test-only-admin-password \
+docker compose up -d postgres redis --wait
 ```
 
 ---
@@ -225,6 +274,7 @@ AI_ENCRYPTION_KEY=test-only-not-for-production docker compose -f docker/docker-c
 - `docs/API.md` — full API reference (64 endpoints)
 - `docs/TYPES.md` — canonical type definitions
 - `docs/CONVENTIONS.md` — naming, patterns, and coding standards
+- `docs/DEPLOYMENT.md` — Docker Compose deployment, upgrades, and production considerations
 - `docs/STORAGE.md` — local and S3-compatible storage configuration and migration
 - `docs/PROJECT-BRIEF.md` — project overview and rationale
 

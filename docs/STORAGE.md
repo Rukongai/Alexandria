@@ -90,7 +90,7 @@ Migration copies the existing `STORAGE_PATH` tree into the configured S3 bucket 
    With the published Compose backend image, run the compiled script instead:
 
    ```bash
-   docker compose -f docker/docker-compose.yml run --rm backend \
+   docker compose run --rm backend \
      node apps/backend/dist/scripts/migrate-storage.js
    ```
 

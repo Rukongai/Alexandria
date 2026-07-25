@@ -86,10 +86,17 @@ alexandria/
 │   ├── Dockerfile.backend
 │   └── docker-compose.yml
 │
+├── .github/workflows/
+│   └── docker-build.yml          # Container validation and GHCR publishing
+├── compose.yaml                  # Root Docker Compose entry point
+├── .dockerignore                 # Docker build-context exclusions
+│
 ├── docs/                        # Project documentation
 │   ├── ARCHITECTURE.md
 │   ├── TYPES.md
 │   ├── CONVENTIONS.md
+│   ├── DEPLOYMENT.md
+│   ├── STORAGE.md
 │   ├── AGENTS.md
 │   ├── PLAN.md
 │   └── PROJECT-BRIEF.md

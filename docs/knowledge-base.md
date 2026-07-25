@@ -63,11 +63,11 @@ The API uses a consistent `{ data, meta, errors }` envelope on every response wi
 
 ## Deployment
 
-Alexandria runs as four Docker Compose services: Postgres 16, Redis 7, the backend (Fastify on port 3001), and the frontend (Nginx on port 80). The backend and frontend are built from source in multi-stage Dockerfiles. All services have healthchecks. The backend waits for Postgres and Redis to be healthy before starting. SQL migration files are copied into the backend image at build time so the runtime container does not need access to source directories.
+Alexandria runs as four Docker Compose services: Postgres 16, Redis 7, the backend (Fastify on loopback port 3001), and the frontend (Nginx on port 80). Postgres and Redis host ports also bind to loopback. The backend and frontend can be pulled from GHCR or built from source with multi-stage Dockerfiles. All services have healthchecks. The backend waits for Postgres and Redis to be healthy before starting. SQL migration files are copied into the backend image at build time so the runtime container does not need access to source directories. GitHub Actions validates both images on relevant pull requests and promotes paired multi-architecture AMD64/ARM64 tags with SBOM and provenance metadata from `main` and version tags only after both builds succeed.
 
 Managed storage defaults to a named Docker volume mounted at `/data/storage` inside the backend container. It can instead use a private S3-compatible bucket, including MEGA S4; the local volume remains mounted for migration and rollback. Postgres data and Redis data are also named volumes, surviving container restarts.
 
-Default credentials (`admin@alexandria.local` / `changeme`) are applied by the auto-seed on first startup. Override them with the `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables before first run.
+The auto-seed uses `admin@alexandria.local` as the default email, but Docker Compose requires the operator to provide `SEED_ADMIN_PASSWORD` before startup. `SEED_ADMIN_EMAIL` and `SEED_ADMIN_DISPLAY_NAME` can also be set before the first run. Seed values do not overwrite an existing account.
 
 ## Current Status
 
