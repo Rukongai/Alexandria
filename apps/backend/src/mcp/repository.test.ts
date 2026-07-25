@@ -254,6 +254,50 @@ describe('raw MCP model repository integration', () => {
       .resolves.toEqual([modelFileRow.storagePath, thumbnailRow.storagePath].sort());
   });
 
+  it('lists raw model-file rows in relative-path order', async () => {
+    const unique = randomUUID().replaceAll('-', '');
+    const [orderedModel] = await db.insert(models).values({
+      name: 'MCP ordered file list',
+      slug: `mcp-ordered-file-list-${unique}`,
+      userId: fixture.userIds[0],
+      libraryId: fixture.libraryIds[0],
+      sourceType: 'manual',
+      status: 'ready',
+    }).returning();
+    fixture.modelIds.push(orderedModel.id);
+
+    await db.insert(modelFiles).values([
+      {
+        modelId: orderedModel.id,
+        filename: 'z.stl',
+        relativePath: 'parts/z.stl',
+        fileType: 'stl',
+        mimeType: 'model/stl',
+        sizeBytes: 2,
+        storagePath: `models/${orderedModel.id}/parts/z.stl`,
+        hash: 'c'.repeat(64),
+      },
+      {
+        modelId: orderedModel.id,
+        filename: 'a.stl',
+        relativePath: 'parts/a.stl',
+        fileType: 'stl',
+        mimeType: 'model/stl',
+        sizeBytes: 1,
+        storagePath: `models/${orderedModel.id}/parts/a.stl`,
+        hash: 'b'.repeat(64),
+      },
+    ]);
+
+    const result = await handlers.getModelFiles({ modelId: orderedModel.id });
+
+    expect(result.fileCount).toBe(2);
+    expect(result.files.map((file) => file.relativePath)).toEqual([
+      'parts/a.stl',
+      'parts/z.stl',
+    ]);
+  });
+
   it('returns complete model and related table rows after enforcing ownership scope', async () => {
     const result = await handlers.getModel({ modelId: ownedModelRow.id });
 
