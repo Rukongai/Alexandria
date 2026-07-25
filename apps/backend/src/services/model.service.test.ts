@@ -70,7 +70,6 @@ describe('ModelService – getModelById', () => {
       originalFilename: 'my-model.zip',
       totalSizeBytes: 1024,
       fileCount: 3,
-      fileHash: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
