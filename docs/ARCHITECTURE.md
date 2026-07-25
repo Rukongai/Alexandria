@@ -29,7 +29,7 @@ When the backend process starts (`server.ts`), it runs four steps before accepti
 3. **Seed** — `runSeed()` inserts the default admin user and default metadata field definitions using `ON CONFLICT DO NOTHING`, then calls `LibraryService.resolveDefaultLibraryId` for the admin user to ensure the admin's default library exists. This is idempotent and safe to run on every startup. If the seed fails (e.g., a constraint violation on a partially seeded DB), it logs a warning and continues rather than crashing. Seed credentials are controlled by `SEED_ADMIN_EMAIL`, `SEED_ADMIN_PASSWORD`, and `SEED_ADMIN_DISPLAY_NAME` environment variables.
 4. **Listen** — Fastify binds to the configured `HOST:PORT` and begins accepting requests.
 
-In Docker Compose, the `backend` service declares `depends_on` with `condition: service_healthy` for both Postgres and Redis, so both infrastructure services are ready before the backend starts. The bundled production Nginx proxy uses 120-second upstream read and send timeouts, which sit above the AI assistant's 90-second whole-request deadline so application cancellation remains the authoritative cutoff.
+In the default Docker Compose deployment, the `backend` service declares `depends_on` with `condition: service_healthy` for both Postgres and Redis, so both infrastructure services are ready before the backend starts. When `docker-compose.hosted-db.yml` is applied, the local Postgres service is placed behind an inactive profile and that dependency becomes optional; startup migrations then provide the database reachability and compatibility check. Redis remains a required local Compose dependency. The bundled production Nginx proxy uses 120-second upstream read and send timeouts, which sit above the AI assistant's 90-second whole-request deadline so application cancellation remains the authoritative cutoff.
 
 The `runSeed` function is also exported for use as a standalone CLI script (`npm run db:seed`). When invoked as a script, it closes the database pool on completion; when called from `server.ts`, it does not — the pool remains open for the lifetime of the server.
 
@@ -90,9 +90,20 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 └──────────────────────┬──────────────────────────────────┘
                        │
           ┌────────────▼────────────┐
-          │   PostgreSQL + Redis     │
+          │ PostgreSQL (local/hosted)│
+          │         + Redis          │
           └─────────────────────────┘
 ```
+
+### Database Connectivity
+
+The backend uses one process-wide `node-postgres` pool shared by Drizzle and all services. `DATABASE_URL` may target the bundled Postgres container or any compatible hosted PostgreSQL service. `DATABASE_POOL_MAX` caps that pool at 10 connections by default; the hosted Compose override defaults it to 5 to leave capacity for provider administration, migrations, and other clients. Alexandria still assumes one backend process because upload state and some rate limits are process-local. Hosted PostgreSQL does not enable horizontal scaling; if that architecture changes later, every replica will have its own pool and the total database connection budget must account for all replicas.
+
+TLS behavior comes from connection-string parameters. Alexandria deliberately does not supply a separate `ssl` object that could override `sslmode`, `sslrootcert`, `sslcert`, or `sslkey`. Production hosted deployments should use `sslmode=verify-full` with the provider's CA/root certificate so encryption, certificate trust, and hostname identity are all checked. `sslmode=require` requires encryption under standard PostgreSQL semantics but does not verify server identity and is not the recommended production setting.
+
+The backend applies migrations at every startup and keeps its application pool open for the process lifetime. Hosted poolers therefore need session semantics. For Supabase, use a direct connection for a persistent container when IPv6 is available, or Supavisor session mode when the deployment network is IPv4-only. Transaction mode is intended for transient clients and is not supported as an Alexandria deployment target.
+
+PostgreSQL stores metadata and application state, not model-file bytes. Moving only `DATABASE_URL` to a hosted service does not make local managed storage portable to another host; deployments that need host mobility also require the S3-compatible storage backend. Operational setup is documented in `docs/HOSTED_DATABASE.md`.
 
 ---
 
@@ -699,3 +710,7 @@ The AI provider never receives a direct mutation tool. It can call `preview_chan
 Applying changes is a separate authenticated request naming the proposal ID; the server loads the stored payload rather than accepting a replacement payload from the client, revalidates scope and references, rejects expired or already-used proposals, and atomically claims a pending proposal before delegating to domain services. Bulk metadata supports `set`, `add`, and `remove`; `add` is valid only for Tags. Bulk collections support `add` and `remove`. Applying an `update_import_session` proposal changes only the staged review draft; it never commits, enqueues, or otherwise processes the upload. This makes preview-before-apply an API invariant rather than a UI convention, including for bulk edits and pre-queue uploads.
 
 Proposals expire after 15 minutes and are single-use after a successful apply. Apply-time expiry comparisons use PostgreSQL `now()` so application-server clock skew cannot extend the review window. The transaction locks all referenced model and ready-for-review import-session rows in deterministic ID order and revalidates the complete stored change set before the conditional `pending` → `applying` claim. That claim, every individual or bulk model/metadata/collection/draft mutation, and the final `applied` transition run in the same transaction. A downstream failure or process crash rolls back both the domain changes and the claim, leaving the still-unexpired proposal `pending` and safely retryable; no committed `applying` state can be stranded. Collection membership additions/removals and metadata set/add/remove effects are idempotent, while the proposal claim prevents a successfully applied preview from being replayed.
+
+### D21: Hosted PostgreSQL uses the existing persistent database boundary
+
+Hosted PostgreSQL is a deployment choice, not a new service boundary. The same Drizzle schema, startup migrations, timeouts, and process-wide `node-postgres` pool apply to local and hosted databases. TLS settings remain in `DATABASE_URL` so provider-specific certificate and connection requirements are preserved. Because the backend is a persistent process that migrates on startup and holds pooled sessions, direct connections or session-mode poolers are supported; transaction-mode poolers are not the deployment model. Database hosting is independent of managed blob storage, which must use S3-compatible storage when files need to be reachable beyond one host.

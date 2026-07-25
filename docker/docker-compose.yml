@@ -33,6 +33,7 @@ services:
       - "3001:3000"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-alexandria}:${POSTGRES_PASSWORD:-alexandria}@postgres:5432/${POSTGRES_DB:-alexandria}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
       REDIS_URL: redis://redis:6379
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       STORAGE_PATH: /data/storage
