@@ -8,7 +8,7 @@ This document is the source of truth for Alexandria's architecture. Every struct
 
 Alexandria is a self-hosted personal library for 3D printing model collections. It manages the upload, processing, organization, browsing, and search of 3D printing model files. The primary deployment target is Docker Compose.
 
-The system follows a monorepo structure with a React frontend, a Fastify backend, and a shared types package. The backend is organized around focused services with clear ownership boundaries. All file processing happens asynchronously via a job queue.
+The system follows a monorepo structure with a React frontend, a Fastify backend, and a shared types package. The backend is organized around focused services with clear ownership boundaries. Upload and import pipelines run asynchronously through job queues; explicit file-tree actions such as extracting a stored archive or compressing a folder run synchronously within their authenticated request.
 
 ### Core Principles
 
@@ -66,6 +66,7 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 │  │ Routes   │→│PresenterSvc  │←│ Services            │   │
 │  │ (thin)   │  │(response     │  │                    │   │
 │  │          │  │ assembly)    │  │ ModelService        │   │
+│  │          │  │              │  │ ModelFolderArchive  │   │
 │  └─────────┘  └──────────────┘  │ MetadataService     │   │
 │                                  │ CollectionService   │   │
 │  requireAuth ──→ requireLibrary  │ SearchService       │   │
@@ -190,7 +191,7 @@ This index makes the enforcement race-safe: the database rejects a second `is_de
 
 Routes that apply `requireLibrary` (as of P5):
 
-- `GET /models`, `GET /models/:id`, `GET /models/:id/files`, `GET /models/:id/status`
+- `GET /models`, `GET /models/:id`, `GET /models/:id/files`, `GET /models/:id/status`, `POST /models/:id/folders/compress`
 - `GET /collections`, `POST /collections`, `GET /collections/:id`, `GET /collections/:id/models`
 - `GET /metadata/fields/:slug/values`
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/upload/multipart/complete`, `POST /models/import`
@@ -267,11 +268,11 @@ Three entry paths:
 
 ### FileProcessingService
 
-**Owns:** Archive extraction, folder directory walking, file type classification, basic metadata extraction from file contents and names.
+**Owns:** Archive extraction and creation, folder directory walking, file type classification, basic metadata extraction from file contents and names.
 
 **Does not own:** File storage, thumbnail generation, database record persistence.
 
-**Behavior:** Given an archive file (zip, rar, 7z, tar.gz, tgz), an explicit multipart archive group, or a directory path, produces a structured manifest describing what was found: files with their relative paths, classified types, sizes, and any metadata extractable from filenames or structure. In `combine` mode every source must be an independent complete archive with a plain filename. Each archive is extracted beneath a folder derived from that filename, empty or dot-only folder names are rejected, folder collisions are resolved case-insensitively with `-2`, `-3`, and later suffixes, and the resolved folder must remain a strict descendant of the extraction root. In `split` mode the service validates either a contiguous classic `.z01` … `.z99` set plus one terminal `.zip`, a contiguous numbered `.zip.001` … `.zip.999` set, or a modern contiguous `<base>.partN.rar` set starting at part 1. Every set must use one case-insensitive base name; RAR members additionally require a safe base and consistent part-number padding. The service copies normalized member names into a temporary colocation directory, invokes the full 7-Zip extractor on the ZIP or RAR entry member so it can resolve the remaining colocated volumes, then removes the temporary directory. Before 7-Zip-based extraction it requests technical metadata and rejects absolute, drive-qualified, UNC, or parent-traversal paths plus symbolic links, hard links, and reparse entries. Link detection covers dedicated fields and Unix link modes or reparse markers reported through `Mode` or `Attributes`; extraction-reported paths outside the destination are also rejected. This manifest is what IngestionService uses to create ModelFile records and route files to storage. During commit, `copyManifestToStorage` reports monotonic per-file and byte counters without making progress reporting a requirement for a successful storage write.
+**Behavior:** Given an archive file (zip, rar, 7z, tar.gz, tgz), an explicit multipart archive group, or a directory path, produces a structured manifest describing what was found: files with their relative paths, classified types, sizes, and any metadata extractable from filenames or structure. In `combine` mode every source must be an independent complete archive with a plain filename. Each archive is extracted beneath a folder derived from that filename, empty or dot-only folder names are rejected, folder collisions are resolved case-insensitively with `-2`, `-3`, and later suffixes, and the resolved folder must remain a strict descendant of the extraction root. In `split` mode the service validates either a contiguous classic `.z01` … `.z99` set plus one terminal `.zip`, a contiguous numbered `.zip.001` … `.zip.999` set, or a modern contiguous `<base>.partN.rar` set starting at part 1. Every set must use one case-insensitive base name; RAR members additionally require a safe base and consistent part-number padding. The service copies normalized member names into a temporary colocation directory, invokes the full 7-Zip extractor on the ZIP or RAR entry member so it can resolve the remaining colocated volumes, then removes the temporary directory. Before 7-Zip-based extraction it requests technical metadata and rejects absolute, drive-qualified, UNC, or parent-traversal paths plus symbolic links, hard links, and reparse entries. Link detection covers dedicated fields and Unix link modes or reparse markers reported through `Mode` or `Attributes`; extraction-reported paths outside the destination are also rejected. This manifest is what IngestionService uses to create ModelFile records and route files to storage. During commit, `copyManifestToStorage` reports monotonic per-file and byte counters without making progress reporting a requirement for a successful storage write. For folder compression, `create7zArchive` invokes the bundled 7-Zip binary with the 7z container and explicit LZMA2 method; it archives the staging directory's children so it does not introduce an extra top-level folder.
 
 Uses the **PatternParser** utility (located in `utils/pattern-parser.ts`) — a pure function that takes a user-defined hierarchy pattern string (e.g., `{Collection}/{metadata.Artist}/{model}`), validates it, and returns a structured representation. Validation rules: pattern must end with `{model}`, segments must be `{Collection}` or `{metadata.<fieldSlug>}`, and `{model}` cannot appear in the middle.
 
@@ -328,6 +329,16 @@ On startup, S3 mode performs `HeadBucket` validation before database migration a
 **Folder split behavior:** `splitModelFolder` accepts one folder from an owned, ready model in the active library. The folder must contain at least one file. Its files become the root contents of a new ready, `manual` model; descendant paths are rebased by removing the selected folder prefix, while persisted nested folders, including empty descendants, are preserved. Existing ModelFile IDs and thumbnail records remain attached to their files. If the source model's selected preview is among the moved files, its preview selection and crop values transfer to the new model and are cleared on the source. Both models' file count and total size are recalculated. The new model receives the requested name but no metadata values, collection memberships, description, or other source provenance; those source relationships and values remain on the source model.
 
 The service copies file and thumbnail objects to new model-scoped storage keys before opening the database transaction. In the transaction it locks and revalidates the owned source and its exact folder contents, creates the new model, reassigns file/folder rows, updates storage keys and preview references, and recalculates both models' statistics. A concurrent folder change produces a conflict and rolls back the database work. Any pre-commit copy or transaction failure triggers best-effort removal of every object whose copy completed successfully. After a successful commit, deletion of the old storage objects is best-effort; a cleanup failure cannot roll back the committed split.
+
+For a derived folder archive, `createModelFileAndRecalculateStats` inserts the `ModelFile` record and recalculates the model's file and byte totals in one database transaction.
+
+### ModelFolderArchiveService
+
+**Owns:** Orchestrating non-destructive compression of one model folder into a sibling 7z archive.
+
+**Does not own:** Model ownership or library authorization (the route and ModelService), archive encoding (FileProcessingService), blob storage (StorageService), or model-file persistence (ModelService).
+
+**Behavior:** Normalizes the requested and derived archive paths, serializes concurrent requests for the same model and folder, and admits at most one compression process at a time per backend instance. It resolves descendant files and explicit empty folders and rejects a missing folder. Before reading source objects, it rejects any file, folder namespace, or storage object already occupying `<folder-path>.7z`. It streams source objects through StorageService into an isolated temporary directory, delegates explicit LZMA2 archive creation to FileProcessingService, and stores and verifies the result through the configured storage backend. ModelService then records the archive as `application/x-7z-compressed` and updates model totals transactionally. The source folder is never changed. Failures before database persistence trigger best-effort deletion of the newly written archive object, and temporary data is always removed.
 
 ### MetadataService
 
@@ -569,7 +580,7 @@ The Model Detail page (`pages/ModelDetailPage.tsx`) was fully redesigned in P2. 
 
 `components/models/ModelDetailPanel.tsx` is the tabbed right panel. `components/models/PanelTabs.tsx` is the generic full-width segmented control it uses. `PanelTabs` is typed with a string union for tab values and accepts icon components typed as `React.ComponentType<{ className?: string }>` (see the gotcha note in the Conventions doc).
 
-The Collections tab lists the model's current manual-collection memberships and can add the model to one or more additional collections without removing existing memberships. The browse bulk-action bar makes the same distinction explicit: **Add to collection** preserves existing memberships, while **Move** replaces them.
+The Files tab exposes file and folder organization actions from each tree node. A folder's **Compress to 7z** action creates a sibling archive and refreshes the detail and file-tree queries after completion; the original folder remains available. The Collections tab lists the model's current manual-collection memberships and can add the model to one or more additional collections without removing existing memberships. The browse bulk-action bar makes the same distinction explicit: **Add to collection** preserves existing memberships, while **Move** replaces them.
 
 The detail page also owns a per-model `MergeModelsDialog`, which keeps the current model as the merge target and searches the library for sources. The browse bar's bulk merge (see Pivot Workspace → Bulk merge) inverts that: the sources are already chosen and the dialog asks which one to keep.
 
@@ -611,8 +622,9 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | Method | Route | Purpose | Service Chain | Library-scoped |
 |--------|-------|---------|---------------|---------------|
 | GET | /models | Browse/search with filters | SearchService → PresenterService | Yes |
-| GET | /models/:id | Model detail | ModelService → PresenterService | No (userId) |
-| GET | /models/:id/files | File tree | ModelService → PresenterService | No (userId) |
+| GET | /models/:id | Model detail | ModelService → PresenterService | Yes |
+| GET | /models/:id/files | File tree | ModelService → PresenterService | Yes |
+| POST | /models/:id/folders/compress | Create a non-destructive sibling 7z archive | ModelFolderArchiveService → ModelService + FileProcessingService + StorageService | Yes |
 | POST | /models/upload | Upload archive → scan (returns sessionId) | IngestionService → ImportSessionService → JobService | Yes |
 | POST | /models/upload/init | Initiate chunked upload session | UploadService | No |
 | POST | /models/upload/multipart/init | Initiate one chunked member of a multipart group | UploadService | No |
@@ -627,12 +639,12 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | POST | /models/import-sessions/:id/files | Append loose files to a staged model | IngestionService → FileProcessingService | Yes |
 | POST | /models/import-sessions/:id/commit | Commit session → create model | IngestionService → JobService | Yes |
 | DELETE | /models/import-sessions/:id | Discard session + staged files | IngestionService | No (userId) |
-| GET | /models/:id/status | Processing status | JobService | No (userId) |
+| GET | /models/:id/status | Processing status | ModelService | Yes |
 | PATCH | /models/:id | Update model | ModelService → PresenterService | No (userId) |
 | POST | /models/:id/folders/split | Move one folder's contents into a new model root | ModelService → StorageService | Yes |
 | DELETE | /models/:id | Delete model + files | ModelService → StorageService | No (userId) |
 
-"Library-scoped" means the route applies the `requireLibrary` preHandler and scopes its read or write to `request.libraryId`. Routes marked `No (userId)` enforce ownership but do not use the active library. The folder-split route enforces both ownership and active-library scope because it creates another model in that library.
+"Library-scoped" means the route applies the `requireLibrary` preHandler and scopes its read or write to `request.libraryId`. Routes marked `No (userId)` enforce ownership but do not use the active library. Read/detail model routes and the folder-compression mutation enforce active-library scope; the folder-split route does the same because it creates another model in that library. The top-level `PATCH` and `DELETE` model mutations remain owned by `userId` only.
 
 **Collections**
 | Method | Route | Purpose | Service Chain | Library-scoped |

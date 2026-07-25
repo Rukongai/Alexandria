@@ -172,6 +172,19 @@ describe('FileTree', () => {
     expect(screen.getByRole('button', { name: 'Create folder' })).toBeDisabled();
   });
 
+  it('offers non-destructive 7z compression from a folder action menu', () => {
+    const onCompressFolder = vi.fn();
+    const confirm = vi.spyOn(window, 'confirm');
+    render(<FileTree tree={TREE} modelId="m1" onCompressFolder={onCompressFolder} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for folder parts' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Compress to 7z' }));
+
+    expect(onCompressFolder).toHaveBeenCalledWith('parts', 'parts');
+    expect(confirm).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
   it('keeps the move dialog open with a busy indicator until the move completes', async () => {
     const move = deferredPromise();
     const onMoveFolder = vi.fn(() => move.promise);

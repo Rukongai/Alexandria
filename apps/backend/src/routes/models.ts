@@ -16,6 +16,7 @@ import type {
   UpdateModelFolderRequest,
   DeleteModelFolderRequest,
   SplitModelFolderRequest,
+  CompressModelFolderRequest,
   ExtractImportSessionArchiveRequest,
   CompleteMultipartUploadRequest,
 } from '@alexandria/shared';
@@ -23,6 +24,7 @@ import {
   createModelFolderSchema,
   deleteModelFolderSchema,
   splitModelFolderSchema,
+  compressModelFolderSchema,
   importConfigSchema,
   modelSearchParamsSchema,
   mergeModelsSchema,
@@ -50,6 +52,7 @@ import { presenterService } from '../services/presenter.service.js';
 import { storageService } from '../services/storage.service.js';
 import { uploadService } from '../services/upload.service.js';
 import { createModelArchive } from '../services/model-download.service.js';
+import { modelFolderArchiveService } from '../services/model-folder-archive.service.js';
 import { notFound, validationError } from '../utils/errors.js';
 
 export async function modelRoutes(app: FastifyInstance): Promise<void> {
@@ -693,6 +696,19 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
         request.libraryId!,
       );
 
+      return reply.status(201).send({ data: result, meta: null, errors: null });
+    },
+  );
+
+  // POST /:id/folders/compress — create a sibling 7z archive without deleting the folder
+  app.post(
+    '/:id/folders/compress',
+    { preHandler: [requireAuth, requireLibrary, validate(compressModelFolderSchema)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as CompressModelFolderRequest;
+      await modelService.requireOwnedModel(id, request.user!.id, request.libraryId!);
+      const result = await modelFolderArchiveService.compressFolder(id, body.path);
       return reply.status(201).send({ data: result, meta: null, errors: null });
     },
   );

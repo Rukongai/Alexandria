@@ -11,7 +11,12 @@ vi.mock('./client', () => ({
 }));
 
 import { del, post, postForLibrary, putRaw } from './client';
-import { scanMultipartUpload, scanUpload, splitModelFolder } from './models';
+import {
+  compressModelFolder,
+  scanMultipartUpload,
+  scanUpload,
+  splitModelFolder,
+} from './models';
 
 const envelope = <T,>(data: T) => ({ data, meta: null, errors: null });
 
@@ -31,6 +36,21 @@ describe('splitModelFolder', () => {
       path: 'variants/large',
       name: 'Large Variant',
     });
+  });
+});
+
+describe('compressModelFolder', () => {
+  it('should post the folder path and return the created archive details', async () => {
+    const response = {
+      archiveFileId: 'archive-1',
+      archivePath: 'parts.7z',
+      sizeBytes: 2048,
+    };
+    vi.mocked(post).mockResolvedValue(envelope(response));
+
+    await expect(compressModelFolder('model-1', 'parts')).resolves.toEqual(response);
+
+    expect(post).toHaveBeenCalledWith('/models/model-1/folders/compress', { path: 'parts' });
   });
 });
 

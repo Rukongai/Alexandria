@@ -127,6 +127,16 @@ export interface SplitModelFolderResponse {
   movedFileCount: number;
 }
 
+export interface CompressModelFolderRequest {
+  path: string;
+}
+
+export interface CompressFolderResponse {
+  archiveFileId: string;
+  archivePath: string;
+  sizeBytes: number;
+}
+
 export interface ExtractArchiveResponse {
   addedFileCount: number;
   destinationPath: string;

@@ -19,6 +19,7 @@ import type {
   ExtractArchiveResponse,
   SplitModelFolderRequest,
   SplitModelFolderResponse,
+  CompressFolderResponse,
 } from '@alexandria/shared';
 import { get, post, postForLibrary, patch, del, putRaw, postForm } from './client';
 import { buildQueryString } from '../lib/query';
@@ -115,6 +116,14 @@ export async function splitModelFolder(
   data: SplitModelFolderRequest,
 ): Promise<SplitModelFolderResponse> {
   const response = await post<SplitModelFolderResponse>(`/models/${id}/folders/split`, data);
+  return response.data;
+}
+
+export async function compressModelFolder(
+  id: string,
+  path: string,
+): Promise<CompressFolderResponse> {
+  const response = await post<CompressFolderResponse>(`/models/${id}/folders/compress`, { path });
   return response.data;
 }
 

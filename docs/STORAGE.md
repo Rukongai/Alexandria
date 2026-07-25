@@ -4,6 +4,14 @@ Alexandria stores model files and thumbnails through one storage interface. The 
 
 Objects should be private. Alexandria's authenticated `/files/...` endpoints look up the logical key and stream bytes through the backend, so browsers never need bucket credentials or direct object access.
 
+## Derived folder archives
+
+`POST /models/:id/folders/compress` creates a new 7z archive from a folder already stored in a model. It is a non-destructive operation: the source folder and every file below it remain in place, while the new archive is stored beside the folder under the logical key `models/<model-id>/<folder-path>.7z`. Alexandria refuses the operation when that sibling path is already occupied by a file or folder; the action does not replace an existing managed path.
+
+Compression is storage-backend independent. The backend streams the selected files through `StorageService` into a temporary workspace, recreates explicit empty descendant folders, invokes 7-Zip with explicit LZMA2 compression, and stores and verifies the resulting archive through `StorageService`. It does not assume that model files have local filesystem paths, so the same path works with local and S3-compatible storage. Archive entries are relative to the selected folder rather than to the model root. To bound temporary-disk and CPU pressure, each backend process runs at most one folder-compression operation at a time.
+
+After the object is stored, Alexandria creates its `ModelFile` row and updates the model's file count and total size. If persistence fails, it makes a best-effort attempt to remove the newly stored object. Temporary files are removed whether the operation succeeds or fails.
+
 ## Configuration
 
 | Variable | Default | Required | Purpose |

@@ -1129,3 +1129,41 @@ describe('7-Zip extraction preflight', () => {
     extract7z.mockRestore();
   });
 });
+
+describe('7-Zip archive creation', () => {
+  it('creates an LZMA2 archive from the source directory contents', async () => {
+    const fixtureDir = path.join(tmpDir, 'create-7z');
+    const sourceDir = path.join(fixtureDir, 'source');
+    const archivePath = path.join(fixtureDir, 'parts.7z');
+    await fsPromises.mkdir(path.join(sourceDir, 'nested'), { recursive: true });
+    await fsPromises.writeFile(path.join(sourceDir, 'body.stl'), 'solid body');
+    await fsPromises.writeFile(path.join(sourceDir, 'nested', 'notes.txt'), 'print slowly');
+
+    await service.create7zArchive(sourceDir, archivePath);
+
+    const { stdout } = await execFileAsync(path7z, ['l', '-slt', archivePath]);
+    expect(stdout).toContain('Method = LZMA2');
+    expect(stdout).toContain('Path = body.stl');
+    expect(stdout).toContain('Path = nested/notes.txt');
+    expect(stdout).not.toContain('Path = source/body.stl');
+
+    const extractDir = path.join(fixtureDir, 'extracted');
+    await execFileAsync(path7z, ['x', '-y', `-o${extractDir}`, archivePath]);
+    await expect(fsPromises.readFile(path.join(extractDir, 'body.stl'), 'utf8'))
+      .resolves.toBe('solid body');
+    await expect(fsPromises.readFile(path.join(extractDir, 'nested', 'notes.txt'), 'utf8'))
+      .resolves.toBe('print slowly');
+  });
+
+  it('creates a valid archive for an empty source directory', async () => {
+    const fixtureDir = path.join(tmpDir, 'create-empty-7z');
+    const sourceDir = path.join(fixtureDir, 'source');
+    const archivePath = path.join(fixtureDir, 'empty.7z');
+    await fsPromises.mkdir(sourceDir, { recursive: true });
+
+    await service.create7zArchive(sourceDir, archivePath);
+
+    expect((await fsPromises.stat(archivePath)).size).toBeGreaterThan(0);
+    await expect(execFileAsync(path7z, ['t', archivePath])).resolves.toBeDefined();
+  });
+});
