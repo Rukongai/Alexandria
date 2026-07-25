@@ -13,7 +13,6 @@ export interface Model {
   originalFilename: string | null;
   totalSizeBytes: number;
   fileCount: number;
-  fileHash: string | null;
   previewImageFileId: string | null;
   previewCropX: number | null;
   previewCropY: number | null;

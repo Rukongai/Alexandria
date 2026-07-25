@@ -59,7 +59,6 @@ export interface CreateThumbnailData {
 export interface UpdateModelStatusData {
   totalSizeBytes?: number;
   fileCount?: number;
-  fileHash?: string;
 }
 
 export class ModelService {
@@ -230,7 +229,6 @@ export class ModelService {
         updatedAt: new Date(),
         ...(updates?.totalSizeBytes !== undefined && { totalSizeBytes: updates.totalSizeBytes }),
         ...(updates?.fileCount !== undefined && { fileCount: updates.fileCount }),
-        ...(updates?.fileHash !== undefined && { fileHash: updates.fileHash }),
       })
       .where(eq(models.id, modelId));
   }

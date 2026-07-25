@@ -99,6 +99,13 @@
       "when": 1784771952000,
       "tag": "0013_add_import_session_draft_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784771953000,
+      "tag": "0014_drop_model_file_hash",
+      "breakpoints": true
     }
   ]
 }

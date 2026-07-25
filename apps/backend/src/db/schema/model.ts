@@ -35,8 +35,6 @@ export const models = pgTable(
     // bigint for file sizes that may exceed 2GB
     totalSizeBytes: bigint('total_size_bytes', { mode: 'number' }).notNull().default(0),
     fileCount: integer('file_count').notNull().default(0),
-    // SHA-256 hash of the archive/source, for deduplication detection
-    fileHash: varchar('file_hash', { length: 64 }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
     // Populated and maintained by the models_search_vector_update trigger.

@@ -77,7 +77,6 @@ interface Model {
   originalFilename: string | null;
   totalSizeBytes: number;
   fileCount: number;
-  fileHash: string | null;
   previewImageFileId: string | null; // user-selected cover image; null = first-image fallback
   createdAt: string;
   updatedAt: string;
