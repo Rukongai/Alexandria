@@ -21,6 +21,7 @@ function makeModel(overrides: Partial<ModelCard> = {}): ModelCard {
     fileCount: 1,
     totalSizeBytes: 1000,
     status: 'ready',
+    isDuplicate: false,
     createdAt: '2024-01-01',
     ...overrides,
   };

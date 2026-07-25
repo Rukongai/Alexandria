@@ -40,6 +40,7 @@ function modelCard(overrides: Partial<ModelCard> & Pick<ModelCard, 'id' | 'name'
     fileCount: 2,
     totalSizeBytes: 1024,
     status: 'ready',
+    isDuplicate: false,
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };

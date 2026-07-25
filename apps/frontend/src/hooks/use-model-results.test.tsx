@@ -31,6 +31,7 @@ const PAGE_1_MODELS: ModelCard[] = [
     fileCount: 1,
     totalSizeBytes: 100,
     status: 'ready',
+    isDuplicate: false,
     createdAt: '2024-01-01',
   },
   {
@@ -45,6 +46,7 @@ const PAGE_1_MODELS: ModelCard[] = [
     fileCount: 2,
     totalSizeBytes: 200,
     status: 'ready',
+    isDuplicate: false,
     createdAt: '2024-01-02',
   },
 ];
@@ -62,6 +64,7 @@ const PAGE_2_MODELS: ModelCard[] = [
     fileCount: 3,
     totalSizeBytes: 300,
     status: 'ready',
+    isDuplicate: false,
     createdAt: '2024-01-03',
   },
 ];

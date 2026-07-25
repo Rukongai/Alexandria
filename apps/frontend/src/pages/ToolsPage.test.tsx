@@ -2,12 +2,66 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { scanDuplicates } from '../api/tools';
+import { ignoreDuplicates, markDuplicates, scanDuplicates } from '../api/tools';
 import { ToolsPage } from './ToolsPage';
 
-vi.mock('../api/tools', () => ({ scanDuplicates: vi.fn() }));
+vi.mock('../api/tools', () => ({
+  scanDuplicates: vi.fn(),
+  markDuplicates: vi.fn(),
+  ignoreDuplicates: vi.fn(),
+}));
 
 const mockScanDuplicates = vi.mocked(scanDuplicates);
+const mockMarkDuplicates = vi.mocked(markDuplicates);
+const mockIgnoreDuplicates = vi.mocked(ignoreDuplicates);
+
+const duplicateScanResult = {
+  scannedModelCount: 2,
+  scannedFileCount: 2,
+  redundantFileCount: 1,
+  fileReclaimableBytes: 100,
+  fileGroups: [
+    {
+      hash: 'same-file',
+      sizeBytes: 100,
+      reclaimableBytes: 100,
+      files: [
+        {
+          id: 'file-1',
+          modelId: 'model-1',
+          modelName: 'First model',
+          filename: 'part.stl',
+          relativePath: 'part.stl',
+          sizeBytes: 100,
+          createdAt: '2025-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'file-2',
+          modelId: 'model-2',
+          modelName: 'Second model',
+          filename: 'part-copy.stl',
+          relativePath: 'part-copy.stl',
+          sizeBytes: 100,
+          createdAt: '2025-02-01T00:00:00.000Z',
+        },
+      ],
+    },
+  ],
+  redundantModelCount: 0,
+  reclaimableBytes: 0,
+  groups: [],
+};
+
+const emptyScanResult = {
+  scannedModelCount: 2,
+  scannedFileCount: 2,
+  redundantFileCount: 0,
+  fileReclaimableBytes: 0,
+  fileGroups: [],
+  redundantModelCount: 0,
+  reclaimableBytes: 0,
+  groups: [],
+};
 
 function makeWrapper() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -21,7 +75,14 @@ function makeWrapper() {
 }
 
 describe('ToolsPage', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockMarkDuplicates.mockResolvedValue({ markedFileCount: 0, markedModelCount: 0 });
+    mockIgnoreDuplicates.mockResolvedValue({
+      ignoredFileGroupCount: 0,
+      ignoredModelGroupCount: 0,
+    });
+  });
 
   it('waits for the user to start a duplicate scan', () => {
     render(<ToolsPage />, { wrapper: makeWrapper() });
@@ -209,5 +270,71 @@ describe('ToolsPage', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
     expect(screen.getByRole('status').textContent).toMatch(/duplicate scan failed/i);
     expect(screen.getByRole('status').textContent).not.toMatch(/scan complete/i);
+  });
+
+  it('marks every reported duplicate with pending state, feedback, and a refreshed scan', async () => {
+    let finishMark!: (value: Awaited<ReturnType<typeof markDuplicates>>) => void;
+    mockScanDuplicates.mockResolvedValue(duplicateScanResult);
+    mockMarkDuplicates.mockReturnValue(new Promise((resolve) => { finishMark = resolve; }));
+
+    render(<ToolsPage />, { wrapper: makeWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: /scan library/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /mark all duplicates/i })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /mark all duplicates/i }));
+
+    await waitFor(() => expect(mockMarkDuplicates).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: /marking/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /ignore duplicates/i }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('status').textContent).toMatch(/marking all reported duplicate/i);
+
+    finishMark({ markedFileCount: 2, markedModelCount: 1 });
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(/marked 2 duplicate files and 1 duplicate model/i),
+      ).toHaveLength(2);
+    });
+    expect(mockScanDuplicates).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores the current groups and shows the refreshed empty result', async () => {
+    mockScanDuplicates
+      .mockResolvedValueOnce(duplicateScanResult)
+      .mockResolvedValueOnce(emptyScanResult);
+    mockIgnoreDuplicates.mockResolvedValue({
+      ignoredFileGroupCount: 1,
+      ignoredModelGroupCount: 0,
+    });
+
+    render(<ToolsPage />, { wrapper: makeWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: /scan library/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /ignore duplicates/i })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /ignore duplicates/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(/ignored 1 duplicate file group and 0 duplicate model groups/i),
+      ).toHaveLength(2);
+    });
+    expect(mockIgnoreDuplicates).toHaveBeenCalledOnce();
+    expect(mockScanDuplicates).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/no duplicate files or models found/i)).toBeTruthy();
+  });
+
+  it('shows an accessible error when a duplicate action fails', async () => {
+    mockScanDuplicates.mockResolvedValue(duplicateScanResult);
+    mockMarkDuplicates.mockRejectedValue(new Error('mark failed'));
+
+    render(<ToolsPage />, { wrapper: makeWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: /scan library/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /mark all duplicates/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /mark all duplicates/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/duplicates could not be marked/i);
+    });
+    expect(mockScanDuplicates).toHaveBeenCalledOnce();
   });
 });

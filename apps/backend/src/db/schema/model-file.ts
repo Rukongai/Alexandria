@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, bigint, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, bigint, boolean, timestamp, index } from 'drizzle-orm/pg-core';
 import { models } from './model.js';
 
 // ModelFiles table — individual files belonging to a model.
@@ -22,6 +22,9 @@ export const modelFiles = pgTable(
     storagePath: text('storage_path').notNull(),
     // SHA-256 hash computed at import time (per D7)
     hash: varchar('hash', { length: 64 }).notNull(),
+    // Maintained by duplicate reconciliation when this file belongs to an
+    // unignored exact file-hash duplicate group in its model's library.
+    isDuplicate: boolean('is_duplicate').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [

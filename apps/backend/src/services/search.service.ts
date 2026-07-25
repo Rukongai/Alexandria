@@ -267,6 +267,7 @@ export class PostgresSearchService implements ISearchService {
         name: models.name,
         slug: models.slug,
         status: models.status,
+        isDuplicate: models.isDuplicate,
         fileCount: models.fileCount,
         totalSizeBytes: models.totalSizeBytes,
         createdAt: models.createdAt,

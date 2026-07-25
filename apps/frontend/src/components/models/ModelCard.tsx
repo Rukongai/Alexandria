@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Package, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
+import { Package, AlertCircle, Loader2, CheckCircle2, Copy } from 'lucide-react';
 import type { ModelCard as ModelCardType } from '@alexandria/shared';
 import { Badge } from '../ui/badge';
 import { formatFileSize } from '../../lib/format';
@@ -96,6 +96,15 @@ export function ModelCard({ model, selectable, selected, onToggleSelect }: Model
 
       {/* Thumbnail area */}
       <div className="relative overflow-hidden bg-muted" style={{ aspectRatio: cardAspectRatio }}>
+        {model.isDuplicate && (
+          <Badge
+            variant="outline"
+            className="absolute right-2 top-2 z-10 gap-1 border-amber-500/50 bg-background/90 text-amber-700 shadow-sm backdrop-blur-sm dark:text-amber-300"
+          >
+            <Copy className="h-3 w-3" aria-hidden="true" />
+            Duplicate
+          </Badge>
+        )}
         {thumbnailSrc ? (
           // Wrapper carries the hover-scale; img carries the crop transform separately
           <div className="absolute inset-0 transition-transform group-hover:scale-105">

@@ -40,3 +40,13 @@ export interface DuplicateScanResult {
   groups: DuplicateGroup[];
   fileGroups: DuplicateFileGroup[];
 }
+
+export interface MarkDuplicatesResult {
+  markedFileCount: number;
+  markedModelCount: number;
+}
+
+export interface IgnoreDuplicatesResult {
+  ignoredFileGroupCount: number;
+  ignoredModelGroupCount: number;
+}

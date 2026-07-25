@@ -34,6 +34,7 @@ const makeModel = (overrides: Partial<ModelCard> = {}): ModelCard => ({
   fileCount: 3,
   totalSizeBytes: 1024 * 1024,
   status: 'ready',
+  isDuplicate: false,
   createdAt: '2024-01-01',
   ...overrides,
 });
@@ -84,6 +85,21 @@ describe('ModelList', () => {
 
     expect(screen.getByText('fdm')).toBeTruthy();
     expect(screen.getByText('functional')).toBeTruthy();
+  });
+
+  it('shows the duplicate indicator only for marked models', () => {
+    render(
+      <ModelList
+        models={[
+          makeModel({ id: 'duplicate', name: 'Duplicate Benchy', isDuplicate: true }),
+          makeModel({ id: 'original', name: 'Original Benchy', isDuplicate: false }),
+        ]}
+      />,
+      { wrapper },
+    );
+
+    expect(screen.getAllByText('Duplicate')).toHaveLength(1);
+    expect(screen.getByText('Duplicate').parentElement?.textContent).toContain('Duplicate Benchy');
   });
 
   it('renders a thumbnail img when showThumbnails=true (default)', () => {

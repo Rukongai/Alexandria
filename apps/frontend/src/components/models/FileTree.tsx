@@ -18,6 +18,7 @@ import {
   Archive,
   Loader2,
   Scissors,
+  Copy,
 } from 'lucide-react';
 import type { FileTreeNode, FileType } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
@@ -45,6 +46,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../ui/dialog';
+import { Badge } from '../ui/badge';
 
 interface FileNodeProps {
   node: FileTreeNode;
@@ -558,6 +560,15 @@ function FileNode({
       >
         {node.name}
       </span>
+      {node.isDuplicate && (
+        <Badge
+          variant="outline"
+          className="h-5 flex-shrink-0 gap-1 border-amber-500/50 px-1.5 text-[10px] text-amber-700 dark:text-amber-300"
+        >
+          <Copy className="h-2.5 w-2.5" aria-hidden="true" />
+          Duplicate
+        </Badge>
+      )}
       {canView3D && (
         <button
           type="button"

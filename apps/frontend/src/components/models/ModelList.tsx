@@ -1,9 +1,10 @@
 import { useNavigate } from 'react-router-dom';
-import { Package, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { Package, CheckCircle2, AlertCircle, Loader2, Copy } from 'lucide-react';
 import type { ModelCard } from '@alexandria/shared';
 import { formatFileSize } from '../../lib/format';
 import { cn } from '../../lib/utils';
 import { useLibraryPath } from '../../hooks/use-libraries';
+import { Badge } from '../ui/badge';
 
 interface ModelRowProps {
   model: ModelCard;
@@ -120,11 +121,22 @@ function ModelRow({ model, selectable, selected, onToggleSelect, showThumbnails 
       </div>
 
       {/* Name — flex-1, truncated */}
-      <div
-        className="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-medium"
-        title={model.name}
-      >
-        {model.name}
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span
+          className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-medium"
+          title={model.name}
+        >
+          {model.name}
+        </span>
+        {model.isDuplicate && (
+          <Badge
+            variant="outline"
+            className="h-5 flex-shrink-0 gap-1 border-amber-500/50 px-1.5 text-[10px] text-amber-700 dark:text-amber-300"
+          >
+            <Copy className="h-2.5 w-2.5" aria-hidden="true" />
+            Duplicate
+          </Badge>
+        )}
       </div>
 
       {/* Artist — fixed 140px */}

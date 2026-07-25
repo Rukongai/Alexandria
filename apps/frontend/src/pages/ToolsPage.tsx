@@ -1,16 +1,19 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
   CheckCircle2,
   Copy,
+  EyeOff,
   FileSearch,
   Loader2,
   RefreshCw,
+  Tags,
   Wrench,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { DuplicateFile, DuplicateModel, DuplicateScanResult } from '@alexandria/shared';
-import { scanDuplicates } from '../api/tools';
+import { ignoreDuplicates, markDuplicates, scanDuplicates } from '../api/tools';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { useLibraryPath } from '../hooks/use-libraries';
@@ -18,12 +21,59 @@ import { formatDate, formatFileSize } from '../lib/format';
 
 export function ToolsPage() {
   const libPath = useLibraryPath();
+  const queryClient = useQueryClient();
+  const [actionFeedback, setActionFeedback] = useState('');
   const scan = useQuery({
     queryKey: ['tools', 'duplicate-scan'],
     queryFn: scanDuplicates,
     enabled: false,
     retry: false,
   });
+  const refreshDuplicateData = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['tools', 'duplicate-scan'], refetchType: 'none' }),
+      queryClient.invalidateQueries({ queryKey: ['models'] }),
+      queryClient.invalidateQueries({ queryKey: ['model'] }),
+      queryClient.invalidateQueries({ queryKey: ['model-files'] }),
+    ]);
+    await scan.refetch();
+  };
+  const markMutation = useMutation({
+    mutationFn: markDuplicates,
+    onMutate: () => setActionFeedback(''),
+    onSuccess: async (result) => {
+      setActionFeedback(
+        `Marked ${countPhrase(result.markedFileCount, 'duplicate file')} and ${countPhrase(result.markedModelCount, 'duplicate model')}.`,
+      );
+      await refreshDuplicateData();
+    },
+  });
+  const ignoreMutation = useMutation({
+    mutationFn: ignoreDuplicates,
+    onMutate: () => setActionFeedback(''),
+    onSuccess: async (result) => {
+      setActionFeedback(
+        `Ignored ${countPhrase(result.ignoredFileGroupCount, 'duplicate file group')} and ${countPhrase(result.ignoredModelGroupCount, 'duplicate model group')}.`,
+      );
+      await refreshDuplicateData();
+    },
+  });
+  const actionPending = markMutation.isPending || ignoreMutation.isPending;
+  const actionError = markMutation.isError || ignoreMutation.isError;
+  let liveAnnouncement = '';
+  if (markMutation.isPending) {
+    liveAnnouncement = 'Marking all reported duplicate files and models.';
+  } else if (ignoreMutation.isPending) {
+    liveAnnouncement = 'Ignoring the reported duplicate groups.';
+  } else if (actionFeedback) {
+    liveAnnouncement = actionFeedback;
+  } else if (scan.isFetching) {
+    liveAnnouncement = 'Scanning library for duplicate files and models.';
+  } else if (scan.isError) {
+    liveAnnouncement = 'The duplicate scan failed.';
+  } else if (scan.data) {
+    liveAnnouncement = duplicateScanAnnouncement(scan.data);
+  }
 
   return (
     <div className="flex max-w-5xl flex-col gap-8 p-6">
@@ -62,7 +112,15 @@ export function ToolsPage() {
               </p>
             </div>
           </div>
-          <Button onClick={() => void scan.refetch()} disabled={scan.isFetching}>
+          <Button
+            onClick={() => {
+              setActionFeedback('');
+              markMutation.reset();
+              ignoreMutation.reset();
+              void scan.refetch();
+            }}
+            disabled={scan.isFetching || actionPending}
+          >
             {scan.isFetching ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : scan.data ? (
@@ -76,14 +134,26 @@ export function ToolsPage() {
 
         <div className="p-5">
           <p role="status" aria-live="polite" className="sr-only">
-            {scan.isFetching
-              ? 'Scanning library for duplicate files and models.'
-              : scan.isError
-                ? 'The duplicate scan failed.'
-                : scan.data
-                  ? duplicateScanAnnouncement(scan.data)
-                  : ''}
+            {liveAnnouncement}
           </p>
+          {actionFeedback && !actionPending && (
+            <div className="mb-5 flex items-start gap-2 rounded-lg border border-emerald-600/30 bg-emerald-600/5 p-3 text-sm text-foreground">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-600" />
+              <p>{actionFeedback} The duplicate scan has been refreshed.</p>
+            </div>
+          )}
+          {actionError && (
+            <div role="alert" className="mb-5 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+              <p className="text-sm font-medium text-destructive">
+                {markMutation.isError
+                  ? 'Duplicates could not be marked.'
+                  : 'Duplicate groups could not be ignored.'}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                No changes were applied. Try the action again.
+              </p>
+            </div>
+          )}
           {scan.isFetching && !scan.data ? (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -102,7 +172,14 @@ export function ToolsPage() {
               </p>
             </div>
           ) : scan.data ? (
-            <DuplicateResults result={scan.data} />
+            <DuplicateResults
+              result={scan.data}
+              onMark={() => markMutation.mutate()}
+              onIgnore={() => ignoreMutation.mutate()}
+              marking={markMutation.isPending}
+              ignoring={ignoreMutation.isPending}
+              actionsDisabled={actionPending || scan.isFetching}
+            />
           ) : (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Copy className="h-8 w-8 text-muted-foreground/60" />
@@ -133,7 +210,21 @@ function countPhrase(count: number, singular: string): string {
   return `${count.toLocaleString()} ${singular}${count === 1 ? '' : 's'}`;
 }
 
-function DuplicateResults({ result }: { result: DuplicateScanResult }) {
+function DuplicateResults({
+  result,
+  onMark,
+  onIgnore,
+  marking,
+  ignoring,
+  actionsDisabled,
+}: {
+  result: DuplicateScanResult;
+  onMark: () => void;
+  onIgnore: () => void;
+  marking: boolean;
+  ignoring: boolean;
+  actionsDisabled: boolean;
+}) {
   const hasDuplicateFiles = result.fileGroups.length > 0;
   const hasDuplicateModels = result.groups.length > 0;
 
@@ -156,6 +247,40 @@ function DuplicateResults({ result }: { result: DuplicateScanResult }) {
 
   return (
     <div className="flex flex-col gap-6">
+      <section
+        aria-labelledby="duplicate-actions-heading"
+        className="flex flex-col gap-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div>
+          <h2 id="duplicate-actions-heading" className="text-sm font-semibold text-foreground">
+            Review these duplicate results
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Marking adds a Duplicate indicator to every reported file and to any model whose every
+            file is duplicated. Ignoring excludes these groups from later scans. Neither action
+            deletes files.
+          </p>
+        </div>
+        <div className="flex flex-shrink-0 flex-wrap gap-2">
+          <Button variant="outline" onClick={onIgnore} disabled={actionsDisabled}>
+            {ignoring ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <EyeOff className="mr-2 h-4 w-4" />
+            )}
+            {ignoring ? 'Ignoring…' : 'Ignore duplicates'}
+          </Button>
+          <Button onClick={onMark} disabled={actionsDisabled}>
+            {marking ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Tags className="mr-2 h-4 w-4" />
+            )}
+            {marking ? 'Marking…' : 'Mark all duplicates'}
+          </Button>
+        </div>
+      </section>
+
       <section aria-labelledby="duplicate-files-heading" className="flex flex-col gap-4">
         <div>
           <h2 id="duplicate-files-heading" className="text-base font-semibold text-foreground">
@@ -272,8 +397,7 @@ function DuplicateResults({ result }: { result: DuplicateScanResult }) {
       )}
 
       <p className="text-xs text-muted-foreground">
-        Results are informational. Review file locations, model metadata, and collections before
-        deleting a copy.
+        Review file locations, model metadata, and collections before deleting a copy.
       </p>
     </div>
   );

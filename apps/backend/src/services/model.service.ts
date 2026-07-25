@@ -28,6 +28,7 @@ import { libraryService } from './library.service.js';
 import { storageService } from './storage.service.js';
 import { generateSlug } from '../utils/slug.js';
 import { metadataService } from './metadata.service.js';
+import { duplicateScannerService } from './duplicate-scanner.service.js';
 
 export interface CreateModelData {
   id?: string;
@@ -234,21 +235,34 @@ export class ModelService {
     status: ModelStatus,
     updates?: UpdateModelStatusData,
   ): Promise<void> {
-    await db
-      .update(models)
-      .set({
-        status,
-        updatedAt: new Date(),
-        ...(updates?.totalSizeBytes !== undefined && { totalSizeBytes: updates.totalSizeBytes }),
-        ...(updates?.fileCount !== undefined && { fileCount: updates.fileCount }),
-      })
-      .where(eq(models.id, modelId));
+    await db.transaction(async (tx) => {
+      const model = await this.getModelById(modelId, tx);
+      await tx
+        .update(models)
+        .set({
+          status,
+          updatedAt: new Date(),
+          ...(updates?.totalSizeBytes !== undefined && { totalSizeBytes: updates.totalSizeBytes }),
+          ...(updates?.fileCount !== undefined && { fileCount: updates.fileCount }),
+        })
+        .where(eq(models.id, modelId));
+      await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
+    });
   }
 
   async recalculateModelStats(
     modelId: string,
-    executor: DatabaseExecutor = db,
+    executor?: DatabaseExecutor,
   ): Promise<void> {
+    if (!executor) {
+      await db.transaction(async (tx) => {
+        const model = await this.getModelById(modelId, tx);
+        await this.recalculateModelStats(modelId, tx);
+        await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
+      });
+      return;
+    }
+
     const [stats] = await executor
       .select({
         fileCount: sql<number>`cast(count(${modelFiles.id}) as int)`,
@@ -272,8 +286,10 @@ export class ModelService {
     file: CreateModelFileData,
   ): Promise<{ id: string }> {
     return db.transaction(async (tx) => {
+      const model = await this.getModelById(modelId, tx);
       const [created] = await this.createModelFiles(modelId, [file], tx);
       await this.recalculateModelStats(modelId, tx);
+      await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
       return { id: created.id };
     });
   }
@@ -810,19 +826,23 @@ export class ModelService {
       throw notFound(`File not found: ${fileId}`);
     }
 
-    const [deletedFile] = await db
-      .delete(modelFiles)
-      .where(and(
-        eq(modelFiles.id, file.id),
-        eq(modelFiles.modelId, modelId),
-        eq(modelFiles.relativePath, file.relativePath),
-        eq(modelFiles.storagePath, file.storagePath),
-      ))
-      .returning({ id: modelFiles.id });
-    if (!deletedFile) {
-      throw conflict('File changed while it was being deleted; try again');
-    }
-    await this.recalculateModelStats(modelId);
+    await db.transaction(async (tx) => {
+      const model = await this.getModelById(modelId, tx);
+      const [deletedFile] = await tx
+        .delete(modelFiles)
+        .where(and(
+          eq(modelFiles.id, file.id),
+          eq(modelFiles.modelId, modelId),
+          eq(modelFiles.relativePath, file.relativePath),
+          eq(modelFiles.storagePath, file.storagePath),
+        ))
+        .returning({ id: modelFiles.id });
+      if (!deletedFile) {
+        throw conflict('File changed while it was being deleted; try again');
+      }
+      await this.recalculateModelStats(modelId, tx);
+      await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
+    });
     await storageService.delete(file.storagePath).catch(() => {});
   }
 
@@ -846,6 +866,7 @@ export class ModelService {
       ));
 
     await db.transaction(async (tx) => {
+      const model = await this.getModelById(modelId, tx);
       await tx
         .delete(modelFiles)
         .where(and(
@@ -855,9 +876,10 @@ export class ModelService {
       await tx
         .delete(modelFolders)
         .where(and(eq(modelFolders.modelId, modelId), this.descendantFilter(modelFolders.path, folderPath)));
+      await this.recalculateModelStats(modelId, tx);
+      await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
     });
 
-    await this.recalculateModelStats(modelId);
     await Promise.all(files.map((file) => storageService.delete(file.storagePath).catch(() => {})));
   }
 
@@ -1067,6 +1089,7 @@ export class ModelService {
 
         await this.recalculateModelStats(sourceModelId, tx);
         await this.recalculateModelStats(newModelId, tx);
+        await duplicateScannerService.reconcileDuplicateFlags(libraryId, tx);
       });
     } catch (error) {
       await Promise.all(copiedPaths.map((storagePath) =>
@@ -1255,6 +1278,7 @@ export class ModelService {
 
         await tx.delete(models).where(inArray(models.id, uniqueSourceIds));
         await this.recalculateModelStats(targetModelId, tx);
+        await duplicateScannerService.reconcileDuplicateFlags(libraryId, tx);
       });
     } catch (error) {
       await Promise.allSettled(
@@ -1277,19 +1301,33 @@ export class ModelService {
   }
 
   async deleteModel(id: string): Promise<void> {
-    await this.getModelById(id);
-    await db.delete(models).where(eq(models.id, id));
+    await db.transaction(async (tx) => {
+      const model = await this.getModelById(id, tx);
+      await tx.delete(models).where(eq(models.id, id));
+      await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
+    });
   }
 
   async deleteModels(
     ids: string[],
-    executor: DatabaseExecutor = db,
+    executor?: DatabaseExecutor,
   ): Promise<string[]> {
     if (ids.length === 0) return [];
+    if (!executor) {
+      return db.transaction((tx) => this.deleteModels(ids, tx));
+    }
+
+    const modelRows = await executor
+      .select({ libraryId: models.libraryId })
+      .from(models)
+      .where(inArray(models.id, ids));
     const deleted = await executor
       .delete(models)
       .where(inArray(models.id, ids))
       .returning({ id: models.id });
+    for (const libraryId of new Set(modelRows.map((model) => model.libraryId))) {
+      await duplicateScannerService.reconcileDuplicateFlags(libraryId, executor);
+    }
     return deleted.map((row) => row.id);
   }
 }
