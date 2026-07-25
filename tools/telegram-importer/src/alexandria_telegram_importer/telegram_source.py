@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from telethon import TelegramClient, utils
-from telethon.errors import FloodWaitError
+from telethon.errors import FileReferenceExpiredError, FloodWaitError
 from telethon.tl.types import Channel
 
+from . import parallel_download
 from .grouping import is_model_filename, safe_filename
 from .models import MediaKind, MediaRef
 
@@ -24,10 +25,14 @@ class TelegramSource:
         api_hash: str,
         session_path: Path,
         phone: str | None = None,
+        download_connections: int = parallel_download.DEFAULT_CONNECTIONS,
     ) -> None:
         session_path.parent.mkdir(parents=True, exist_ok=True)
         self._client = TelegramClient(str(session_path), api_id, api_hash)
         self._phone = phone
+        self._downloads = parallel_download.ConnectionPool(
+            self._client, download_connections
+        )
         self.entity: Any = None
         self.channel_id: int = 0
         self.channel_username: str | None = None
@@ -47,6 +52,7 @@ class TelegramSource:
         log.info("Reading Telegram channel %s", getattr(self.entity, "title", selected))
 
     async def close(self) -> None:
+        await self._downloads.close()
         await self._client.disconnect()
 
     async def _pick_channel(self) -> int | str:
@@ -131,14 +137,7 @@ class TelegramSource:
                     raise RuntimeError(
                         f"Telegram message {ref.message_id} no longer exists"
                     )
-                downloaded = await self._client.download_media(
-                    message, file=str(target), progress_callback=on_progress
-                )
-                if not downloaded:
-                    raise RuntimeError(
-                        f"Telegram media {ref.message_id} could not be downloaded"
-                    )
-                path = Path(downloaded)
+                path = await self._fetch(message, target, on_progress=on_progress)
                 log.info(
                     "Downloaded Telegram message %d to %s", ref.message_id, path.name
                 )
@@ -147,7 +146,50 @@ class TelegramSource:
                 if attempt == 2:
                     raise
                 await asyncio.sleep(error.seconds)
+            # Telethon renews a stale file reference inside its own downloader,
+            # but the parallel path holds the reference for the whole file. The
+            # next attempt refetches the message and so renews it.
+            except FileReferenceExpiredError:
+                if attempt == 2:
+                    raise
+                log.info(
+                    "Telegram file reference for message %d expired; refetching",
+                    ref.message_id,
+                )
         raise RuntimeError(f"Telegram media {ref.message_id} could not be downloaded")
+
+    async def _fetch(
+        self,
+        message: Any,
+        target: Path,
+        *,
+        on_progress: Callable[[int, int], None] | None,
+    ) -> Path:
+        """Download one message's media, preferring the parallel path."""
+        if plan := parallel_download.plan(message, self._downloads.size):
+            location, dc_id, size = plan
+            try:
+                return await parallel_download.download(
+                    self._downloads,
+                    location=location,
+                    dc_id=dc_id,
+                    size=size,
+                    target=target,
+                    on_progress=on_progress,
+                )
+            except parallel_download.UnsupportedDownload as error:
+                log.info(
+                    "Falling back to a single-connection download for %s: %s",
+                    target.name,
+                    error,
+                )
+
+        downloaded = await self._client.download_media(
+            message, file=str(target), progress_callback=on_progress
+        )
+        if not downloaded:
+            raise RuntimeError(f"Telegram media {message.id} could not be downloaded")
+        return Path(downloaded)
 
     def message_link(self, message_id: int) -> str | None:
         if self.channel_username:

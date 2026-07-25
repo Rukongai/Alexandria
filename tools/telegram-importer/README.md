@@ -48,6 +48,8 @@ Set `ALEXANDRIA_LIBRARY_ID` to import into a specific library owned by the Alexa
 
 Set `TELEGRAM_IMPORT_CONCURRENCY` to import several models at the same time; it defaults to `1` and `--concurrency` overrides it. See [Concurrency](#concurrency) for the trade-offs.
 
+Set `TELEGRAM_DOWNLOAD_CONNECTIONS` to change how many connections fetch one file at once; it defaults to `8` and `--download-connections` overrides it. See [Download speed](#download-speed).
+
 By default, the reusable Telegram login session and SQLite import state live under `$XDG_DATA_HOME/alexandria-telegram-importer`, or `~/.local/share/alexandria-telegram-importer` when `XDG_DATA_HOME` is unset. Override them with `TELEGRAM_SESSION_PATH` and `TELEGRAM_IMPORT_STATE_PATH`, or with the `--session` and `--state` command-line options.
 
 ## Preview and import
@@ -75,6 +77,7 @@ uv run alexandria-telegram-import \
   --library-id 00000000-0000-4000-8000-000000000000 \
   --from-message-id 2500 \
   --concurrency 3 \
+  --download-connections 8 \
   --verbose
 ```
 
@@ -95,6 +98,25 @@ Raising it overlaps the slow parts of independent models — one model downloads
 Parts of one split archive are still downloaded and uploaded one at a time, which bounds disk use per model and preserves the abort path when a set turns out to be a duplicate. Attachments for a model are likewise appended one at a time. Concurrency applies between logical models, not inside one.
 
 Interleaved concurrent runs make log output non-sequential; every import log line names the model it refers to. The progress display gives each concurrent model its own numbered row, and the final `Import state:` summary is unaffected.
+
+## Download speed
+
+`--download-connections N`, or `TELEGRAM_DOWNLOAD_CONNECTIONS`, sets how many connections fetch one file's chunks at the same time. It defaults to `8`; `1` disables parallel downloading and `16` is the maximum.
+
+Telegram serves file chunks one request at a time per connection, so a single-connection download cannot exceed one chunk per round trip no matter how much bandwidth is available. At the ~70 ms round trip to DC1 that ceiling is a few MB/s, and it is what limits the download rather than the network. Opening several connections and keeping a request in flight on each multiplies the ceiling by the connection count until the link itself saturates.
+
+Measured against a 78 MB model on a 20 MB/s link:
+
+| Connections | Throughput |
+|---|---|
+| 1 | 1.1 MB/s |
+| 8 | 15.3 MB/s |
+
+Past eight the gains flatten as the link saturates, which is why the maximum is 16. Chunks are written straight to their offset in the target file, so a completed download is byte-identical to a single-connection one and the size check that follows every download is unchanged.
+
+This applies to documents larger than 512 KB, which covers model archives. Photos, smaller files, and anything Telegram answers with a CDN redirect fall back to a single-connection download; the log names the file when that happens.
+
+The connections are opened once and reused for the whole run, and they are separate from `--concurrency`: `N` concurrent models share the same pool of download connections rather than each opening their own. Raising both multiplies Telegram's view of the account's activity, so raise `--concurrency` first and only lower `--download-connections` if flood waits appear.
 
 ## Progress output
 
