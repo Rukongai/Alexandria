@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from .alexandria import AlexandriaClient
 from .importer import ChannelImporter, describe_plan
+from .parallel_download import DEFAULT_CONNECTIONS, MAX_CONNECTIONS
 from .progress import reporter_from_args
 from .telegram_source import TelegramSource
 from .tracker import ImportTracker
@@ -31,6 +32,20 @@ def _concurrency(value: str) -> int:
         ) from error
     if parsed < 1:
         raise argparse.ArgumentTypeError("concurrency must be at least 1")
+    return parsed
+
+
+def _download_connections(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"download connections must be an integer, got {value!r}"
+        ) from error
+    if not 1 <= parsed <= MAX_CONNECTIONS:
+        raise argparse.ArgumentTypeError(
+            f"download connections must be between 1 and {MAX_CONNECTIONS}"
+        )
     return parsed
 
 
@@ -86,6 +101,17 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--download-connections",
+        type=_download_connections,
+        default=os.getenv("TELEGRAM_DOWNLOAD_CONNECTIONS", str(DEFAULT_CONNECTIONS)),
+        help=(
+            "Connections used to download one file's chunks at the same time. "
+            f"Telegram serves one chunk per round trip per connection, so this "
+            f"multiplies download speed directly (1 disables, default "
+            f"{DEFAULT_CONNECTIONS}, maximum {MAX_CONNECTIONS})"
+        ),
+    )
+    result.add_argument(
         "--dry-run",
         action="store_true",
         help="Show grouping without downloading or uploading",
@@ -115,6 +141,7 @@ async def run(args: argparse.Namespace) -> int:
         api_hash=api_hash,
         session_path=args.session,
         phone=os.getenv("TELEGRAM_PHONE") or os.getenv("PHONE") or None,
+        download_connections=args.download_connections,
     )
     alexandria: AlexandriaClient | None = None
     tracker: ImportTracker | None = None
