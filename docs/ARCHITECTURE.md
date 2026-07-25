@@ -510,6 +510,16 @@ The `showThumbnails` preference (also in `displayPrefs`) toggles thumbnail displ
 
 **Group view limitation:** For `axis=collections`, per-collection grouping requires collection membership on `ModelCard`, which the API does not currently return. Group view renders a single group for the collections axis. For `artists` and `tags`, grouping runs client-side on loaded models; group counts reflect loaded models only and will grow as infinite scroll loads more pages.
 
+### Bulk merge
+
+`components/models/BulkActions.tsx` — the bulk-action bar `PivotMain` mounts over the results region — shows a **Merge** action once two or more models are selected. It opens `components/models/MergeTargetDialog.tsx`, which lists the selection and asks which model to keep; every other ready selection becomes a source for a single `POST /models/:targetId/merge` request. No target is preselected, since the sources are deleted once the merge succeeds.
+
+The dialog mirrors three server-side constraints rather than discovering them through a failed request. The endpoint rejects any model that is not `ready`, so non-ready selections render as ineligible, are excluded from the request, and are reported as a skip count. `mergeModelsSchema` caps sources at 100, so a larger selection blocks with the number to deselect. And because merging needs at least two ready models, a selection that cannot reach two blocks as well.
+
+Selection outlives filter and search changes, so a selected model is not guaranteed to still be on the caller's loaded page. The dialog names candidates from the models the caller already has and fetches only the strays. If that fetch fails — a selected model deleted elsewhere, say — merging is blocked instead of silently folding in the subset that did resolve.
+
+On success the dialog drops its own `merge-selection` lookups and the detail-page dialog's `merge-candidates` searches from the cache, since those hold models the merge just deleted, and invalidates the model, collection, field-value, search, and smart-collection query families whose contents or counts the merge changed.
+
 ### Navigation
 
 Routes unchanged from P0: `/models/:id`, `/collections`, `/collections/:id`, `/upload`, `/settings`. The standalone `/collections` nav link was removed from the left rail (collections are now an axis, not a separate page), but the route itself still exists for direct navigation and is used by collection-detail links.
@@ -555,6 +565,8 @@ The Model Detail page (`pages/ModelDetailPage.tsx`) was fully redesigned in P2. 
 `components/models/ModelDetailPanel.tsx` is the tabbed right panel. `components/models/PanelTabs.tsx` is the generic full-width segmented control it uses. `PanelTabs` is typed with a string union for tab values and accepts icon components typed as `React.ComponentType<{ className?: string }>` (see the gotcha note in the Conventions doc).
 
 The Collections tab lists the model's current manual-collection memberships and can add the model to one or more additional collections without removing existing memberships. The browse bulk-action bar makes the same distinction explicit: **Add to collection** preserves existing memberships, while **Move** replaces them.
+
+The detail page also owns a per-model `MergeModelsDialog`, which keeps the current model as the merge target and searches the library for sources. The browse bar's bulk merge (see Pivot Workspace → Bulk merge) inverts that: the sources are already chosen and the dialog asks which one to keep.
 
 ### 3D Viewer
 

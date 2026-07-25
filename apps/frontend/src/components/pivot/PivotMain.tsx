@@ -427,6 +427,7 @@ export function PivotMain() {
 
       <BulkActions
         selectedIds={selected}
+        models={models}
         onClear={clear}
         onComplete={finishBulkOperation}
       />
