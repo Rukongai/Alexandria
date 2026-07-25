@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, FolderInput, FolderPlus, Loader2, Tag, Trash2, X } from 'lucide-react';
-import type { CollectionDetail } from '@alexandria/shared';
+import { AlertCircle, FolderInput, FolderPlus, GitMerge, Loader2, Tag, Trash2, X } from 'lucide-react';
+import type { CollectionDetail, ModelCard } from '@alexandria/shared';
 import { bulkDelete, bulkCollection, bulkMetadata } from '../../api/bulk';
 import { addModelsToCollection, getCollections } from '../../api/collections';
 import { getFieldValues } from '../../api/metadata';
@@ -9,9 +9,12 @@ import { useToast } from '../../hooks/use-toast';
 import { Button } from '../ui/button';
 import { AlertDialog } from '../ui/alert-dialog';
 import { TagAutocomplete } from '../metadata/tag-autocomplete';
+import { MergeTargetDialog } from './MergeTargetDialog';
 
 interface BulkActionsProps {
   selectedIds: Set<string>;
+  /** Models loaded by the caller, so the merge dialog can name the selection. */
+  models: ModelCard[];
   onClear: () => void;
   onComplete: () => void;
 }
@@ -234,14 +237,16 @@ function TagPicker({ selectedIds, onClose, onDone }: TagPickerProps) {
 }
 
 // --- Main BulkActions bar ---
-export function BulkActions({ selectedIds, onClear, onComplete }: BulkActionsProps) {
+export function BulkActions({ selectedIds, models, onClear, onComplete }: BulkActionsProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const count = selectedIds.size;
   const addTriggerRef = useRef<HTMLButtonElement>(null);
   const moveTriggerRef = useRef<HTMLButtonElement>(null);
+  const mergeTriggerRef = useRef<HTMLButtonElement>(null);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [activePicker, setActivePicker] = useState<'add' | 'move' | 'tag' | null>(null);
 
   function closeCollectionPicker(action: 'add' | 'move') {
@@ -342,6 +347,22 @@ export function BulkActions({ selectedIds, onClear, onComplete }: BulkActionsPro
           )}
         </div>
 
+        {/* Merge button — merging needs at least two models */}
+        {count >= 2 && (
+          <Button
+            ref={mergeTriggerRef}
+            size="sm"
+            variant="ghost"
+            className="text-background hover:text-background hover:bg-black/10 dark:hover:bg-white/10"
+            onClick={() => setShowMergeDialog(true)}
+            aria-haspopup="dialog"
+            aria-expanded={showMergeDialog}
+          >
+            <GitMerge className="h-4 w-4 mr-1.5" />
+            Merge
+          </Button>
+        )}
+
         {/* Delete button */}
         <Button
           size="sm"
@@ -378,6 +399,20 @@ export function BulkActions({ selectedIds, onClear, onComplete }: BulkActionsPro
           </div>
         )}
       </div>
+
+      {/* Merge target picker */}
+      <MergeTargetDialog
+        selectedIds={selectedIds}
+        models={models}
+        open={showMergeDialog}
+        onOpenChange={(open) => {
+          setShowMergeDialog(open);
+          // Dismissing without merging returns focus to the trigger; a completed
+          // merge unmounts this bar, so there is nothing to return focus to.
+          if (!open) requestAnimationFrame(() => mergeTriggerRef.current?.focus());
+        }}
+        onDone={onComplete}
+      />
 
       {/* Delete confirmation */}
       <AlertDialog
