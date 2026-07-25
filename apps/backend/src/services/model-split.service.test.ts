@@ -16,9 +16,13 @@ vi.mock('./storage.service.js', () => ({
 import { db } from '../db/index.js';
 import {
   libraries,
+  metadataFieldDefinitions,
   modelFiles,
   modelFolders,
+  modelMetadata,
+  modelTags,
   models,
+  tags,
   thumbnails,
   users,
 } from '../db/schema/index.js';
@@ -211,6 +215,198 @@ describe('ModelService – splitModelFolder', () => {
     expect(storageMocks.delete).toHaveBeenCalledWith(
       `thumbnails/${sourceModelId}/${imageFileId}_grid.webp`,
     );
+  });
+
+  it('should copy only the selected metadata fields and leave source metadata intact', async () => {
+    const fieldRows = await db
+      .select({ id: metadataFieldDefinitions.id, slug: metadataFieldDefinitions.slug })
+      .from(metadataFieldDefinitions)
+      .where(inArray(metadataFieldDefinitions.slug, ['artist', 'year']));
+    const fieldIds = new Map(fieldRows.map((field) => [field.slug, field.id]));
+    expect(fieldIds.get('artist')).toBeDefined();
+    expect(fieldIds.get('year')).toBeDefined();
+
+    await db.insert(modelMetadata).values([
+      {
+        modelId: sourceModelId,
+        fieldDefinitionId: fieldIds.get('artist')!,
+        value: 'Alexandria Artist',
+      },
+      {
+        modelId: sourceModelId,
+        fieldDefinitionId: fieldIds.get('year')!,
+        value: '2026',
+      },
+    ]);
+    const tagSlug = `split-tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const [tag] = await db.insert(tags).values({
+      name: `Split tag ${tagSlug}`,
+      slug: tagSlug,
+    }).returning();
+    await db.insert(modelTags).values({ modelId: sourceModelId, tagId: tag.id });
+
+    const result = await service.splitModelFolder(
+      sourceModelId,
+      'bundle',
+      'Metadata Copy',
+      userId,
+      libraryId,
+      ['artist', 'tags'],
+    );
+
+    const createdMetadata = await db
+      .select({ slug: metadataFieldDefinitions.slug, value: modelMetadata.value })
+      .from(modelMetadata)
+      .innerJoin(
+        metadataFieldDefinitions,
+        eq(modelMetadata.fieldDefinitionId, metadataFieldDefinitions.id),
+      )
+      .where(eq(modelMetadata.modelId, result.newModelId));
+    const createdTags = await db
+      .select({ id: modelTags.tagId })
+      .from(modelTags)
+      .where(eq(modelTags.modelId, result.newModelId));
+
+    expect(createdMetadata).toEqual([{ slug: 'artist', value: 'Alexandria Artist' }]);
+    expect(createdTags).toEqual([{ id: tag.id }]);
+    expect(await db.select().from(modelMetadata).where(eq(modelMetadata.modelId, sourceModelId)))
+      .toHaveLength(2);
+    expect(await db.select().from(modelTags).where(eq(modelTags.modelId, sourceModelId)))
+      .toEqual([{ modelId: sourceModelId, tagId: tag.id }]);
+  });
+
+  it('should reject a selected metadata field that no longer exists', async () => {
+    await expect(service.splitModelFolder(
+      sourceModelId,
+      'bundle',
+      'Stale Metadata Selection',
+      userId,
+      libraryId,
+      ['deleted-field'],
+    )).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      field: 'metadataFieldSlugs',
+    });
+
+    expect(await db.select().from(models).where(eq(models.userId, userId))).toHaveLength(1);
+    expect(storageMocks.delete).toHaveBeenCalledTimes(3);
+  });
+
+  it('should hold selected metadata field definitions until the split commits', async () => {
+    const fieldSlug = `split-lock-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const [field] = await db.insert(metadataFieldDefinitions).values({
+      name: 'Split Lock Field',
+      slug: fieldSlug,
+      type: 'text',
+      isDefault: false,
+      isFilterable: false,
+      isBrowsable: false,
+      sortOrder: 99,
+    }).returning();
+    const originalRecalculate = service.recalculateModelStats.bind(service);
+    let releaseStats!: () => void;
+    let markStatsReached!: () => void;
+    const statsGate = new Promise<void>((resolve) => { releaseStats = resolve; });
+    const statsReached = new Promise<void>((resolve) => { markStatsReached = resolve; });
+    let pauseNextStats = true;
+    const statsSpy = vi.spyOn(service, 'recalculateModelStats').mockImplementation(
+      async (modelId, executor) => {
+        if (pauseNextStats) {
+          pauseNextStats = false;
+          markStatsReached();
+          await statsGate;
+        }
+        return originalRecalculate(modelId, executor);
+      },
+    );
+    const splitPromise = service.splitModelFolder(
+      sourceModelId,
+      'bundle',
+      'Locked Metadata Definition',
+      userId,
+      libraryId,
+      [fieldSlug],
+    );
+    let deletionSettled = false;
+    let deletionPromise: Promise<unknown> | undefined;
+
+    try {
+      await statsReached;
+      deletionPromise = db
+        .delete(metadataFieldDefinitions)
+        .where(eq(metadataFieldDefinitions.id, field.id))
+        .then((result) => {
+          deletionSettled = true;
+          return result;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(deletionSettled).toBe(false);
+
+      releaseStats();
+      const result = await splitPromise;
+      await deletionPromise;
+      expect(deletionSettled).toBe(true);
+      expect(await service.getModelById(result.newModelId)).toMatchObject({
+        name: 'Locked Metadata Definition',
+        status: 'ready',
+      });
+    } finally {
+      releaseStats();
+      statsSpy.mockRestore();
+      await Promise.allSettled([
+        splitPromise,
+        deletionPromise ?? Promise.resolve(),
+        db.delete(metadataFieldDefinitions).where(eq(metadataFieldDefinitions.id, field.id)),
+      ]);
+    }
+  });
+
+  it('should roll back copied metadata and clean storage when a later transaction step fails', async () => {
+    const [artistField] = await db
+      .select({ id: metadataFieldDefinitions.id })
+      .from(metadataFieldDefinitions)
+      .where(eq(metadataFieldDefinitions.slug, 'artist'))
+      .limit(1);
+    if (!artistField) throw new Error('Seeded artist metadata field is required');
+    await db.insert(modelMetadata).values({
+      modelId: sourceModelId,
+      fieldDefinitionId: artistField.id,
+      value: 'Rollback Artist',
+    });
+    const tagSlug = `rollback-tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const [tag] = await db.insert(tags).values({
+      name: `Rollback tag ${tagSlug}`,
+      slug: tagSlug,
+    }).returning();
+    await db.insert(modelTags).values({ modelId: sourceModelId, tagId: tag.id });
+    const statsSpy = vi
+      .spyOn(service, 'recalculateModelStats')
+      .mockRejectedValueOnce(new Error('stats failed'));
+
+    try {
+      await expect(service.splitModelFolder(
+        sourceModelId,
+        'bundle',
+        'Rollback Metadata',
+        userId,
+        libraryId,
+        ['artist', 'tags'],
+      )).rejects.toThrow('stats failed');
+    } finally {
+      statsSpy.mockRestore();
+    }
+
+    expect(await db.select().from(models).where(eq(models.userId, userId))).toHaveLength(1);
+    expect(await db.select().from(modelMetadata).where(eq(modelMetadata.modelId, sourceModelId)))
+      .toHaveLength(1);
+    expect(await db.select().from(modelTags).where(eq(modelTags.modelId, sourceModelId)))
+      .toEqual([{ modelId: sourceModelId, tagId: tag.id }]);
+    expect((await service.getModelFiles(sourceModelId)).map((file) => file.relativePath)).toEqual([
+      'bundle/cover.png',
+      'bundle/nested/part.stl',
+      'keep.stl',
+    ]);
+    expect(storageMocks.delete).toHaveBeenCalledTimes(3);
   });
 
   it('should leave database state unchanged and clean copied files when a copy fails', async () => {

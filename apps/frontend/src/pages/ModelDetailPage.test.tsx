@@ -210,6 +210,18 @@ describe('ModelDetailPage mutations', () => {
   });
 
   it('splits a folder, refreshes source and discovery caches, then opens the new model', async () => {
+    vi.mocked(getModel).mockResolvedValueOnce({
+      ...model,
+      metadata: [
+        {
+          fieldSlug: 'artist',
+          fieldName: 'Artist',
+          type: 'text',
+          value: 'Printed Obsession',
+          displayValue: 'Printed Obsession',
+        },
+      ],
+    });
     vi.mocked(splitModelFolder).mockResolvedValue({
       sourceModelId: 'model-1',
       newModelId: 'model-new',
@@ -227,12 +239,14 @@ describe('ModelDetailPage mutations', () => {
     fireEvent.change(screen.getByLabelText('New model name'), {
       target: { value: 'Large Benchy' },
     });
+    fireEvent.click(screen.getByLabelText('Artist'));
     fireEvent.click(screen.getByRole('button', { name: 'Create Model' }));
 
     await waitFor(() => {
       expect(splitModelFolder).toHaveBeenCalledWith('model-1', {
         path: 'variants/large',
         name: 'Large Benchy',
+        metadataFieldSlugs: ['artist'],
       });
     });
 
@@ -246,6 +260,7 @@ describe('ModelDetailPage mutations', () => {
       ['model-files', 'model-1'],
       ['models'],
       ['search'],
+      ['field-values'],
     ]) {
       expect(invalidateQueries).toHaveBeenCalledWith({ queryKey });
     }

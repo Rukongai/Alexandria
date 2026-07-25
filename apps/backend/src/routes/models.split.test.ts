@@ -49,7 +49,11 @@ describe('Model folder split route', () => {
     const response = await app.inject({
       method: 'POST',
       url: `/models/${SOURCE_MODEL_ID}/folders/split`,
-      payload: { path: 'bundle/parts', name: 'Parts' },
+      payload: {
+        path: 'bundle/parts',
+        name: 'Parts',
+        metadataFieldSlugs: ['artist', 'tags'],
+      },
     });
 
     expect(response.statusCode).toBe(201);
@@ -61,6 +65,7 @@ describe('Model folder split route', () => {
       'Parts',
       USER_ID,
       LIBRARY_ID,
+      ['artist', 'tags'],
     );
     expect(response.json()).toEqual({
       data: {
@@ -78,6 +83,39 @@ describe('Model folder split route', () => {
       method: 'POST',
       url: `/models/${SOURCE_MODEL_ID}/folders/split`,
       payload: { path: 'bundle', name: '   ' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mocks.splitModelFolder).not.toHaveBeenCalled();
+  });
+
+  it('should default an omitted metadata selection to copying nothing', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/models/${SOURCE_MODEL_ID}/folders/split`,
+      payload: { path: 'bundle', name: 'Bundle' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(mocks.splitModelFolder).toHaveBeenCalledWith(
+      SOURCE_MODEL_ID,
+      'bundle',
+      'Bundle',
+      USER_ID,
+      LIBRARY_ID,
+      [],
+    );
+  });
+
+  it('should reject duplicate metadata selections before calling the service', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/models/${SOURCE_MODEL_ID}/folders/split`,
+      payload: {
+        path: 'bundle',
+        name: 'Bundle',
+        metadataFieldSlugs: ['artist', 'artist'],
+      },
     });
 
     expect(response.statusCode).toBe(400);

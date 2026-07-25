@@ -694,6 +694,7 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
         body.name,
         request.user!.id,
         request.libraryId!,
+        body.metadataFieldSlugs,
       );
 
       return reply.status(201).send({ data: result, meta: null, errors: null });

@@ -1295,7 +1295,8 @@ Move all contents of one folder into a new model. The selected folder itself is 
 ```json
 {
   "path": "bundle/parts",
-  "name": "Printable Parts"
+  "name": "Printable Parts",
+  "metadataFieldSlugs": ["artist", "tags"]
 }
 ```
 
@@ -1303,6 +1304,7 @@ Move all contents of one folder into a new model. The selected folder itself is 
 |-------|------|-------------|
 | `path` | string | Required relative folder path, 1–1000 characters. Leading/trailing slashes and whitespace around path segments are normalized; empty, `.`, `..`, control-character, and over-255-character segments are rejected. The folder must exist and contain at least one file. |
 | `name` | string | Required new model name, trimmed, 1–255 characters. |
+| `metadataFieldSlugs` | string[] | Metadata fields to copy from the source model. At most 100 unique slugs; each is trimmed, nonblank, and at most 255 characters. Omission is accepted as an empty array for compatibility. The special `tags` slug copies tag memberships. |
 
 **Response (201):**
 
@@ -1320,11 +1322,17 @@ Move all contents of one folder into a new model. The selected folder itself is 
 
 `data` is a `SplitModelFolderResponse`. Existing `ModelFile` and `Thumbnail` IDs and their associations are preserved. File and thumbnail objects are copied to storage keys belonging to the new model, then their database rows are reassigned in one transaction. If a moved image was the source model's selected preview, that selection and its crop settings move to the new model; otherwise the source preview is unchanged. File count and total size are recalculated for both models.
 
-The new model has `sourceType: "manual"` and `status: "ready"`. It starts without the source model's metadata, collection memberships, description, or original-filename provenance; those values and relationships remain on the source model.
+The new model has `sourceType: "manual"` and `status: "ready"`. It receives only the populated
+source metadata fields named in `metadataFieldSlugs`; selecting `tags` copies the source model's
+tag memberships. Metadata is copied inside the same database transaction as the split and remains
+on the source model. Collection memberships, description, and original-filename or other source
+provenance are never copied.
 
-Storage copies happen before the database transaction. The transaction locks the source and confirms that the selected file and folder rows did not change while copying; a concurrent change returns `409 CONFLICT`. A copy or transaction failure leaves database state unchanged and triggers best-effort cleanup of every object whose copy completed successfully. After commit, removal of the source storage objects is best-effort and does not change the successful response.
+Storage copies happen before the database transaction. The transaction locks the source and selected metadata-field definitions, and confirms that the selected file and folder rows did not change while copying; a concurrent folder change returns `409 CONFLICT`, while a selected metadata field that was already deleted returns `400 VALIDATION_ERROR`. A copy or transaction failure leaves database state unchanged and triggers best-effort cleanup of every object whose copy completed successfully. After commit, removal of the source storage objects is best-effort and does not change the successful response.
 
-The endpoint returns `400 VALIDATION_ERROR` when the source is not ready, the name/path is invalid, or the folder contains no files. It returns `404 NOT_FOUND` when the owned active-library source or requested folder does not exist.
+The endpoint returns `400 VALIDATION_ERROR` when the source is not ready, the name, path, or
+metadata-field selection is invalid, or the folder contains no files. It returns `404 NOT_FOUND`
+when the owned active-library source or requested folder does not exist.
 
 ---
 

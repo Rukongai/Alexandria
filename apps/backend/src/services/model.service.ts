@@ -27,6 +27,7 @@ import type { Model } from '../db/schema/model.js';
 import { libraryService } from './library.service.js';
 import { storageService } from './storage.service.js';
 import { generateSlug } from '../utils/slug.js';
+import { metadataService } from './metadata.service.js';
 
 export interface CreateModelData {
   id?: string;
@@ -866,6 +867,7 @@ export class ModelService {
     requestedName: string,
     userId: string,
     libraryId: string,
+    requestedMetadataFieldSlugs: string[] = [],
   ): Promise<SplitModelFolderResponse> {
     const folderPath = this.normalizeFolderPath(requestedPath);
     const name = requestedName.trim();
@@ -875,6 +877,9 @@ export class ModelService {
     if (name.length > 255) {
       throw validationError('Model name must be 255 characters or fewer', 'name');
     }
+    const metadataFieldSlugs = [...new Set(
+      requestedMetadataFieldSlugs.map((slug) => slug.trim()).filter(Boolean),
+    )];
 
     const source = await this.requireOwnedModel(sourceModelId, userId, libraryId);
     if (source.status !== 'ready') {
@@ -999,6 +1004,13 @@ export class ModelService {
           sourceType: 'manual',
           status: 'ready',
         }, tx);
+
+        await metadataService.copyModelMetadata(
+          sourceModelId,
+          newModelId,
+          metadataFieldSlugs,
+          tx,
+        );
 
         for (const folderRow of folders) {
           if (folderRow.path === folderPath) {

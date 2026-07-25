@@ -119,6 +119,7 @@ export interface DeleteModelFolderRequest {
 export interface SplitModelFolderRequest {
   path: string;
   name: string;
+  metadataFieldSlugs?: string[];
 }
 
 export interface SplitModelFolderResponse {

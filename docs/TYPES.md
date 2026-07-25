@@ -891,8 +891,14 @@ interface UpdateModelRequest {
 interface SplitModelFolderRequest {
   path: string; // relative folder path; 1–1000 characters before service-level normalization
   name: string; // trimmed new-model name; 1–255 characters
+  metadataFieldSlugs?: string[]; // selected source fields to copy; defaults to [] when omitted
 }
 ```
+
+`metadataFieldSlugs` accepts at most 100 unique slugs. Each slug is trimmed and must contain
+1–255 characters. An omitted array is accepted as `[]` for compatibility. The special `tags`
+slug selects the source model's tag memberships; other slugs select values stored for their
+metadata field definitions. Only selected values are copied, and the source model retains them.
 
 ### Collection Requests
 

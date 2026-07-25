@@ -231,9 +231,9 @@ export function ModelDetailPage() {
     : undefined;
 
   const splitFolderMutation = useMutation({
-    mutationFn: async ({ path, name }: SplitModelFolderRequest) => {
+    mutationFn: async ({ path, name, metadataFieldSlugs = [] }: SplitModelFolderRequest) => {
       if (!id) throw new Error('Model id is required');
-      return splitModelFolder(id, { path, name });
+      return splitModelFolder(id, { path, name, metadataFieldSlugs });
     },
     onSuccess: async (result, variables) => {
       await Promise.all([
@@ -241,6 +241,7 @@ export function ModelDetailPage() {
         queryClient.invalidateQueries({ queryKey: ['model-files', result.sourceModelId] }),
         queryClient.invalidateQueries({ queryKey: ['models'] }),
         queryClient.invalidateQueries({ queryKey: ['search'] }),
+        queryClient.invalidateQueries({ queryKey: ['field-values'] }),
       ]);
       toast({
         title: `${variables.name} created`,
@@ -428,13 +429,14 @@ export function ModelDetailPage() {
         open={Boolean(splitFolderTarget)}
         folderPath={splitFolderTarget?.path ?? ''}
         initialName={splitFolderTarget?.name ?? ''}
+        metadata={model?.metadata ?? []}
         onOpenChange={(open) => {
           if (!open) setSplitFolderTarget(null);
         }}
-        onConfirm={(name) => {
+        onConfirm={(name, metadataFieldSlugs) => {
           if (!splitFolderTarget) return Promise.reject(new Error('Folder is required'));
           return splitFolderMutation
-            .mutateAsync({ path: splitFolderTarget.path, name })
+            .mutateAsync({ path: splitFolderTarget.path, name, metadataFieldSlugs })
             .then(() => undefined);
         }}
       />
