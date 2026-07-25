@@ -1,0 +1,16 @@
+# Use with docker-compose.yml when PostgreSQL is provided by a hosted service.
+# The local postgres service is placed behind an inactive profile, and the
+# backend's dependency on it becomes optional.
+services:
+  postgres:
+    profiles:
+      - local-database
+
+  backend:
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the hosted PostgreSQL connection string}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-5}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
