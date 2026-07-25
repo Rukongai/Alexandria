@@ -8,10 +8,15 @@ import { Agent as HttpsAgent } from 'node:https';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { config, type AppConfig } from '../config/index.js';
+import {
+  config,
+  resolveS3ThumbnailCachePath,
+  type AppConfig,
+} from '../config/index.js';
 import { storageError } from '../utils/errors.js';
 import { EtagCalculator } from '../utils/etag.js';
 import { S3StorageService } from './s3-storage.service.js';
+import { S3ThumbnailCacheService } from './s3-thumbnail-cache.service.js';
 import { observeThrottling } from './s3-throttling.js';
 import { validateStorageKey } from './storage-key.js';
 
@@ -362,11 +367,23 @@ export function createStorageService(appConfig: AppConfig = config): IStorageSer
   // provider is metering us" from "the network is slow".
   observeThrottling(client);
 
-  return new S3StorageService({
+  const s3Storage = new S3StorageService({
     client,
     bucket: appConfig.s3.bucket,
     prefix: appConfig.s3.prefix,
   });
+
+  if (appConfig.s3ThumbnailCacheMaxBytes > 0) {
+    return new S3ThumbnailCacheService({
+      storage: s3Storage,
+      cacheRoot: resolveS3ThumbnailCachePath(
+        appConfig.storagePath,
+        appConfig.s3ThumbnailCachePath,
+      ),
+      maxBytes: appConfig.s3ThumbnailCacheMaxBytes,
+    });
+  }
+  return s3Storage;
 }
 
 export const storageService = createStorageService();
@@ -374,7 +391,7 @@ export const storageService = createStorageService();
 export async function validateStorageBackend(
   storage: IStorageService = storageService,
 ): Promise<void> {
-  if (storage instanceof S3StorageService) {
+  if (storage instanceof S3StorageService || storage instanceof S3ThumbnailCacheService) {
     await storage.validateBucketAccess();
   }
 }

@@ -38,6 +38,25 @@ describe('migrateLocalStorage', () => {
     expect(onProgress).toHaveBeenCalledTimes(2);
   });
 
+  it('never treats the reserved S3 thumbnail cache as a migration source', async () => {
+    const source = await createLocalStorage();
+    const target = await createLocalStorage();
+    await source.store('models/one/model.stl', Buffer.from('mesh'));
+    await fsPromises.mkdir(
+      path.join(source.getStorageRoot(), '.cache/s3-thumbnails/one'),
+      { recursive: true },
+    );
+    await fsPromises.writeFile(
+      path.join(source.getStorageRoot(), '.cache/s3-thumbnails/one/preview.webp'),
+      Buffer.from('cached-only'),
+    );
+
+    const result = await migrateLocalStorage(source, target);
+
+    expect(result).toEqual({ copied: 1, skipped: 0, total: 1 });
+    await expect(target.exists('.cache/s3-thumbnails/one/preview.webp')).resolves.toBe(false);
+  });
+
   it('skips objects whose size and SHA-256 digest already match', async () => {
     const source = await createLocalStorage();
     const target = await createLocalStorage();

@@ -57,7 +57,7 @@ Compose reads `.env` from the repository root. The following settings control th
 
 The root `.env.example` also contains `DATABASE_URL`, `REDIS_URL`, `STORAGE_PATH`, `PORT`, `HOST`, and `NODE_ENV` for running the backend directly during development. `npm run dev:up` derives a blank `DATABASE_URL` from the Postgres values and supplies local-development-only defaults for blank deployment secrets; Compose supplies its own container-network values for those settings.
 
-Local storage is the default. Set `STORAGE_BACKEND=s3` and configure the `S3_*` and AWS credential variables to use private S3-compatible object storage. See [`STORAGE.md`](STORAGE.md) for the complete provider configuration and migration procedure.
+Local storage is the default. Set `STORAGE_BACKEND=s3` and configure the `S3_*` and AWS credential variables to use private S3-compatible object storage. S3 deployments also keep a rebuildable local thumbnail cache by default; `S3_THUMBNAIL_CACHE_MAX_BYTES` controls its size and `S3_THUMBNAIL_CACHE_PATH` can move it to a dedicated persistent path. See [`STORAGE.md`](STORAGE.md) for the complete provider configuration and migration procedure.
 
 ## Images and releases
 
@@ -85,9 +85,9 @@ The Compose project deliberately retains the legacy name `docker`, so existing i
 |---|---|
 | `docker_pgdata` | PostgreSQL database |
 | `docker_redisdata` | Redis append-only queue data |
-| `docker_storagedata` | Locally managed model files and thumbnails |
+| `docker_storagedata` | Locally managed objects; in S3 mode, migration/rollback sources and the rebuildable thumbnail cache |
 
-Normal container replacement and `docker compose down` preserve these volumes. `docker compose down --volumes` deletes all three and should be treated as destructive. Back up PostgreSQL and `docker_storagedata` together so database file records remain consistent with stored objects. When using S3, include the bucket and prefix in the backup plan even though the local storage volume remains mounted for migration and rollback.
+Normal container replacement and `docker compose down` preserve these volumes. `docker compose down --volumes` deletes all three and should be treated as destructive. Back up PostgreSQL and `docker_storagedata` together so database file records remain consistent with stored objects. When using S3, include the bucket and prefix in the backup plan even though the local storage volume remains mounted for migration and rollback; the reserved local thumbnail-cache directory is rebuildable and does not need to be included in backups.
 
 Useful operational commands are:
 
