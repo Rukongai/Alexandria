@@ -142,6 +142,10 @@ npm run dev
 
 To start Postgres and Redis, apply migrations and seed data, then run the development servers in one command, use `npm run dev:up`. Blank deployment secrets in `.env.example` receive local-development-only defaults in this script; the production Compose stack still requires explicit secrets.
 
+### Companion tools
+
+[`tools/telegram-importer`](tools/telegram-importer/README.md) is a standalone Python CLI for importing model media from a Telegram channel through a Telegram user account. It previews channel grouping, supports recognized split ZIP and RAR sets, and resumes interrupted Alexandria staged uploads from local SQLite state.
+
 To run a single app:
 
 ```bash

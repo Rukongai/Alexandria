@@ -109,6 +109,45 @@ The backend applies migrations at every startup and keeps its application pool o
 
 PostgreSQL stores metadata and application state, not model-file bytes. Moving only `DATABASE_URL` to a hosted service does not make local managed storage portable to another host; deployments that need host mobility also require the S3-compatible storage backend. Operational setup is documented in `docs/HOSTED_DATABASE.md`.
 
+### Companion utilities
+
+`tools/telegram-importer/` is an optional, separately installed Python userbot CLI. It reads
+Telegram channel history with Telethon and drives Alexandria exclusively through the existing
+authenticated staged-upload API. It is not part of the backend runtime and does not write to the
+database or storage adapter directly. Complete archives use the normal chunked upload path, split
+ZIP/RAR sets use multipart `split` mode, and preceding Telegram media is appended to the staged
+session before commit. The utility owns its SQLite restart and duplicate state and short-lived local
+downloads; Alexandria continues to own all committed files through its configured local or S3
+storage backend.
+
+Duplicate detection is local to the utility's state database and has two layers. Before download, a
+signature over the complete logical model's Telegram document/photo IDs and reported sizes
+can match media already associated with a completed import. After download, a signature over the
+SHA-256 hashes of every model file or split-archive part catches byte-identical media with a
+different Telegram identity. A match is honored only when its persisted Alexandria model ID still
+resolves as `ready`; the duplicate record is then completed against that existing model. Telegram
+identity is not a content hash, and the SHA-256 layer compares archive bytes rather than extracted
+contents, so recompressed or repartitioned archives are distinct. Attachments are excluded from both
+signatures and remain scoped to the model selected by Telegram grouping. Multipart signatures bind
+each identity or hash to its canonical split-archive role, preventing swapped part contents from
+matching while remaining independent of Telegram message order. For multipart uploads, the
+content decision occurs only after every part is hashed; if prior parts were already initialized,
+the utility requests a best-effort abort for all of their upload IDs before recording the duplicate
+and removes its local part files. On startup, the SQLite tracker adds missing nullable signature and
+duplicate-link columns and creates lookup indexes, so existing state files migrate in place.
+
+Logical models are imported under a configurable concurrency limit that defaults to one, preserving
+the original sequential message order. Concurrency applies between models, not within one: the parts
+of a split archive and a model's attachments are still transferred one at a time, which bounds local
+disk use per model and preserves the abort path for a duplicate set. Because both duplicate layers
+match only completed records, concurrent imports of identical media would otherwise each miss the
+other and create separate models. An in-process gate holds each signature for the duration of its
+import, so a concurrent twin waits and then resolves against the completed original. The gate is
+acquired Telegram-signature first and content-signature second, and a holder always owns a
+concurrency slot, so neither the gate nor the semaphore can deadlock the run. This coordination is
+in-process only; the existing exclusive lock on the state file remains what prevents a second
+importer process from racing the same channel.
+
 ---
 
 ## Data Model: Library Scope
@@ -560,6 +599,8 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | POST | /models/import | Folder import (immediate; no staged session) | IngestionService → JobService | Yes |
 | GET | /models/import-sessions | List active staged sessions | ImportSessionService | Yes |
 | GET | /models/import-sessions/:id | Poll a single session | ImportSessionService | No (userId) |
+| POST | /models/import-sessions/:id/extract | Extract a nested staged archive | IngestionService → FileProcessingService | Yes |
+| POST | /models/import-sessions/:id/files | Append loose files to a staged model | IngestionService → FileProcessingService | Yes |
 | POST | /models/import-sessions/:id/commit | Commit session → create model | IngestionService → JobService | Yes |
 | DELETE | /models/import-sessions/:id | Discard session + staged files | IngestionService | No (userId) |
 | GET | /models/:id/status | Processing status | JobService | No (userId) |
