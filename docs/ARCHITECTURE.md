@@ -351,11 +351,13 @@ On startup, S3 mode performs `HeadBucket` validation before database migration a
 
 ### DuplicateScannerService
 
-**Owns:** Read-only detection and reporting of exact duplicate models within one authenticated user's active library.
+**Owns:** Read-only detection and reporting of exact duplicate files and exact duplicate models within one authenticated user's active library.
 
 **Does not own:** File hashing, model deletion, model merging, or any other mutation.
 
-**Behavior:** `scanDuplicates(libraryId)` considers only `ready` models that have at least one file. The route supplies the ownership-checked `request.libraryId` produced by `requireLibrary`. PostgreSQL aggregates the ordered file-hash multiset into one row per model before results cross the database boundary, and concurrent requests for the same library share one in-flight scan. Sorting makes file order irrelevant while preserving repeated hashes, so a model containing the same file twice does not match one containing it once. Filenames and relative paths do not participate in matching. Only identities shared by at least two models are returned. PresenterService formats timestamps and assembles per-group and aggregate counts and reclaimable-byte estimates. The operation is report-only and never changes models or files.
+**Behavior:** `scanDuplicates(libraryId)` considers only `ready` models that have at least one file. The route supplies the ownership-checked `request.libraryId` produced by `requireLibrary`, and concurrent requests for the same library share one in-flight scan. PostgreSQL aggregates every eligible model's complete sorted multiset of file hashes into one row per model; a second query returns file detail only for hashes that occur more than once in the same scope. This bounds transferred and retained detail to actual duplicate-file candidates instead of every stored file. Whole-model identity remains independent of file order while preserving repeated hashes: a model containing the same file twice does not match one containing it once. Filenames and relative paths participate in neither form of matching, and only file hashes or whole-model identities shared by at least two candidates are returned.
+
+File candidates are ordered by file creation time and file UUID, with owning-model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Whole-model candidates remain oldest-first by model creation time and UUID, and whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. PresenterService formats timestamps and assembles per-group and aggregate counts and two independent reclaimable-byte estimates. File-level savings can overlap whole-model savings, so clients must not add `fileReclaimableBytes` to `reclaimableBytes`. The operation is report-only and never changes models or files.
 
 ### ModelService
 
@@ -480,7 +482,7 @@ Provider base URLs are user-configured and contacted from the backend, so they a
 - `buildCollectionDetail(collection)` → collection with children and model count
 - `buildCollectionList(userId, params)` → all collections for a user, with optional depth expansion
 - `buildMetadataFieldList(fields)` → field definitions with value counts
-- `buildDuplicateScanResult(scan)` → duplicate groups, summary counts, and reclaimable-byte estimates
+- `buildDuplicateScanResult(scan)` → whole-model and file duplicate groups, summary counts, and independent reclaimable-byte estimates
 
 ---
 
@@ -759,7 +761,7 @@ All provider routes apply `requireAuth` and enforce provider ownership in `AiPro
 **Tools**
 | Method | Route | Purpose | Service Chain | Library-scoped |
 |--------|-------|---------|---------------|---------------|
-| GET | /tools/duplicates | Report ready models with identical complete file-hash multisets | DuplicateScannerService → PresenterService | Yes |
+| GET | /tools/duplicates | Report exact duplicate files and ready models with identical complete file-hash multisets | DuplicateScannerService → PresenterService | Yes |
 
 **Bulk Operations**
 | Method | Route | Purpose | Service Chain | Library-scoped |

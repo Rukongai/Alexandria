@@ -25,6 +25,7 @@ let ownerDefaultLibraryId: string;
 let ownerSecondLibraryId: string;
 let otherTenantLibraryId: string;
 let defaultModelIds: string[];
+let partialDuplicateModelId: string;
 let secondLibraryModelIds: string[];
 let otherTenantModelIds: string[];
 
@@ -94,6 +95,7 @@ async function createDuplicatePair(options: {
       sizeBytes: 50 + fileIndex,
       storagePath: `models/${model.id}/part-${fileIndex + 1}.stl`,
       hash,
+      createdAt: options.createdAt[modelIndex],
     })));
   }
 
@@ -169,6 +171,49 @@ beforeAll(async () => {
     createdAt: [new Date('2026-01-01T00:00:00.000Z'), new Date('2026-01-02T00:00:00.000Z')],
     totalSizeBytes: [100, 200],
   });
+
+  const partialDuplicateCreatedAt = new Date('2026-01-03T00:00:00.000Z');
+  const [partialDuplicateModel] = await db
+    .insert(models)
+    .values({
+      name: 'Partial File Match',
+      slug: `${runToken}-partial-file-match`,
+      userId: owner.id,
+      libraryId: ownerDefaultLibraryId,
+      sourceType: 'manual',
+      status: 'ready',
+      originalFilename: 'partial-file-match.zip',
+      totalSizeBytes: 121,
+      fileCount: 2,
+      createdAt: partialDuplicateCreatedAt,
+      updatedAt: partialDuplicateCreatedAt,
+    })
+    .returning({ id: models.id });
+  partialDuplicateModelId = partialDuplicateModel.id;
+  await db.insert(modelFiles).values([
+    {
+      modelId: partialDuplicateModelId,
+      filename: 'shared-part.stl',
+      relativePath: 'alternate/shared-part.stl',
+      fileType: 'stl',
+      mimeType: 'model/stl',
+      sizeBytes: 60,
+      storagePath: `models/${partialDuplicateModelId}/shared-part.stl`,
+      hash: SHARED_HASHES[0],
+      createdAt: partialDuplicateCreatedAt,
+    },
+    {
+      modelId: partialDuplicateModelId,
+      filename: 'unique-part.stl',
+      relativePath: 'unique-part.stl',
+      fileType: 'stl',
+      mimeType: 'model/stl',
+      sizeBytes: 61,
+      storagePath: `models/${partialDuplicateModelId}/unique-part.stl`,
+      hash: '3'.repeat(64),
+      createdAt: partialDuplicateCreatedAt,
+    },
+  ]);
 
   const [processingModel] = await db
     .insert(models)
@@ -254,9 +299,12 @@ describe('GET /tools/duplicates integration', () => {
     const body = response.json();
     expect(body).toEqual({
       data: {
-        scannedModelCount: 2,
+        scannedModelCount: 3,
+        scannedFileCount: 6,
         redundantModelCount: 1,
+        redundantFileCount: 3,
         reclaimableBytes: 200,
+        fileReclaimableBytes: 161,
         groups: [
           {
             fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -279,6 +327,67 @@ describe('GET /tools/duplicates integration', () => {
             ],
           },
         ],
+        fileGroups: [
+          {
+            hash: SHARED_HASHES[0],
+            sizeBytes: 50,
+            reclaimableBytes: 110,
+            files: [
+              {
+                id: expect.any(String),
+                modelId: defaultModelIds[0],
+                modelName: 'Default Pair 1',
+                filename: 'part-1-1.stl',
+                relativePath: 'parts/part-1-1.stl',
+                sizeBytes: 50,
+                createdAt: '2026-01-01T00:00:00.000Z',
+              },
+              {
+                id: expect.any(String),
+                modelId: defaultModelIds[1],
+                modelName: 'Default Pair 2',
+                filename: 'part-1-2.stl',
+                relativePath: 'parts/part-1-2.stl',
+                sizeBytes: 50,
+                createdAt: '2026-01-02T00:00:00.000Z',
+              },
+              {
+                id: expect.any(String),
+                modelId: partialDuplicateModelId,
+                modelName: 'Partial File Match',
+                filename: 'shared-part.stl',
+                relativePath: 'alternate/shared-part.stl',
+                sizeBytes: 60,
+                createdAt: '2026-01-03T00:00:00.000Z',
+              },
+            ],
+          },
+          {
+            hash: SHARED_HASHES[1],
+            sizeBytes: 51,
+            reclaimableBytes: 51,
+            files: [
+              {
+                id: expect.any(String),
+                modelId: defaultModelIds[0],
+                modelName: 'Default Pair 1',
+                filename: 'part-2-1.stl',
+                relativePath: 'parts/part-2-1.stl',
+                sizeBytes: 51,
+                createdAt: '2026-01-01T00:00:00.000Z',
+              },
+              {
+                id: expect.any(String),
+                modelId: defaultModelIds[1],
+                modelName: 'Default Pair 2',
+                filename: 'part-2-2.stl',
+                relativePath: 'parts/part-2-2.stl',
+                sizeBytes: 51,
+                createdAt: '2026-01-02T00:00:00.000Z',
+              },
+            ],
+          },
+        ],
       },
       meta: null,
       errors: null,
@@ -289,6 +398,9 @@ describe('GET /tools/duplicates integration', () => {
     );
     expect(returnedIds).not.toContain(secondLibraryModelIds[0]);
     expect(returnedIds).not.toContain(otherTenantModelIds[0]);
+    expect(returnedIds).not.toContain(partialDuplicateModelId);
+    expect(body.data.fileGroups[0].files.map((file: { modelId: string }) => file.modelId))
+      .toContain(partialDuplicateModelId);
   });
 
   it('should scan only an explicitly selected owned library', async () => {

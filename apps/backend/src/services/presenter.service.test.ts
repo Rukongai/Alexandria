@@ -604,6 +604,7 @@ describe('buildDuplicateScanResult', () => {
   it('formats duplicate candidates and computes removable-copy totals', () => {
     const result = presenterService.buildDuplicateScanResult({
       scannedModelCount: 3,
+      scannedFileCount: 5,
       groups: [
         {
           fingerprint: 'fingerprint',
@@ -626,12 +627,42 @@ describe('buildDuplicateScanResult', () => {
           ],
         },
       ],
+      fileGroups: [
+        {
+          hash: 'shared-file-hash',
+          files: [
+            {
+              id: 'old-file',
+              modelId: 'old-copy',
+              modelName: 'Original',
+              filename: 'dragon.stl',
+              relativePath: 'parts/dragon.stl',
+              sizeBytes: 40,
+              createdAt: new Date('2026-01-01T01:00:00.000Z'),
+              modelCreatedAt: new Date('2026-01-01T00:00:00.000Z'),
+            },
+            {
+              id: 'new-file',
+              modelId: 'other-model',
+              modelName: 'Other model',
+              filename: 'renamed.stl',
+              relativePath: 'renamed.stl',
+              sizeBytes: 40,
+              createdAt: new Date('2026-03-01T01:00:00.000Z'),
+              modelCreatedAt: new Date('2026-03-01T00:00:00.000Z'),
+            },
+          ],
+        },
+      ],
     });
 
     expect(result).toEqual({
       scannedModelCount: 3,
+      scannedFileCount: 5,
       redundantModelCount: 1,
+      redundantFileCount: 1,
       reclaimableBytes: 120,
+      fileReclaimableBytes: 40,
       groups: [
         {
           fingerprint: 'fingerprint',
@@ -650,6 +681,33 @@ describe('buildDuplicateScanResult', () => {
               name: 'Copy',
               originalFilename: 'copy.zip',
               createdAt: '2026-02-01T00:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      fileGroups: [
+        {
+          hash: 'shared-file-hash',
+          sizeBytes: 40,
+          reclaimableBytes: 40,
+          files: [
+            {
+              id: 'old-file',
+              modelId: 'old-copy',
+              modelName: 'Original',
+              filename: 'dragon.stl',
+              relativePath: 'parts/dragon.stl',
+              sizeBytes: 40,
+              createdAt: '2026-01-01T01:00:00.000Z',
+            },
+            {
+              id: 'new-file',
+              modelId: 'other-model',
+              modelName: 'Other model',
+              filename: 'renamed.stl',
+              relativePath: 'renamed.stl',
+              sizeBytes: 40,
+              createdAt: '2026-03-01T01:00:00.000Z',
             },
           ],
         },

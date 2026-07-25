@@ -1,7 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DuplicateScannerService } from './duplicate-scanner.service.js';
 
-interface CandidateRow {
+interface FileCandidateRow {
+  modelId: string;
+  modelName: string;
+  originalFilename: string | null;
+  modelTotalSizeBytes: number;
+  modelCreatedAt: Date;
+  fileId: string;
+  filename: string;
+  relativePath: string;
+  fileSizeBytes: number;
+  fileCreatedAt: Date;
+  hash: string;
+}
+
+interface ModelCandidateRow {
   id: string;
   name: string;
   originalFilename: string | null;
@@ -10,105 +24,164 @@ interface CandidateRow {
   hashes: string[];
 }
 
-function databaseReturning(rows: CandidateRow[]) {
-  const query = {
+function databaseReturning(rows: FileCandidateRow[]) {
+  const modelRows = [...rows.reduce((byModel, row) => {
+    const existing = byModel.get(row.modelId);
+    if (existing) existing.hashes.push(row.hash);
+    else byModel.set(row.modelId, {
+      id: row.modelId,
+      name: row.modelName,
+      originalFilename: row.originalFilename,
+      totalSizeBytes: row.modelTotalSizeBytes,
+      createdAt: row.modelCreatedAt,
+      hashes: [row.hash],
+    });
+    return byModel;
+  }, new Map<string, ModelCandidateRow>()).values()]
+    .map((model) => ({ ...model, hashes: model.hashes.sort() }));
+  const hashCounts = rows.reduce((counts, row) => {
+    counts.set(row.hash, (counts.get(row.hash) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const duplicateFileRows = rows.filter((row) => (hashCounts.get(row.hash) ?? 0) > 1);
+
+  const modelQuery = {
     from: vi.fn(),
     innerJoin: vi.fn(),
     where: vi.fn(),
     groupBy: vi.fn(),
     orderBy: vi.fn(),
   };
-  query.from.mockReturnValue(query);
-  query.innerJoin.mockReturnValue(query);
-  query.where.mockReturnValue(query);
-  query.groupBy.mockReturnValue(query);
-  query.orderBy.mockResolvedValue(rows);
+  modelQuery.from.mockReturnValue(modelQuery);
+  modelQuery.innerJoin.mockReturnValue(modelQuery);
+  modelQuery.where.mockReturnValue(modelQuery);
+  modelQuery.groupBy.mockReturnValue(modelQuery);
+  modelQuery.orderBy.mockResolvedValue(modelRows);
+
+  const fileQuery = {
+    from: vi.fn(),
+    innerJoin: vi.fn(),
+    where: vi.fn(),
+    orderBy: vi.fn(),
+  };
+  fileQuery.from.mockReturnValue(fileQuery);
+  fileQuery.innerJoin.mockReturnValue(fileQuery);
+  fileQuery.where.mockReturnValue(fileQuery);
+  fileQuery.orderBy.mockResolvedValue(duplicateFileRows);
 
   return {
-    database: { select: vi.fn().mockReturnValue(query) },
-    query,
+    database: {
+      select: vi.fn()
+        .mockReturnValueOnce(modelQuery)
+        .mockReturnValueOnce(fileQuery),
+    },
+    modelQuery,
+    fileQuery,
   };
 }
 
-function row(
-  id: string,
-  hashes: string[],
+function fileRow(
+  modelId: string,
+  hash: string,
   options: {
-    name?: string;
+    fileId?: string;
+    modelName?: string;
     originalFilename?: string | null;
-    totalSizeBytes?: number;
-    createdAt?: string;
+    modelTotalSizeBytes?: number;
+    modelCreatedAt?: string;
+    filename?: string;
+    relativePath?: string;
+    fileSizeBytes?: number;
+    fileCreatedAt?: string;
   } = {},
-): CandidateRow {
+): FileCandidateRow {
+  const fileId = options.fileId ?? `${modelId}-${hash}`;
   return {
-    id,
-    hashes,
-    name: options.name ?? id,
-    originalFilename: options.originalFilename ?? `${id}.zip`,
-    totalSizeBytes: options.totalSizeBytes ?? 100,
-    createdAt: new Date(options.createdAt ?? '2026-01-01T00:00:00.000Z'),
+    modelId,
+    hash,
+    modelName: options.modelName ?? modelId,
+    originalFilename: options.originalFilename ?? `${modelId}.zip`,
+    modelTotalSizeBytes: options.modelTotalSizeBytes ?? 100,
+    modelCreatedAt: new Date(options.modelCreatedAt ?? '2026-01-01T00:00:00.000Z'),
+    fileId,
+    filename: options.filename ?? `${fileId}.stl`,
+    relativePath: options.relativePath ?? `parts/${fileId}.stl`,
+    fileSizeBytes: options.fileSizeBytes ?? 50,
+    fileCreatedAt: new Date(
+      options.fileCreatedAt ?? options.modelCreatedAt ?? '2026-01-01T01:00:00.000Z',
+    ),
   };
 }
 
 describe('DuplicateScannerService', () => {
-  it('matches only complete sorted hash multisets and preserves multiplicity', async () => {
-    const { database, query } = databaseReturning([
-      row('new-copy', ['hash-a', 'hash-b'], {
-        name: 'Renamed copy',
+  it('finds individual duplicate files and complete model hash multisets', async () => {
+    const { database, modelQuery, fileQuery } = databaseReturning([
+      fileRow('new-copy', 'hash-a', {
+        fileId: 'new-a',
+        modelName: 'Renamed copy',
         originalFilename: 'different-source.7z',
-        totalSizeBytes: 120,
-        createdAt: '2026-02-01T00:00:00.000Z',
+        modelTotalSizeBytes: 120,
+        modelCreatedAt: '2026-02-01T00:00:00.000Z',
       }),
-      row('old-copy', ['hash-a', 'hash-b'], {
-        name: 'Original',
-        originalFilename: 'original.zip',
-        totalSizeBytes: 100,
-        createdAt: '2026-01-01T00:00:00.000Z',
+      fileRow('new-copy', 'hash-b', {
+        fileId: 'new-b',
+        modelName: 'Renamed copy',
+        originalFilename: 'different-source.7z',
+        modelTotalSizeBytes: 120,
+        modelCreatedAt: '2026-02-01T00:00:00.000Z',
       }),
-      row('single-a', ['hash-a']),
-      row('repeated-a', ['hash-a', 'hash-a']),
+      fileRow('old-copy', 'hash-a', { fileId: 'old-a', modelName: 'Original' }),
+      fileRow('old-copy', 'hash-b', { fileId: 'old-b', modelName: 'Original' }),
+      fileRow('single-a', 'hash-a', { fileId: 'single-a' }),
+      fileRow('repeated-a', 'hash-a', { fileId: 'repeated-a-1' }),
+      fileRow('repeated-a', 'hash-a', { fileId: 'repeated-a-2' }),
     ]);
     const service = new DuplicateScannerService(database as never);
 
     const result = await service.scanDuplicates('library-1');
 
-    expect(database.select).toHaveBeenCalledOnce();
-    expect(query.innerJoin).toHaveBeenCalledOnce();
-    expect(query.where).toHaveBeenCalledOnce();
-    expect(query.groupBy).toHaveBeenCalledOnce();
-    expect(result).toEqual({
-      scannedModelCount: 4,
-      groups: [
-        {
-          fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
-          fileCount: 2,
-          models: [
-            {
-              id: 'old-copy',
-              name: 'Original',
-              originalFilename: 'original.zip',
-              totalSizeBytes: 100,
-              createdAt: new Date('2026-01-01T00:00:00.000Z'),
-            },
-            {
-              id: 'new-copy',
-              name: 'Renamed copy',
-              originalFilename: 'different-source.7z',
-              totalSizeBytes: 120,
-              createdAt: new Date('2026-02-01T00:00:00.000Z'),
-            },
-          ],
-        },
-      ],
-    });
+    expect(database.select).toHaveBeenCalledTimes(2);
+    expect(modelQuery.groupBy).toHaveBeenCalledOnce();
+    expect(fileQuery.where).toHaveBeenCalledOnce();
+    expect(result.scannedModelCount).toBe(4);
+    expect(result.scannedFileCount).toBe(7);
+    expect(result.groups).toEqual([
+      {
+        fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+        fileCount: 2,
+        models: [
+          {
+            id: 'old-copy',
+            name: 'Original',
+            originalFilename: 'old-copy.zip',
+            totalSizeBytes: 100,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+          {
+            id: 'new-copy',
+            name: 'Renamed copy',
+            originalFilename: 'different-source.7z',
+            totalSizeBytes: 120,
+            createdAt: new Date('2026-02-01T00:00:00.000Z'),
+          },
+        ],
+      },
+    ]);
+    expect(result.fileGroups.map((group) => ({
+      hash: group.hash,
+      ids: group.files.map((file) => file.id),
+    }))).toEqual([
+      { hash: 'hash-a', ids: ['old-a', 'repeated-a-1', 'repeated-a-2', 'single-a', 'new-a'] },
+      { hash: 'hash-b', ids: ['old-b', 'new-b'] },
+    ]);
   });
 
-  it('returns stable ordering for models and groups regardless of row order', async () => {
+  it('returns stable ordering for models, files, and groups regardless of row order', async () => {
     const rows = [
-      row('group-b-new', ['hash-z'], { createdAt: '2026-04-01T00:00:00.000Z' }),
-      row('group-a-new', ['hash-a'], { createdAt: '2026-03-01T00:00:00.000Z' }),
-      row('group-b-old', ['hash-z'], { createdAt: '2026-02-01T00:00:00.000Z' }),
-      row('group-a-old', ['hash-a'], { createdAt: '2026-01-01T00:00:00.000Z' }),
+      fileRow('group-b-new', 'hash-z', { fileId: 'b-new', modelCreatedAt: '2026-04-01T00:00:00.000Z' }),
+      fileRow('group-a-new', 'hash-a', { fileId: 'a-new', modelCreatedAt: '2026-03-01T00:00:00.000Z' }),
+      fileRow('group-b-old', 'hash-z', { fileId: 'b-old', modelCreatedAt: '2026-02-01T00:00:00.000Z' }),
+      fileRow('group-a-old', 'hash-a', { fileId: 'a-old', modelCreatedAt: '2026-01-01T00:00:00.000Z' }),
     ];
     const first = databaseReturning(rows);
     const second = databaseReturning([...rows].reverse());
@@ -123,10 +196,14 @@ describe('DuplicateScannerService', () => {
       ['group-a-old', 'group-a-new'],
       ['group-b-old', 'group-b-new'],
     ]);
+    expect(firstResult.fileGroups.map((group) => group.files.map((file) => file.id))).toEqual([
+      ['a-old', 'a-new'],
+      ['b-old', 'b-new'],
+    ]);
   });
 
   it('coalesces concurrent scans for the same library', async () => {
-    const fixture = databaseReturning([row('only-model', ['hash-a'])]);
+    const fixture = databaseReturning([fileRow('only-model', 'hash-a')]);
     const service = new DuplicateScannerService(fixture.database as never);
 
     const [first, second] = await Promise.all([
@@ -135,13 +212,18 @@ describe('DuplicateScannerService', () => {
     ]);
 
     expect(first).toEqual(second);
-    expect(fixture.database.select).toHaveBeenCalledOnce();
+    expect(fixture.database.select).toHaveBeenCalledTimes(2);
   });
 
   it('does not scan or group models without files', async () => {
     const { database } = databaseReturning([]);
 
     await expect(new DuplicateScannerService(database as never).scanDuplicates('library-1'))
-      .resolves.toEqual({ scannedModelCount: 0, groups: [] });
+      .resolves.toEqual({
+        scannedModelCount: 0,
+        scannedFileCount: 0,
+        groups: [],
+        fileGroups: [],
+      });
   });
 });
