@@ -73,6 +73,7 @@ const MODELS: ModelCard[] = [
     fileCount: 1,
     totalSizeBytes: 100,
     status: 'ready',
+    isDuplicate: false,
     createdAt: '2024-01-01',
   },
   {
@@ -87,6 +88,7 @@ const MODELS: ModelCard[] = [
     fileCount: 2,
     totalSizeBytes: 200,
     status: 'ready',
+    isDuplicate: false,
     createdAt: '2024-01-02',
   },
 ];

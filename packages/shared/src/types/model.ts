@@ -13,6 +13,7 @@ export interface Model {
   originalFilename: string | null;
   totalSizeBytes: number;
   fileCount: number;
+  isDuplicate: boolean;
   previewImageFileId: string | null;
   previewCropX: number | null;
   previewCropY: number | null;
@@ -31,6 +32,7 @@ export interface ModelFile {
   sizeBytes: number;
   storagePath: string;
   hash: string;
+  isDuplicate: boolean;
   createdAt: string;
 }
 
@@ -56,6 +58,7 @@ export interface ModelCard {
   fileCount: number;
   totalSizeBytes: number;
   status: ModelStatus;
+  isDuplicate: boolean;
   createdAt: string;
 }
 
@@ -75,6 +78,7 @@ export interface ModelDetail {
   fileCount: number;
   totalSizeBytes: number;
   status: ModelStatus;
+  isDuplicate: boolean;
   collections: import('./collection').CollectionSummary[];
   images: ImageFile[];
   createdAt: string;
@@ -94,6 +98,7 @@ export interface FileTreeNode {
   fileType?: FileType;
   sizeBytes?: number;
   id?: string;
+  isDuplicate: boolean;
   children?: FileTreeNode[];
 }
 

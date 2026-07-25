@@ -14,4 +14,22 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(200).send({ data: result, meta: null, errors: null });
     },
   );
+
+  app.post(
+    '/duplicates/mark',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const result = await duplicateScannerService.markDuplicates(request.libraryId!);
+      return reply.status(200).send({ data: result, meta: null, errors: null });
+    },
+  );
+
+  app.post(
+    '/duplicates/ignore',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const result = await duplicateScannerService.ignoreDuplicates(request.libraryId!);
+      return reply.status(200).send({ data: result, meta: null, errors: null });
+    },
+  );
 }

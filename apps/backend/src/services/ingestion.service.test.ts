@@ -803,6 +803,7 @@ describe('IngestionService – extractModelArchive', () => {
         sizeBytes: 100,
         storagePath: 'models/model-1/extras/alternate-parts.zip',
         hash: 'archive-hash',
+        isDuplicate: false,
         createdAt: new Date(),
       },
     ]);

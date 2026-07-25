@@ -12,13 +12,19 @@ const mocks = vi.hoisted(() => ({
     request.libraryId = LIBRARY_ID;
   }),
   scanDuplicates: vi.fn(),
+  markDuplicates: vi.fn(),
+  ignoreDuplicates: vi.fn(),
   buildDuplicateScanResult: vi.fn(),
 }));
 
 vi.mock('../middleware/auth.js', () => ({ requireAuth: mocks.requireAuth }));
 vi.mock('../middleware/library.js', () => ({ requireLibrary: mocks.requireLibrary }));
 vi.mock('../services/duplicate-scanner.service.js', () => ({
-  duplicateScannerService: { scanDuplicates: mocks.scanDuplicates },
+  duplicateScannerService: {
+    scanDuplicates: mocks.scanDuplicates,
+    markDuplicates: mocks.markDuplicates,
+    ignoreDuplicates: mocks.ignoreDuplicates,
+  },
 }));
 vi.mock('../services/presenter.service.js', () => ({
   presenterService: { buildDuplicateScanResult: mocks.buildDuplicateScanResult },
@@ -46,6 +52,11 @@ describe('Tools routes', () => {
       fileReclaimableBytes: 512,
       groups: [],
       fileGroups: [],
+    });
+    mocks.markDuplicates.mockResolvedValue({ markedFileCount: 4, markedModelCount: 2 });
+    mocks.ignoreDuplicates.mockResolvedValue({
+      ignoredFileGroupCount: 2,
+      ignoredModelGroupCount: 1,
     });
     app = Fastify();
     await app.register(toolsRoutes, { prefix: '/tools' });
@@ -87,6 +98,34 @@ describe('Tools routes', () => {
         groups: [],
         fileGroups: [],
       },
+      meta: null,
+      errors: null,
+    });
+  });
+
+  it('marks current duplicate candidates in the active library', async () => {
+    const response = await app.inject({ method: 'POST', url: '/tools/duplicates/mark' });
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.requireAuth).toHaveBeenCalledOnce();
+    expect(mocks.requireLibrary).toHaveBeenCalledOnce();
+    expect(mocks.markDuplicates).toHaveBeenCalledWith(LIBRARY_ID);
+    expect(response.json()).toEqual({
+      data: { markedFileCount: 4, markedModelCount: 2 },
+      meta: null,
+      errors: null,
+    });
+  });
+
+  it('ignores current duplicate groups in the active library', async () => {
+    const response = await app.inject({ method: 'POST', url: '/tools/duplicates/ignore' });
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.requireAuth).toHaveBeenCalledOnce();
+    expect(mocks.requireLibrary).toHaveBeenCalledOnce();
+    expect(mocks.ignoreDuplicates).toHaveBeenCalledWith(LIBRARY_ID);
+    expect(response.json()).toEqual({
+      data: { ignoredFileGroupCount: 2, ignoredModelGroupCount: 1 },
       meta: null,
       errors: null,
     });

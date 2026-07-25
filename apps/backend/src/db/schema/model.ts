@@ -1,4 +1,16 @@
-import { pgTable, uuid, varchar, text, bigint, integer, real, timestamp, index, customType } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  uuid,
+  varchar,
+  text,
+  bigint,
+  integer,
+  real,
+  boolean,
+  timestamp,
+  index,
+  customType,
+} from 'drizzle-orm/pg-core';
 import { users } from './user.js';
 import { libraries } from './library.js';
 
@@ -31,6 +43,9 @@ export const models = pgTable(
     sourceType: varchar('source_type', { length: 20 }).notNull(),
     // ModelStatus: 'processing' | 'ready' | 'error'
     status: varchar('status', { length: 20 }).notNull().default('processing'),
+    // Maintained by duplicate reconciliation when every current file in this
+    // ready, non-empty model is marked as an unignored exact duplicate.
+    isDuplicate: boolean('is_duplicate').notNull().default(false),
     originalFilename: varchar('original_filename', { length: 500 }),
     // bigint for file sizes that may exceed 2GB
     totalSizeBytes: bigint('total_size_bytes', { mode: 'number' }).notNull().default(0),

@@ -665,6 +665,7 @@ Metadata filters are passed as individual query parameters using dot notation. M
       ],
       "fileCount": 4,
       "totalSizeBytes": 8388608,
+      "isDuplicate": true,
       "status": "ready",
       "createdAt": "2026-01-15T10:30:00.000Z"
     }
@@ -678,7 +679,7 @@ Metadata filters are passed as individual query parameters using dot notation. M
 }
 ```
 
-Each item in `data` is a `ModelCard`.
+Each item in `data` is a `ModelCard`. `isDuplicate` is true only for a `ready` model with at least one file when duplicate review has marked every current file in that model.
 
 ---
 
@@ -1216,6 +1217,7 @@ Retrieve the full detail payload for a model.
     "fileCount": 4,
     "totalSizeBytes": 8388608,
     "status": "ready",
+    "isDuplicate": true,
     "collections": [
       { "id": "uuid", "name": "Fantasy", "slug": "fantasy-b2c1" }
     ],
@@ -1235,7 +1237,7 @@ Retrieve the full detail payload for a model.
 }
 ```
 
-`data` is a `ModelDetail`. `images` contains only files of type `image`, ordered by creation time. `collections` lists the collections this model belongs to as `CollectionSummary` objects. `sourceType` is one of `zip_upload` (legacy), `archive_upload` (zip, rar, 7z, or tar.gz upload), `folder_import`, or `manual`.
+`data` is a `ModelDetail`. `isDuplicate` follows the same rule as `ModelCard`: it is true only for a `ready`, non-empty model when every current file is marked duplicate. `images` contains only files of type `image`, ordered by creation time. `collections` lists the collections this model belongs to as `CollectionSummary` objects. `sourceType` is one of `zip_upload` (legacy), `archive_upload` (zip, rar, 7z, or tar.gz upload), `folder_import`, or `manual`.
 
 ---
 
@@ -1255,13 +1257,15 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
     {
       "name": "parts",
       "type": "directory",
+      "isDuplicate": false,
       "children": [
         {
           "name": "body.stl",
           "type": "file",
           "fileType": "stl",
           "sizeBytes": 2097152,
-          "id": "uuid"
+          "id": "uuid",
+          "isDuplicate": true
         }
       ]
     },
@@ -1270,7 +1274,8 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
       "type": "file",
       "fileType": "image",
       "sizeBytes": 204800,
-      "id": "uuid"
+      "id": "uuid",
+      "isDuplicate": false
     }
   ],
   "meta": null,
@@ -1278,7 +1283,7 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
 }
 ```
 
-`data` is an array of `FileTreeNode`. Directories appear before files at each level; both are sorted alphabetically (case-insensitive). `id` is present on file nodes only and corresponds to the `ModelFile.id`.
+`data` is an array of `FileTreeNode`. Directories appear before files at each level; both are sorted alphabetically (case-insensitive). `isDuplicate` is always present: it reflects the persisted duplicate-review flag for a file and is always `false` for a directory. `id` identifies a `ModelFile` on file nodes and may identify a persisted `ModelFolder` on directory nodes.
 
 ---
 
@@ -1474,13 +1479,13 @@ Tools are library maintenance operations exposed from the library-scoped Tools p
 
 ### GET /tools/duplicates
 
-Scan the active library for exact duplicate files and exact duplicate model contents. The scan is read-only and synchronous; it reports candidates but does not merge, delete, or otherwise modify models or files.
+Scan the active library for exact duplicate files and exact duplicate model contents. The scan is read-only and synchronous; it reports non-ignored candidates but does not merge, delete, or otherwise modify models or files.
 
 **Auth required:** Yes. The route applies `requireAuth` followed by `requireLibrary`.
 
 **Library scope:** Required. `X-Library-Id` selects the active owned library; when the header is absent, the user's default library is used. An unknown or un-owned library returns `404 NOT_FOUND`.
 
-Only `ready` models with at least one file are scanned. PostgreSQL aggregates each eligible model's file hashes into one model row and returns individual file detail only for hashes that occur more than once in the same library/status scope. Individual files are duplicates when their SHA-256 hashes match. Two models are duplicates only when their complete sorted multisets of per-file SHA-256 hashes match. Sorting makes file order irrelevant, while treating the hashes as a multiset preserves multiplicity: a model containing two copies of a file does not match a model containing one copy. Filenames and relative paths do not participate in either comparison.
+Only `ready` models with at least one file are scanned. PostgreSQL aggregates each eligible model's file hashes into one model row and returns individual file detail only for hashes that occur more than once in the same library/status scope. Individual files are duplicates when their SHA-256 hashes match. Two models are duplicates only when their complete sorted multisets of per-file SHA-256 hashes match. Sorting makes file order irrelevant, while treating the hashes as a multiset preserves multiplicity: a model containing two copies of a file does not match a model containing one copy. Filenames and relative paths do not participate in either comparison. File hashes and whole-model fingerprints stored as ignored for the active library are excluded.
 
 **Response (200):**
 
@@ -1587,6 +1592,54 @@ Only `ready` models with at least one file are scanned. PostgreSQL aggregates ea
 Each member of `fileGroups` is a `DuplicateFileGroup`, whose `files` are `DuplicateFile` values. `scannedFileCount` counts all files read from eligible models. Within a file group, candidates are ordered by file creation time and file UUID, with owning model creation time and model UUID as later tie-breakers. `sizeBytes` is the oldest candidate's stored size, while `reclaimableBytes` sums every later candidate's size. `redundantFileCount` and `fileReclaimableBytes` aggregate those later candidates across all file groups. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID.
 
 The example's `Dragon Bust Variant` has one file identical to both whole-model copies but different remaining content, so it appears in a file group without joining the whole-model group. File-level savings are independent from and may overlap whole-model savings; do not add `fileReclaimableBytes` to `reclaimableBytes`. All byte values are estimates only—the decision and any deletion remain manual.
+
+### POST /tools/duplicates/mark
+
+Mark every file in the active library's current non-ignored duplicate report. The operation is a reconciliation: stale marks are cleared, current duplicate files are marked, and a ready non-empty model is marked only when all of its files are marked duplicate.
+
+**Auth required:** Yes. The route applies `requireAuth` followed by `requireLibrary`.
+
+**Request body:** None.
+
+**Response (200):** `data` is a `MarkDuplicatesResult` in the standard envelope.
+
+```json
+{
+  "data": {
+    "markedFileCount": 3,
+    "markedModelCount": 2
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`markedFileCount` counts files in the current non-ignored file groups. `markedModelCount` counts `ready`, non-empty models in the active library whose every current file is marked after reconciliation.
+
+After a file-set mutation, including deletion, the same reconciliation runs again. If deleting a file leaves its former match unique, the surviving file's duplicate flag is cleared; affected all-file model flags are recalculated as well.
+
+### POST /tools/duplicates/ignore
+
+Ignore every file group and whole-model group in the active library's current duplicate report. The operation stores exact file hashes and whole-model fingerprints as library-scoped ignore keys, is idempotent, and reconciles existing duplicate flags after those groups are removed from future reports.
+
+**Auth required:** Yes. The route applies `requireAuth` followed by `requireLibrary`.
+
+**Request body:** None.
+
+**Response (200):** `data` is an `IgnoreDuplicatesResult` in the standard envelope.
+
+```json
+{
+  "data": {
+    "ignoredFileGroupCount": 2,
+    "ignoredModelGroupCount": 1
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+The two counts describe the file groups and whole-model groups in the non-ignored report captured by this request. Repeating the request with no newly discovered groups returns zero for both counts.
 
 ---
 

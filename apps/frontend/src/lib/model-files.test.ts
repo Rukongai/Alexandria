@@ -20,7 +20,14 @@ describe('collectStlFiles', () => {
 
   it('finds a top-level STL and builds its URL', () => {
     const tree: FileTreeNode[] = [
-      { name: 'dragon.stl', type: 'file', fileType: 'stl', sizeBytes: 100, id: 'f1' },
+      {
+        name: 'dragon.stl',
+        type: 'file',
+        fileType: 'stl',
+        sizeBytes: 100,
+        id: 'f1',
+        isDuplicate: false,
+      },
     ];
     expect(collectStlFiles(tree, MODEL_ID)).toEqual([
       {
@@ -33,10 +40,16 @@ describe('collectStlFiles', () => {
 
   it('filters out non-STL files', () => {
     const tree: FileTreeNode[] = [
-      { name: 'cover.png', type: 'file', fileType: 'image', id: 'i1' },
-      { name: 'body.stl', type: 'file', fileType: 'stl', id: 's1' },
-      { name: 'readme.md', type: 'file', fileType: 'document', id: 'd1' },
-      { name: 'notes.txt', type: 'file', fileType: 'other', id: 'o1' },
+      { name: 'cover.png', type: 'file', fileType: 'image', id: 'i1', isDuplicate: false },
+      { name: 'body.stl', type: 'file', fileType: 'stl', id: 's1', isDuplicate: false },
+      {
+        name: 'readme.md',
+        type: 'file',
+        fileType: 'document',
+        id: 'd1',
+        isDuplicate: false,
+      },
+      { name: 'notes.txt', type: 'file', fileType: 'other', id: 'o1', isDuplicate: false },
     ];
     const result = collectStlFiles(tree, MODEL_ID);
     expect(result).toHaveLength(1);
@@ -48,15 +61,17 @@ describe('collectStlFiles', () => {
       {
         name: 'parts',
         type: 'directory',
+        isDuplicate: false,
         children: [
           {
             name: 'left',
             type: 'directory',
+            isDuplicate: false,
             children: [
-              { name: 'arm.stl', type: 'file', fileType: 'stl', id: 's1' },
+              { name: 'arm.stl', type: 'file', fileType: 'stl', id: 's1', isDuplicate: false },
             ],
           },
-          { name: 'base.stl', type: 'file', fileType: 'stl', id: 's2' },
+          { name: 'base.stl', type: 'file', fileType: 'stl', id: 's2', isDuplicate: false },
         ],
       },
     ];
@@ -77,13 +92,16 @@ describe('collectStlFiles', () => {
 
   it('preserves depth-first tree order', () => {
     const tree: FileTreeNode[] = [
-      { name: 'a.stl', type: 'file', fileType: 'stl', id: '1' },
+      { name: 'a.stl', type: 'file', fileType: 'stl', id: '1', isDuplicate: false },
       {
         name: 'sub',
         type: 'directory',
-        children: [{ name: 'b.stl', type: 'file', fileType: 'stl', id: '2' }],
+        isDuplicate: false,
+        children: [
+          { name: 'b.stl', type: 'file', fileType: 'stl', id: '2', isDuplicate: false },
+        ],
       },
-      { name: 'c.stl', type: 'file', fileType: 'stl', id: '3' },
+      { name: 'c.stl', type: 'file', fileType: 'stl', id: '3', isDuplicate: false },
     ];
     expect(collectStlFiles(tree, MODEL_ID).map((s) => s.name)).toEqual([
       'a.stl',
@@ -97,8 +115,15 @@ describe('collectStlFiles', () => {
       {
         name: 'pre supports',
         type: 'directory',
+        isDuplicate: false,
         children: [
-          { name: 'main body.stl', type: 'file', fileType: 'stl', id: 's1' },
+          {
+            name: 'main body.stl',
+            type: 'file',
+            fileType: 'stl',
+            id: 's1',
+            isDuplicate: false,
+          },
         ],
       },
     ];
@@ -110,7 +135,7 @@ describe('collectStlFiles', () => {
   });
 
   it('tolerates directories with no children', () => {
-    const tree: FileTreeNode[] = [{ name: 'empty', type: 'directory' }];
+    const tree: FileTreeNode[] = [{ name: 'empty', type: 'directory', isDuplicate: false }];
     expect(collectStlFiles(tree, MODEL_ID)).toEqual([]);
   });
 });
@@ -123,8 +148,8 @@ describe('getPrimaryStl', () => {
   it('returns the first STL in the list', () => {
     const stls = collectStlFiles(
       [
-        { name: 'first.stl', type: 'file', fileType: 'stl', id: '1' },
-        { name: 'second.stl', type: 'file', fileType: 'stl', id: '2' },
+        { name: 'first.stl', type: 'file', fileType: 'stl', id: '1', isDuplicate: false },
+        { name: 'second.stl', type: 'file', fileType: 'stl', id: '2', isDuplicate: false },
       ],
       MODEL_ID,
     );

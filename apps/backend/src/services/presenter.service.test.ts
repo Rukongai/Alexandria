@@ -83,6 +83,7 @@ beforeAll(async () => {
       status: 'ready',
       totalSizeBytes: 5000,
       fileCount: 3,
+      isDuplicate: true,
     })
     .returning();
   testModelId = model.id;
@@ -99,6 +100,7 @@ beforeAll(async () => {
       sizeBytes: 2000,
       storagePath: `models/${testModelId}/images/render.png`,
       hash: 'abc123',
+      isDuplicate: true,
     })
     .returning();
   imageFileId = imgFile.id;
@@ -295,6 +297,22 @@ describe('buildFileTree', () => {
     expect(tree[2].type).toBe('file');
     expect(tree[2].name).toBe('z.stl');
   });
+
+  it('includes duplicate flags on files and a false flag on directories', () => {
+    const tree = presenterService.buildFileTree([
+      {
+        id: 'duplicate-file',
+        filename: 'part.stl',
+        relativePath: 'parts/part.stl',
+        fileType: 'stl',
+        sizeBytes: 100,
+        isDuplicate: true,
+      },
+    ]);
+
+    expect(tree[0].isDuplicate).toBe(false);
+    expect(tree[0].children![0].isDuplicate).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -310,6 +328,7 @@ describe('buildModelCard', () => {
     expect(card.status).toBe('ready');
     expect(card.fileCount).toBe(3);
     expect(card.totalSizeBytes).toBe(5000);
+    expect(card.isDuplicate).toBe(true);
     expect(typeof card.createdAt).toBe('string');
     expect(card.thumbnailUrl).toBe(`/files/thumbnails/${gridThumbnailId}.webp`);
   });
@@ -344,6 +363,7 @@ describe('buildModelDetail', () => {
     expect(detail.status).toBe('ready');
     expect(detail.fileCount).toBe(3);
     expect(detail.totalSizeBytes).toBe(5000);
+    expect(detail.isDuplicate).toBe(true);
     expect(typeof detail.createdAt).toBe('string');
     expect(typeof detail.updatedAt).toBe('string');
   });

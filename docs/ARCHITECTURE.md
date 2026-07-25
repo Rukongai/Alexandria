@@ -199,7 +199,7 @@ Routes that apply `requireLibrary` (as of P5):
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/upload/multipart/complete`, `POST /models/import`
 - `GET /models/import-sessions`, `POST /models/import-sessions/:id/commit`
 - `GET /search`
-- `GET /tools/duplicates`
+- `GET /tools/duplicates`, `POST /tools/duplicates/mark`, `POST /tools/duplicates/ignore`
 - All `/smart-collections` routes
 - All `/bulk/*` routes
 - `POST /ai/chat`, `POST /ai/proposals/:id/apply`
@@ -351,13 +351,15 @@ On startup, S3 mode performs `HeadBucket` validation before database migration a
 
 ### DuplicateScannerService
 
-**Owns:** Read-only detection and reporting of exact duplicate files and exact duplicate models within one authenticated user's active library.
+**Owns:** Detection and reporting of exact duplicate files and exact duplicate models within one authenticated user's active library, persisted duplicate-review flags, library-scoped ignored duplicate identities, and reconciliation of those flags after file membership changes.
 
-**Does not own:** File hashing, model deletion, model merging, or any other mutation.
+**Does not own:** File hashing, model/file deletion, or model merging. ModelService performs structural mutations and then delegates duplicate-flag reconciliation back to DuplicateScannerService.
 
-**Behavior:** `scanDuplicates(libraryId)` considers only `ready` models that have at least one file. The route supplies the ownership-checked `request.libraryId` produced by `requireLibrary`, and concurrent requests for the same library share one in-flight scan. PostgreSQL aggregates every eligible model's complete sorted multiset of file hashes into one row per model; a second query returns file detail only for hashes that occur more than once in the same scope. This bounds transferred and retained detail to actual duplicate-file candidates instead of every stored file. Whole-model identity remains independent of file order while preserving repeated hashes: a model containing the same file twice does not match one containing it once. Filenames and relative paths participate in neither form of matching, and only file hashes or whole-model identities shared by at least two candidates are returned.
+**Behavior:** `scanDuplicates(libraryId)` considers only `ready` models that have at least one file. The route supplies the ownership-checked `request.libraryId` produced by `requireLibrary`, and concurrent requests for the same library share one in-flight scan. PostgreSQL aggregates every eligible model's complete sorted multiset of file hashes into one row per model; a second query returns file detail only for hashes that occur more than once in the same scope. Library-scoped ignored file hashes and whole-model fingerprints are removed from the report. This bounds transferred and retained detail to actual, non-ignored duplicate-file candidates instead of every stored file. Whole-model identity remains independent of file order while preserving repeated hashes: a model containing the same file twice does not match one containing it once. Filenames and relative paths participate in neither form of matching, and only file hashes or whole-model identities shared by at least two candidates are returned.
 
-File candidates are ordered by file creation time and file UUID, with owning-model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Whole-model candidates remain oldest-first by model creation time and UUID, and whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. PresenterService formats timestamps and assembles per-group and aggregate counts and two independent reclaimable-byte estimates. File-level savings can overlap whole-model savings, so clients must not add `fileReclaimableBytes` to `reclaimableBytes`. The operation is report-only and never changes models or files.
+File candidates are ordered by file creation time and file UUID, with owning-model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Whole-model candidates remain oldest-first by model creation time and UUID, and whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. PresenterService formats timestamps and assembles per-group and aggregate counts and two independent reclaimable-byte estimates. File-level savings can overlap whole-model savings, so clients must not add `fileReclaimableBytes` to `reclaimableBytes`.
+
+`markDuplicates(libraryId)` reconciles `model_files.is_duplicate` to the files in the current non-ignored scan, clearing stale marks as well as setting new ones. A ready, non-empty model receives `models.is_duplicate = true` only when every current file in it is marked. `ignoreDuplicates(libraryId)` idempotently persists the current report's file hashes and model fingerprints, then reconciles flags against the now-filtered scan. ModelService invokes the same reconciliation after file-set mutations; consequently, deleting one member of a two-file duplicate set clears the surviving file's mark and any model mark that no longer satisfies the all-files rule.
 
 ### ModelService
 
@@ -762,6 +764,8 @@ All provider routes apply `requireAuth` and enforce provider ownership in `AiPro
 | Method | Route | Purpose | Service Chain | Library-scoped |
 |--------|-------|---------|---------------|---------------|
 | GET | /tools/duplicates | Report exact duplicate files and ready models with identical complete file-hash multisets | DuplicateScannerService → PresenterService | Yes |
+| POST | /tools/duplicates/mark | Reconcile duplicate flags from the current non-ignored scan | DuplicateScannerService | Yes |
+| POST | /tools/duplicates/ignore | Persist the current duplicate identities as ignored and reconcile flags | DuplicateScannerService | Yes |
 
 **Bulk Operations**
 | Method | Route | Purpose | Service Chain | Library-scoped |

@@ -24,7 +24,7 @@ interface ModelCandidateRow {
   hashes: string[];
 }
 
-function databaseReturning(rows: FileCandidateRow[]) {
+function databaseReturning(rows: FileCandidateRow[], ignoredFingerprints: string[] = []) {
   const modelRows = [...rows.reduce((byModel, row) => {
     const existing = byModel.get(row.modelId);
     if (existing) existing.hashes.push(row.hash);
@@ -69,11 +69,21 @@ function databaseReturning(rows: FileCandidateRow[]) {
   fileQuery.where.mockReturnValue(fileQuery);
   fileQuery.orderBy.mockResolvedValue(duplicateFileRows);
 
+  const ignoredModelQuery = {
+    from: vi.fn(),
+    where: vi.fn(),
+  };
+  ignoredModelQuery.from.mockReturnValue(ignoredModelQuery);
+  ignoredModelQuery.where.mockResolvedValue(
+    ignoredFingerprints.map((fingerprint) => ({ fingerprint })),
+  );
+
   return {
     database: {
       select: vi.fn()
         .mockReturnValueOnce(modelQuery)
-        .mockReturnValueOnce(fileQuery),
+        .mockReturnValueOnce(fileQuery)
+        .mockReturnValueOnce(ignoredModelQuery),
     },
     modelQuery,
     fileQuery,
@@ -140,7 +150,7 @@ describe('DuplicateScannerService', () => {
 
     const result = await service.scanDuplicates('library-1');
 
-    expect(database.select).toHaveBeenCalledTimes(2);
+    expect(database.select).toHaveBeenCalledTimes(3);
     expect(modelQuery.groupBy).toHaveBeenCalledOnce();
     expect(fileQuery.where).toHaveBeenCalledOnce();
     expect(result.scannedModelCount).toBe(4);
@@ -212,7 +222,7 @@ describe('DuplicateScannerService', () => {
     ]);
 
     expect(first).toEqual(second);
-    expect(fixture.database.select).toHaveBeenCalledTimes(2);
+    expect(fixture.database.select).toHaveBeenCalledTimes(3);
   });
 
   it('does not scan or group models without files', async () => {
@@ -225,5 +235,17 @@ describe('DuplicateScannerService', () => {
         groups: [],
         fileGroups: [],
       });
+  });
+
+  it('excludes ignored whole-model fingerprints while retaining file-level candidates', async () => {
+    const rows = [fileRow('first', 'shared'), fileRow('second', 'shared')];
+    const initial = await new DuplicateScannerService(databaseReturning(rows).database as never)
+      .scanDuplicates('library-1');
+    const ignored = await new DuplicateScannerService(
+      databaseReturning(rows, [initial.groups[0].fingerprint]).database as never,
+    ).scanDuplicates('library-1');
+
+    expect(ignored.groups).toEqual([]);
+    expect(ignored.fileGroups).toHaveLength(1);
   });
 });

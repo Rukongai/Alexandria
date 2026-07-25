@@ -120,6 +120,7 @@ const model: ModelDetail = {
   fileCount: 0,
   totalSizeBytes: 0,
   status: 'ready',
+  isDuplicate: false,
   collections: [],
   images: [],
   createdAt: '2026-01-01T00:00:00.000Z',

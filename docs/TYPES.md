@@ -446,6 +446,7 @@ interface ModelCard {
   metadata: MetadataValue[];
   fileCount: number;
   totalSizeBytes: number;
+  isDuplicate: boolean; // true only for a ready, non-empty model whose every file is marked
   status: ModelStatus;
   createdAt: string;
 }
@@ -464,6 +465,7 @@ interface ModelDetail {
   fileCount: number;
   totalSizeBytes: number;
   status: ModelStatus;
+  isDuplicate: boolean; // same ready, non-empty, all-files rule as ModelCard
   collections: CollectionSummary[];
   images: ImageFile[];
   createdAt: string;
@@ -495,7 +497,8 @@ interface FileTreeNode {
   type: 'file' | 'directory';
   fileType?: FileType;       // present for files only
   sizeBytes?: number;        // present for files only
-  id?: string;               // present for files only (ModelFile.id)
+  id?: string;               // ModelFile.id, or ModelFolder.id for a persisted directory
+  isDuplicate: boolean;      // persisted file flag; always false for directories
   children?: FileTreeNode[]; // present for directories only
 }
 
@@ -558,11 +561,21 @@ interface DuplicateScanResult {
   groups: DuplicateGroup[];
   fileGroups: DuplicateFileGroup[];
 }
+
+interface MarkDuplicatesResult {
+  markedFileCount: number;
+  markedModelCount: number;
+}
+
+interface IgnoreDuplicatesResult {
+  ignoredFileGroupCount: number;
+  ignoredModelGroupCount: number;
+}
 ```
 
-PostgreSQL aggregates each `ready`, non-empty model's file hashes into one model row and returns file detail only for hashes that occur more than once in the same scope. Individual file identity is exact SHA-256 equality. Whole-model identity uses the complete sorted multiset of per-file SHA-256 hashes. File order, filenames, and relative paths are ignored, but hash multiplicity is preserved. Models that are not `ready` or contain no files are excluded.
+PostgreSQL aggregates each `ready`, non-empty model's file hashes into one model row and returns file detail only for hashes that occur more than once in the same scope. Individual file identity is exact SHA-256 equality. Whole-model identity uses the complete sorted multiset of per-file SHA-256 hashes. File order, filenames, and relative paths are ignored, but hash multiplicity is preserved. Models that are not `ready` or contain no files are excluded. File hashes and whole-model fingerprints stored as ignored for the active library are excluded from the result.
 
-Files within a `DuplicateFileGroup` are ordered by file creation time and file UUID, with owning model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Models within a `DuplicateGroup` are ordered by creation time and UUID; whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. `fileReclaimableBytes` is independent from `reclaimableBytes` and can describe some of the same stored data, so the two estimates must not be added together. These response types describe a report only; scanning does not delete, merge, or otherwise modify a model or file.
+Files within a `DuplicateFileGroup` are ordered by file creation time and file UUID, with owning model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Models within a `DuplicateGroup` are ordered by creation time and UUID; whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. `fileReclaimableBytes` is independent from `reclaimableBytes` and can describe some of the same stored data, so the two estimates must not be added together. `DuplicateScanResult` describes a report only; scanning does not delete, merge, or otherwise modify a model or file. `POST /tools/duplicates/mark` returns `MarkDuplicatesResult` after reconciling persisted flags to the current non-ignored report. `POST /tools/duplicates/ignore` returns `IgnoreDuplicatesResult` after idempotently storing the current report's file hashes and model fingerprints as library-scoped ignore keys.
 
 ### Metadata Response Types
 

@@ -7,11 +7,26 @@ const TREE: FileTreeNode[] = [
   {
     name: 'parts',
     type: 'directory',
+    isDuplicate: false,
     children: [
-      { name: 'body.stl', type: 'file', fileType: 'stl', sizeBytes: 100, id: 's1' },
+      {
+        name: 'body.stl',
+        type: 'file',
+        fileType: 'stl',
+        sizeBytes: 100,
+        id: 's1',
+        isDuplicate: false,
+      },
     ],
   },
-  { name: 'readme.txt', type: 'file', fileType: 'document', sizeBytes: 10, id: 'd1' },
+  {
+    name: 'readme.txt',
+    type: 'file',
+    fileType: 'document',
+    sizeBytes: 10,
+    id: 'd1',
+    isDuplicate: false,
+  },
 ];
 
 function deferredPromise() {
@@ -31,6 +46,34 @@ describe('FileTree', () => {
     expect(screen.getByText('parts')).toHaveAttribute('title', 'parts');
     expect(screen.getByText('body.stl')).toHaveAttribute('title', 'body.stl');
     expect(screen.getByText('readme.txt')).toHaveAttribute('title', 'readme.txt');
+  });
+
+  it('shows a duplicate indicator on marked files without marking their directory', () => {
+    render(
+      <FileTree
+        tree={[
+          {
+            name: 'duplicates',
+            type: 'directory',
+            isDuplicate: false,
+            children: [
+              {
+                name: 'copy.stl',
+                type: 'file',
+                fileType: 'stl',
+                id: 'duplicate-file',
+                isDuplicate: true,
+              },
+            ],
+          },
+        ]}
+        modelId="m1"
+      />,
+    );
+
+    expect(screen.getAllByText('Duplicate')).toHaveLength(1);
+    expect(screen.getByText('Duplicate').parentElement?.textContent).toContain('copy.stl');
+    expect(screen.getByText('duplicates').parentElement?.textContent).not.toContain('Duplicate');
   });
 
   it('fires onOpenStl with the reconstructed relative path for a nested STL', () => {
@@ -66,8 +109,15 @@ describe('FileTree', () => {
           {
             name: 'parts',
             type: 'directory',
+            isDuplicate: false,
             children: [
-              { name: 'alternate-parts.tar.gz', type: 'file', fileType: 'other', id: 'a1' },
+              {
+                name: 'alternate-parts.tar.gz',
+                type: 'file',
+                fileType: 'other',
+                id: 'a1',
+                isDuplicate: false,
+              },
             ],
           },
         ]}
@@ -100,7 +150,22 @@ describe('FileTree', () => {
     const onOpenText = vi.fn();
     render(
       <FileTree
-        tree={[{ name: 'docs', type: 'directory', children: [{ name: 'README.md', type: 'file', fileType: 'document', id: 'md1' }] }]}
+        tree={[
+          {
+            name: 'docs',
+            type: 'directory',
+            isDuplicate: false,
+            children: [
+              {
+                name: 'README.md',
+                type: 'file',
+                fileType: 'document',
+                id: 'md1',
+                isDuplicate: false,
+              },
+            ],
+          },
+        ]}
         modelId="m1"
         onOpenText={onOpenText}
       />,
@@ -123,10 +188,12 @@ describe('FileTree', () => {
       {
         name: 'renders',
         type: 'directory',
+        isDuplicate: false,
         children: [
           {
             name: 'painted',
             type: 'directory',
+            isDuplicate: false,
             children: [
               {
                 name: 'cover.png',
@@ -134,6 +201,7 @@ describe('FileTree', () => {
                 fileType: 'image',
                 sizeBytes: 42,
                 id: 'img-1',
+                isDuplicate: false,
               },
             ],
           },
@@ -232,11 +300,21 @@ describe('FileTree', () => {
           {
             name: 'variants',
             type: 'directory',
+            isDuplicate: false,
             children: [
               {
                 name: 'large',
                 type: 'directory',
-                children: [{ name: 'body.stl', type: 'file', fileType: 'stl', id: 's1' }],
+                isDuplicate: false,
+                children: [
+                  {
+                    name: 'body.stl',
+                    type: 'file',
+                    fileType: 'stl',
+                    id: 's1',
+                    isDuplicate: false,
+                  },
+                ],
               },
             ],
           },

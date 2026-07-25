@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { buildApp } from '../app.js';
 import { db } from '../db/index.js';
 import { libraries, modelFiles, models, users } from '../db/schema/index.js';
@@ -106,6 +106,12 @@ function scanDuplicates(libraryId?: string) {
   const headers: Record<string, string> = { cookie: sessionCookie };
   if (libraryId) headers['x-library-id'] = libraryId;
   return app.inject({ method: 'GET', url: '/tools/duplicates', headers });
+}
+
+function postDuplicateAction(action: 'mark' | 'ignore', libraryId?: string) {
+  const headers: Record<string, string> = { cookie: sessionCookie };
+  if (libraryId) headers['x-library-id'] = libraryId;
+  return app.inject({ method: 'POST', url: `/tools/duplicates/${action}`, headers });
 }
 
 beforeAll(async () => {
@@ -445,5 +451,97 @@ describe('GET /tools/duplicates integration', () => {
         },
       ],
     });
+  });
+});
+
+describe('duplicate review actions integration', () => {
+  it('marks exactly the current duplicate files and fully duplicate models', async () => {
+    const response = await postDuplicateAction('mark');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      data: { markedFileCount: 5, markedModelCount: 2 },
+      meta: null,
+      errors: null,
+    });
+
+    const markedModels = await db
+      .select({ id: models.id, isDuplicate: models.isDuplicate })
+      .from(models)
+      .where(inArray(models.id, [...defaultModelIds, partialDuplicateModelId]));
+    expect(new Map(markedModels.map((model) => [model.id, model.isDuplicate]))).toEqual(new Map([
+      [defaultModelIds[0], true],
+      [defaultModelIds[1], true],
+      [partialDuplicateModelId, false],
+    ]));
+
+    const partialFiles = await db
+      .select({ hash: modelFiles.hash, isDuplicate: modelFiles.isDuplicate })
+      .from(modelFiles)
+      .where(eq(modelFiles.modelId, partialDuplicateModelId));
+    expect(new Map(partialFiles.map((file) => [file.hash, file.isDuplicate]))).toEqual(new Map([
+      [SHARED_HASHES[0], true],
+      ['3'.repeat(64), false],
+    ]));
+  });
+
+  it('persists current report keys idempotently and excludes them from later scans', async () => {
+    const first = await postDuplicateAction('ignore');
+    const second = await postDuplicateAction('ignore');
+
+    expect(first.statusCode).toBe(200);
+    expect(first.json().data).toEqual({
+      ignoredFileGroupCount: 2,
+      ignoredModelGroupCount: 1,
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().data).toEqual({
+      ignoredFileGroupCount: 0,
+      ignoredModelGroupCount: 0,
+    });
+
+    const scan = await scanDuplicates();
+    expect(scan.json().data.groups).toEqual([]);
+    expect(scan.json().data.fileGroups).toEqual([]);
+
+    const flags = await db
+      .select({ isDuplicate: models.isDuplicate })
+      .from(models)
+      .where(inArray(models.id, [...defaultModelIds, partialDuplicateModelId]));
+    expect(flags.every((model) => model.isDuplicate === false)).toBe(true);
+  });
+
+  it('clears surviving stale flags when deletion changes duplicate membership', async () => {
+    const mark = await postDuplicateAction('mark', ownerSecondLibraryId);
+    expect(mark.json().data).toEqual({ markedFileCount: 4, markedModelCount: 2 });
+
+    const [fileToDelete] = await db
+      .select({ id: modelFiles.id })
+      .from(modelFiles)
+      .where(and(
+        eq(modelFiles.modelId, secondLibraryModelIds[0]),
+        eq(modelFiles.hash, SHARED_HASHES[0]),
+      ));
+    const deletion = await app.inject({
+      method: 'DELETE',
+      url: `/models/${secondLibraryModelIds[0]}/files/${fileToDelete.id}`,
+      headers: { cookie: sessionCookie, 'x-library-id': ownerSecondLibraryId },
+    });
+    expect(deletion.statusCode).toBe(200);
+
+    const survivingFiles = await db
+      .select({ hash: modelFiles.hash, isDuplicate: modelFiles.isDuplicate })
+      .from(modelFiles)
+      .innerJoin(models, eq(modelFiles.modelId, models.id))
+      .where(eq(models.libraryId, ownerSecondLibraryId));
+    expect(survivingFiles.find((file) => file.hash === SHARED_HASHES[0])?.isDuplicate)
+      .toBe(false);
+
+    const survivingModels = await db
+      .select({ id: models.id, isDuplicate: models.isDuplicate })
+      .from(models)
+      .where(eq(models.libraryId, ownerSecondLibraryId));
+    expect(survivingModels.find((model) => model.id === secondLibraryModelIds[1])?.isDuplicate)
+      .toBe(false);
   });
 });

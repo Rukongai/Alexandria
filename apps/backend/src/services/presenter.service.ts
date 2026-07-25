@@ -61,6 +61,7 @@ export interface ModelRow {
   fileCount: number;
   totalSizeBytes: number;
   createdAt: Date;
+  isDuplicate?: boolean;
   previewImageFileId?: string | null;
   previewCropX?: number | null;
   previewCropY?: number | null;
@@ -74,6 +75,7 @@ export interface ModelFileRow {
   relativePath: string;
   fileType: string;
   sizeBytes: number;
+  isDuplicate?: boolean;
 }
 
 export interface ModelFolderRow {
@@ -160,6 +162,7 @@ export class PresenterService implements IPresenterService {
       name: model.name,
       slug: model.slug,
       status: model.status as ModelStatus,
+      isDuplicate: model.isDuplicate,
       fileCount: model.fileCount,
       totalSizeBytes: model.totalSizeBytes,
       createdAt: model.createdAt.toISOString(),
@@ -218,6 +221,7 @@ export class PresenterService implements IPresenterService {
         name: row.name,
         slug: row.slug,
         status: row.status as ModelStatus,
+        isDuplicate: row.isDuplicate ?? false,
         fileCount: row.fileCount,
         totalSizeBytes: row.totalSizeBytes,
         createdAt: row.createdAt.toISOString(),
@@ -346,6 +350,7 @@ export class PresenterService implements IPresenterService {
       fileCount: model.fileCount,
       totalSizeBytes: model.totalSizeBytes,
       status: model.status as ModelStatus,
+      isDuplicate: model.isDuplicate,
       collections: modelCollections,
       images,
       createdAt: model.createdAt.toISOString(),
@@ -377,6 +382,7 @@ export class PresenterService implements IPresenterService {
         fileType: file.fileType as FileType,
         sizeBytes: file.sizeBytes,
         id: file.id,
+        isDuplicate: file.isDuplicate ?? false,
       });
     }
 
@@ -623,7 +629,7 @@ export class PresenterService implements IPresenterService {
         (n) => n.type === 'directory' && n.name === dirName,
       );
       if (!dirNode) {
-        dirNode = { name: dirName, type: 'directory', children: [] };
+        dirNode = { name: dirName, type: 'directory', isDuplicate: false, children: [] };
         current.push(dirNode);
       }
       if (i === segments.length - 1 && id) {
