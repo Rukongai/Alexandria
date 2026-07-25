@@ -8,6 +8,7 @@ export {
   User as ArtistIcon,
   Tag as TagIcon,
   Sparkles as SmartIcon,
+  ListFilter as MetadataIcon,
   LayoutGrid as GridViewIcon,
   List as ListViewIcon,
   Rows3 as GroupViewIcon,

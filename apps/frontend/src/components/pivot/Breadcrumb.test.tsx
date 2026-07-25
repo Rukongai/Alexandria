@@ -8,6 +8,7 @@ const EMPTY_AXIS_VALUE: ActiveAxisValue = {
   artist: undefined,
   tags: [],
   smartCollectionId: undefined,
+  metadata: undefined,
 };
 
 describe('Breadcrumb', () => {
@@ -63,6 +64,19 @@ describe('Breadcrumb', () => {
     render(<Breadcrumb axis="tags" activeAxisValue={value} />);
 
     expect(screen.getByText('dragon, fantasy')).toBeTruthy();
+  });
+
+  it('renders a metadata field name and selected value', () => {
+    render(
+      <Breadcrumb
+        axis="metadata:scale"
+        activeAxisValue={{ ...EMPTY_AXIS_VALUE, metadata: { slug: 'scale', value: '1:12' } }}
+        metadataFieldName="Scale"
+      />
+    );
+
+    expect(screen.getByText('Scale')).toBeTruthy();
+    expect(screen.getByText('1:12')).toBeTruthy();
   });
 
   it('does not render a value crumb when nothing is selected', () => {

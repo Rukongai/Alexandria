@@ -1,6 +1,16 @@
+import { useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { cn } from '../../lib/utils';
-import { useModelFilters, type PivotAxis } from '../../hooks/use-model-filters';
-import { CollectionsIcon, ArtistIcon, TagIcon, SmartIcon } from '../icons';
+import { getFields } from '../../api/metadata';
+import { useLibraryPath } from '../../hooks/use-libraries';
+import {
+  getMetadataAxisSlug,
+  isValidMetadataAxisSlug,
+  useModelFilters,
+  type PivotAxis,
+} from '../../hooks/use-model-filters';
+import { CollectionsIcon, ArtistIcon, TagIcon, SmartIcon, MetadataIcon } from '../icons';
 
 interface AxisOption {
   id: PivotAxis;
@@ -8,7 +18,7 @@ interface AxisOption {
   icon: React.ComponentType<{ className?: string }>;
 }
 
-const AXIS_OPTIONS: AxisOption[] = [
+const BUILT_IN_AXIS_OPTIONS: AxisOption[] = [
   { id: 'collections', label: 'Collections', icon: CollectionsIcon },
   { id: 'artists', label: 'Artists', icon: ArtistIcon },
   { id: 'tags', label: 'Tags', icon: TagIcon },
@@ -21,6 +31,40 @@ const AXIS_OPTIONS: AxisOption[] = [
  */
 export function AxisPicker() {
   const { axis, setAxis } = useModelFilters();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const libPath = useLibraryPath();
+  const browsePath = libPath('/');
+  const { data: fieldsData, isSuccess } = useQuery({
+    queryKey: ['metadata-fields'],
+    queryFn: getFields,
+  });
+  const fields = fieldsData ?? [];
+  const metadataAxes: AxisOption[] = fields
+    .filter((field) => field.isBrowsable && isValidMetadataAxisSlug(field.slug))
+    .map((field) => ({
+      id: `metadata:${field.slug}`,
+      label: field.name,
+      icon: MetadataIcon,
+    }));
+  const axisOptions = [...BUILT_IN_AXIS_OPTIONS, ...metadataAxes];
+
+  useEffect(() => {
+    if (!isSuccess || location.pathname !== browsePath) return;
+    const rawAxis = searchParams.get('axis');
+    if (!rawAxis?.startsWith('metadata:')) return;
+    const slug = getMetadataAxisSlug(rawAxis as PivotAxis);
+    const fieldIsBrowsable = slug
+      ? fields.some((field) => field.slug === slug && field.isBrowsable)
+      : false;
+    if (!fieldIsBrowsable) {
+      setSearchParams((previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete('axis');
+        return next;
+      }, { replace: true });
+    }
+  }, [browsePath, fields, isSuccess, location.pathname, searchParams, setSearchParams]);
 
   return (
     <div className="px-3 py-2">
@@ -31,14 +75,16 @@ export function AxisPicker() {
         Browse by
       </p>
       <div
-        className="grid gap-1 rounded-lg p-1"
+        role="group"
+        aria-label="Browse axes"
+        className="grid max-h-48 gap-1 overflow-y-auto rounded-lg p-1 ax-scroll"
         style={{
           gridTemplateColumns: '1fr 1fr',
           background: 'var(--ax-rail-elev)',
           border: '1px solid var(--ax-rail-border)',
         }}
       >
-        {AXIS_OPTIONS.map(({ id, label, icon: Icon }) => {
+        {axisOptions.map(({ id, label, icon: Icon }) => {
           const isActive = axis === id;
           return (
             <button

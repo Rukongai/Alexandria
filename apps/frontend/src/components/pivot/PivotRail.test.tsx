@@ -27,6 +27,7 @@ vi.mock('../../api/collections', () => ({
 }));
 
 vi.mock('../../api/metadata', () => ({
+  getFields: vi.fn(),
   getFieldValues: vi.fn(),
 }));
 
@@ -63,11 +64,12 @@ vi.mock('react-router-dom', async (importOriginal) => {
 });
 
 import { getCollections } from '../../api/collections';
-import { getFieldValues } from '../../api/metadata';
+import { getFields, getFieldValues } from '../../api/metadata';
 import { useAuth } from '../../hooks/use-auth';
 
 const mockGetCollections = vi.mocked(getCollections);
 const mockGetFieldValues = vi.mocked(getFieldValues);
+const mockGetFields = vi.mocked(getFields);
 const mockUseAuth = vi.mocked(useAuth);
 
 // ---------------------------------------------------------------------------
@@ -106,6 +108,7 @@ describe('PivotRail', () => {
     vi.clearAllMocks();
     mockGetCollections.mockResolvedValue({ data: [], meta: null, errors: null });
     mockGetFieldValues.mockResolvedValue([]);
+    mockGetFields.mockResolvedValue([]);
     mockUseAuth.mockReturnValue({
       user: FAKE_USER,
       isLoading: false,

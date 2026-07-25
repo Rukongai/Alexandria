@@ -1,5 +1,6 @@
 import type { ModelCard } from '@alexandria/shared';
 import { ModelCard as ModelCardComponent } from './ModelCard';
+import { getMetadataAxisSlug } from '../../hooks/use-model-filters';
 import type { PivotAxis } from '../../hooks/use-model-filters';
 import type { ActiveAxisValue } from '../../hooks/use-model-filters';
 
@@ -7,6 +8,7 @@ export interface ModelGroupViewProps {
   models: ModelCard[];
   axis: PivotAxis;
   activeAxisValue: ActiveAxisValue;
+  metadataFieldName?: string;
   selectable?: boolean;
   isSelected?: (id: string) => boolean;
   onToggleSelect?: (id: string) => void;
@@ -67,6 +69,43 @@ function groupByTags(models: ModelCard[]): ModelGroup[] {
   }
 
   return sortGroups(map);
+}
+
+/** Group each model by the complete stored/display value for a metadata field. */
+function groupByMetadata(
+  models: ModelCard[],
+  slug: string,
+  fieldName?: string,
+): ModelGroup[] {
+  const groups = new Map<string, ModelGroup>();
+  const resolvedFieldName = fieldName
+    ?? models.flatMap((model) => model.metadata).find((item) => item.fieldSlug === slug)?.fieldName
+    ?? slug;
+  const fallbackLabel = `No ${resolvedFieldName}`;
+
+  for (const model of models) {
+    const metadata = model.metadata.find((item) => item.fieldSlug === slug);
+    const hasValue = metadata
+      && (Array.isArray(metadata.value) ? metadata.value.length > 0 : metadata.value.length > 0);
+    const label = hasValue && metadata.displayValue ? metadata.displayValue : fallbackLabel;
+    // Array-valued metadata represents one stored selection combination here.
+    // Keep it paired with its display value instead of splitting it like Tags.
+    const key = hasValue
+      ? JSON.stringify([metadata.value, metadata.displayValue])
+      : '__missing__';
+    const group = groups.get(key) ?? { label, models: [] };
+    group.models.push(model);
+    groups.set(key, group);
+  }
+
+  const result = Array.from(groups.values());
+  result.sort((a, b) => {
+    if (a.label === fallbackLabel && b.label !== fallbackLabel) return 1;
+    if (a.label !== fallbackLabel && b.label === fallbackLabel) return -1;
+    if (b.models.length !== a.models.length) return b.models.length - a.models.length;
+    return a.label.localeCompare(b.label);
+  });
+  return result;
 }
 
 /** Sort groups: largest first, then alphabetically. "Untagged"/"Unknown artist" always last. */
@@ -162,6 +201,7 @@ export function ModelGroupView({
   models,
   axis,
   activeAxisValue,
+  metadataFieldName,
   selectable,
   isSelected,
   onToggleSelect,
@@ -172,6 +212,8 @@ export function ModelGroupView({
     groups = groupByArtist(models);
   } else if (axis === 'tags') {
     groups = groupByTags(models);
+  } else if (getMetadataAxisSlug(axis)) {
+    groups = groupByMetadata(models, getMetadataAxisSlug(axis)!, metadataFieldName);
   } else {
     // axis === 'collections'
     // Per-collection grouping is impossible client-side: ModelCard has no

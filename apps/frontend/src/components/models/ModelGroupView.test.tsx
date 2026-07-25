@@ -70,6 +70,14 @@ const MODEL_NO_ARTIST = makeModel({
   metadata: [],
 });
 
+const MODEL_MULTI_MATERIAL = makeModel({
+  id: 'model-multi-material',
+  name: 'Mixed Material Part',
+  metadata: [
+    { fieldSlug: 'material', fieldName: 'Material', type: 'multi_enum', value: ['PLA', 'PETG'], displayValue: 'PLA, PETG' },
+  ],
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -254,6 +262,39 @@ describe('ModelGroupView', () => {
       );
 
       expect(screen.getByRole('heading', { name: /collection/i })).toBeTruthy();
+    });
+  });
+
+  describe('axis=metadata:<slug>', () => {
+    it('groups by a metadata display value', () => {
+      render(
+        <ModelGroupView
+          models={[MODEL_MULTI_MATERIAL]}
+          axis="metadata:material"
+          activeAxisValue={DEFAULT_AXIS_VALUE}
+          metadataFieldName="Material"
+        />,
+        { wrapper }
+      );
+
+      expect(screen.getByRole('heading', { name: 'PLA, PETG' })).toBeTruthy();
+      expect(screen.getByText('Mixed Material Part')).toBeTruthy();
+    });
+
+    it('keeps an array-valued selection as one stored/display combination', () => {
+      render(
+        <ModelGroupView
+          models={[MODEL_MULTI_MATERIAL]}
+          axis="metadata:material"
+          activeAxisValue={DEFAULT_AXIS_VALUE}
+          metadataFieldName="Material"
+        />,
+        { wrapper }
+      );
+
+      expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(1);
+      expect(screen.queryByRole('heading', { name: 'PLA' })).toBeNull();
+      expect(screen.queryByRole('heading', { name: 'PETG' })).toBeNull();
     });
   });
 });

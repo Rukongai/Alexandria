@@ -2,13 +2,13 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { getCollections } from '../../api/collections';
-import { getFieldValues } from '../../api/metadata';
+import { getFields, getFieldValues } from '../../api/metadata';
 import { getSmartCollections } from '../../api/smart-collections';
-import { useModelFilters } from '../../hooks/use-model-filters';
+import { getMetadataAxisSlug, useModelFilters } from '../../hooks/use-model-filters';
 import { useLibraryPath } from '../../hooks/use-libraries';
 import type { PivotAxis } from '../../hooks/use-model-filters';
 import { CollectionTree } from '../collections/CollectionTree';
-import { ArtistIcon, TagIcon, SmartIcon } from '../icons';
+import { ArtistIcon, TagIcon, SmartIcon, MetadataIcon } from '../icons';
 import { FacetItem } from './FacetItem';
 
 interface AxisFacetBodyProps {
@@ -125,6 +125,39 @@ function TagsAxis() {
   );
 }
 
+function MetadataAxis({ slug }: { slug: string }) {
+  const { filters, setMetaFilter } = useModelFilters();
+  const { data, isLoading } = useQuery({
+    queryKey: ['field-values', slug],
+    queryFn: () => getFieldValues(slug),
+  });
+
+  if (isLoading) return <LoadingRows />;
+
+  if (!data || data.length === 0) {
+    return (
+      <p className="px-3 py-4 text-xs text-[var(--ax-rail-fg-muted)]">No values found.</p>
+    );
+  }
+
+  const activeValue = filters.metadataFilters[slug];
+
+  return (
+    <div className="flex flex-col gap-px px-1">
+      {data.map((item) => (
+        <FacetItem
+          key={item.value}
+          icon={MetadataIcon}
+          label={item.value}
+          count={item.modelCount}
+          active={activeValue === item.value}
+          onClick={() => setMetaFilter(slug, activeValue === item.value ? undefined : item.value)}
+        />
+      ))}
+    </div>
+  );
+}
+
 function SmartAxis() {
   const { smartCollectionId, setSmartCollectionId } = useModelFilters();
   const libPath = useLibraryPath();
@@ -170,12 +203,24 @@ function SmartAxis() {
  * to update URL-driven filter state.
  */
 export function AxisFacetBody({ axis }: AxisFacetBodyProps) {
+  const metadataSlug = getMetadataAxisSlug(axis);
+  const { data: metadataFields, isLoading: isLoadingFields } = useQuery({
+    queryKey: ['metadata-fields'],
+    queryFn: getFields,
+    enabled: !!metadataSlug,
+  });
+  const metadataFieldIsBrowsable = metadataSlug
+    ? metadataFields?.some((field) => field.slug === metadataSlug && field.isBrowsable) ?? false
+    : false;
+
   return (
     <div className="flex-1 overflow-y-auto ax-scroll min-h-0">
       {axis === 'collections' && <CollectionsAxis />}
       {axis === 'artists' && <ArtistsAxis />}
       {axis === 'tags' && <TagsAxis />}
       {axis === 'smart' && <SmartAxis />}
+      {metadataSlug && isLoadingFields && <LoadingRows />}
+      {metadataSlug && metadataFieldIsBrowsable && <MetadataAxis slug={metadataSlug} />}
     </div>
   );
 }

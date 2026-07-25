@@ -230,7 +230,7 @@ export function FieldDialog({ open, onOpenChange, field, onSuccess }: FieldDialo
                 className="rounded border-input"
               />
               <span className="text-sm">Browsable</span>
-              <span className="text-xs text-muted-foreground">(shown on model cards)</span>
+              <span className="text-xs text-muted-foreground">(appears in Browse by navigation)</span>
             </label>
           </div>
 

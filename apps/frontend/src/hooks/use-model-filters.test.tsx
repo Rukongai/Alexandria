@@ -39,6 +39,44 @@ describe('useModelFilters — axis (pivot UI state)', () => {
     expect(result.current.axis).toBe('collections');
   });
 
+  it('parses a metadata-prefixed axis from the URL', () => {
+    const { result } = renderHook(() => useModelFilters(), {
+      wrapper: makeWrapper(['/?axis=metadata%3Ascale&meta_scale=1%3A12']),
+    });
+
+    expect(result.current.axis).toBe('metadata:scale');
+    expect(result.current.activeAxisValue.metadata).toEqual({ slug: 'scale', value: '1:12' });
+  });
+
+  it('falls back to collections for an empty metadata axis slug', () => {
+    const { result } = renderHook(() => useModelFilters(), {
+      wrapper: makeWrapper(['/?axis=metadata%3A']),
+    });
+    expect(result.current.axis).toBe('collections');
+  });
+
+  it.each(['artist', 'tags'])('reserves metadata:%s for its built-in axis', (slug) => {
+    const { result } = renderHook(() => useModelFilters(), {
+      wrapper: makeWrapper([`/?axis=metadata%3A${slug}`]),
+    });
+    expect(result.current.axis).toBe('collections');
+    expect(result.current.activeAxisValue.metadata).toBeUndefined();
+  });
+
+  it('rejects an overlong metadata axis slug', () => {
+    const { result } = renderHook(() => useModelFilters(), {
+      wrapper: makeWrapper([`/?axis=${encodeURIComponent(`metadata:${'x'.repeat(256)}`)}`]),
+    });
+    expect(result.current.axis).toBe('collections');
+  });
+
+  it('accepts a nonempty backend-generated leading-hyphen slug', () => {
+    const { result } = renderHook(() => useModelFilters(), {
+      wrapper: makeWrapper(['/?axis=metadata%3A-abcd']),
+    });
+    expect(result.current.axis).toBe('metadata:-abcd');
+  });
+
   it('setAxis("tags") adds ?axis=tags while preserving other params', () => {
     const { result } = renderHook(() => useModelFilters(), {
       wrapper: makeWrapper(['/?q=vase&sort=name']),
