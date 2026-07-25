@@ -891,7 +891,50 @@ export class ModelService {
     libraryId: string,
     requestedMetadataFieldSlugs: string[] = [],
   ): Promise<SplitModelFolderResponse> {
-    const folderPath = this.normalizeFolderPath(requestedPath);
+    return this.splitModelSelection(
+      sourceModelId,
+      { path: requestedPath },
+      requestedName,
+      userId,
+      libraryId,
+      requestedMetadataFieldSlugs,
+    );
+  }
+
+  async splitModelFiles(
+    sourceModelId: string,
+    requestedFileIds: string[],
+    requestedName: string,
+    userId: string,
+    libraryId: string,
+    requestedMetadataFieldSlugs: string[] = [],
+  ): Promise<SplitModelFolderResponse> {
+    const fileIds = [...new Set(requestedFileIds)];
+    if (fileIds.length === 0) {
+      throw validationError('At least one file is required', 'fileIds');
+    }
+    return this.splitModelSelection(
+      sourceModelId,
+      { fileIds },
+      requestedName,
+      userId,
+      libraryId,
+      requestedMetadataFieldSlugs,
+    );
+  }
+
+  private async splitModelSelection(
+    sourceModelId: string,
+    selection: { path: string } | { fileIds: string[] },
+    requestedName: string,
+    userId: string,
+    libraryId: string,
+    requestedMetadataFieldSlugs: string[],
+  ): Promise<SplitModelFolderResponse> {
+    const selectedFileIds = 'fileIds' in selection ? selection.fileIds : undefined;
+    const folderPath = 'path' in selection
+      ? this.normalizeFolderPath(selection.path)
+      : undefined;
     const name = requestedName.trim();
     if (!name) {
       throw validationError('Model name is required', 'name');
@@ -908,35 +951,53 @@ export class ModelService {
       throw validationError('Source model must be ready before splitting', 'sourceModelId');
     }
 
-    const [folder, files, folders] = await Promise.all([
-      db
-        .select({ id: modelFolders.id })
-        .from(modelFolders)
-        .where(and(eq(modelFolders.modelId, sourceModelId), eq(modelFolders.path, folderPath)))
-        .limit(1),
-      db
+    let files: typeof modelFiles.$inferSelect[];
+    let folders: typeof modelFolders.$inferSelect[];
+    if (folderPath !== undefined) {
+      const [folderRows, selectedFiles, selectedFolders] = await Promise.all([
+        db
+          .select({ id: modelFolders.id })
+          .from(modelFolders)
+          .where(and(eq(modelFolders.modelId, sourceModelId), eq(modelFolders.path, folderPath)))
+          .limit(1),
+        db
+          .select()
+          .from(modelFiles)
+          .where(and(
+            eq(modelFiles.modelId, sourceModelId),
+            this.strictDescendantFilter(modelFiles.relativePath, folderPath),
+          ))
+          .orderBy(asc(modelFiles.relativePath)),
+        db
+          .select()
+          .from(modelFolders)
+          .where(and(
+            eq(modelFolders.modelId, sourceModelId),
+            this.descendantFilter(modelFolders.path, folderPath),
+          ))
+          .orderBy(asc(modelFolders.path)),
+      ]);
+      if (folderRows.length === 0 && selectedFiles.length === 0) {
+        throw notFound(`Folder not found: ${folderPath}`);
+      }
+      if (selectedFiles.length === 0) {
+        throw validationError('Folder must contain at least one file before it can be split', 'path');
+      }
+      files = selectedFiles;
+      folders = selectedFolders;
+    } else {
+      files = await db
         .select()
         .from(modelFiles)
         .where(and(
           eq(modelFiles.modelId, sourceModelId),
-          this.strictDescendantFilter(modelFiles.relativePath, folderPath),
+          inArray(modelFiles.id, selectedFileIds!),
         ))
-        .orderBy(asc(modelFiles.relativePath)),
-      db
-        .select()
-        .from(modelFolders)
-        .where(and(
-          eq(modelFolders.modelId, sourceModelId),
-          this.descendantFilter(modelFolders.path, folderPath),
-        ))
-        .orderBy(asc(modelFolders.path)),
-    ]);
-
-    if (folder.length === 0 && files.length === 0) {
-      throw notFound(`Folder not found: ${folderPath}`);
-    }
-    if (files.length === 0) {
-      throw validationError('Folder must contain at least one file before it can be split', 'path');
+        .orderBy(asc(modelFiles.relativePath));
+      if (files.length !== selectedFileIds!.length) {
+        throw notFound('One or more selected files were not found');
+      }
+      folders = [];
     }
 
     const newModelId = randomUUID();
@@ -947,7 +1008,9 @@ export class ModelService {
       .from(thumbnails)
       .where(inArray(thumbnails.sourceFileId, fileIds));
     const fileMoves = files.map((file) => {
-      const relativePath = file.relativePath.slice(folderPath.length + 1);
+      const relativePath = folderPath === undefined
+        ? file.relativePath
+        : file.relativePath.slice(folderPath.length + 1);
       return {
         file,
         relativePath,
@@ -985,10 +1048,15 @@ export class ModelService {
             storagePath: modelFiles.storagePath,
           })
           .from(modelFiles)
-          .where(and(
-            eq(modelFiles.modelId, sourceModelId),
-            this.strictDescendantFilter(modelFiles.relativePath, folderPath),
-          ))
+          .where(folderPath !== undefined
+            ? and(
+                eq(modelFiles.modelId, sourceModelId),
+                this.strictDescendantFilter(modelFiles.relativePath, folderPath),
+              )
+            : and(
+                eq(modelFiles.modelId, sourceModelId),
+                inArray(modelFiles.id, fileIds),
+              ))
           .orderBy(asc(modelFiles.relativePath))
           .for('update');
         const unchanged = currentFiles.length === files.length && currentFiles.every((file, index) =>
@@ -997,24 +1065,26 @@ export class ModelService {
           file.storagePath === files[index]?.storagePath,
         );
         if (!unchanged) {
-          throw conflict('Folder changed while it was being split; try again');
+          throw conflict(`${folderPath === undefined ? 'File selection' : 'Folder'} changed while it was being split; try again`);
         }
 
-        const currentFolders = await tx
-          .select({ id: modelFolders.id, path: modelFolders.path })
-          .from(modelFolders)
-          .where(and(
-            eq(modelFolders.modelId, sourceModelId),
-            this.descendantFilter(modelFolders.path, folderPath),
-          ))
-          .orderBy(asc(modelFolders.path))
-          .for('update');
-        const foldersUnchanged = currentFolders.length === folders.length &&
-          currentFolders.every((folderRow, index) =>
-            folderRow.id === folders[index]?.id && folderRow.path === folders[index]?.path,
-          );
-        if (!foldersUnchanged) {
-          throw conflict('Folder changed while it was being split; try again');
+        if (folderPath !== undefined) {
+          const currentFolders = await tx
+            .select({ id: modelFolders.id, path: modelFolders.path })
+            .from(modelFolders)
+            .where(and(
+              eq(modelFolders.modelId, sourceModelId),
+              this.descendantFilter(modelFolders.path, folderPath),
+            ))
+            .orderBy(asc(modelFolders.path))
+            .for('update');
+          const foldersUnchanged = currentFolders.length === folders.length &&
+            currentFolders.every((folderRow, index) =>
+              folderRow.id === folders[index]?.id && folderRow.path === folders[index]?.path,
+            );
+          if (!foldersUnchanged) {
+            throw conflict('Folder changed while it was being split; try again');
+          }
         }
 
         await this.createModel({
@@ -1034,18 +1104,20 @@ export class ModelService {
           tx,
         );
 
-        for (const folderRow of folders) {
-          if (folderRow.path === folderPath) {
-            await tx.delete(modelFolders).where(eq(modelFolders.id, folderRow.id));
-            continue;
+        if (folderPath !== undefined) {
+          for (const folderRow of folders) {
+            if (folderRow.path === folderPath) {
+              await tx.delete(modelFolders).where(eq(modelFolders.id, folderRow.id));
+              continue;
+            }
+            await tx
+              .update(modelFolders)
+              .set({
+                modelId: newModelId,
+                path: folderRow.path.slice(folderPath.length + 1),
+              })
+              .where(eq(modelFolders.id, folderRow.id));
           }
-          await tx
-            .update(modelFolders)
-            .set({
-              modelId: newModelId,
-              path: folderRow.path.slice(folderPath.length + 1),
-            })
-            .where(eq(modelFolders.id, folderRow.id));
         }
 
         for (const move of fileMoves) {

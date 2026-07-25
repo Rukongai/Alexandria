@@ -329,4 +329,36 @@ describe('FileTree', () => {
 
     expect(onSplitFolder).toHaveBeenCalledWith('variants/large', 'large');
   });
+
+  it('offers split for selected files and prefills the first selected filename', () => {
+    const onSplitFiles = vi.fn();
+    render(<FileTree tree={TREE} modelId="m1" onSplitFiles={onSplitFiles} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable file multi-select' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select file body.stl' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select file readme.txt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split' }));
+
+    expect(onSplitFiles).toHaveBeenCalledWith(['s1', 'd1'], 'body.stl');
+  });
+
+  it('explains the limit when more than 500 files are selected', () => {
+    const manyFiles: FileTreeNode[] = Array.from({ length: 501 }, (_, index) => ({
+      name: `part-${index}.stl`,
+      type: 'file',
+      fileType: 'stl',
+      id: `file-${index}`,
+      isDuplicate: false,
+    }));
+    render(<FileTree tree={manyFiles} modelId="m1" onSplitFiles={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable file multi-select' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all files' }));
+
+    expect(screen.getByRole('button', { name: 'Split' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Split' })).toHaveAttribute(
+      'title',
+      'Select no more than 500 files to split',
+    );
+  });
 });

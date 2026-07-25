@@ -16,7 +16,8 @@ import { Label } from '../ui/label';
 
 interface SplitFolderDialogProps {
   open: boolean;
-  folderPath: string;
+  folderPath?: string;
+  fileCount?: number;
   initialName: string;
   metadata: MetadataValue[];
   onOpenChange: (open: boolean) => void;
@@ -32,6 +33,7 @@ function isPopulatedMetadata(field: MetadataValue): boolean {
 export function SplitFolderDialog({
   open,
   folderPath,
+  fileCount,
   initialName,
   metadata,
   onOpenChange,
@@ -53,7 +55,7 @@ export function SplitFolderDialog({
       setName(initialName);
       setSelectedMetadataSlugs(new Set());
     }
-  }, [open, initialName, folderPath]);
+  }, [open, initialName, folderPath, fileCount]);
 
   function setMetadataSelected(fieldSlug: string, selected: boolean) {
     setSelectedMetadataSlugs((current) => {
@@ -94,11 +96,20 @@ export function SplitFolderDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Scissors className="h-4 w-4 text-primary" aria-hidden="true" />
-            Split Folder into New Model
+            Split into New Model
           </DialogTitle>
           <DialogDescription>
-            Everything in <span className="font-medium text-foreground">{folderPath}</span> will
-            move into a new model and become its root contents.
+            {folderPath !== undefined ? (
+              <>
+                Everything in <span className="font-medium text-foreground">{folderPath}</span>{' '}
+                will move into a new model and become its root contents.
+              </>
+            ) : (
+              <>
+                The selected {fileCount} file{fileCount === 1 ? '' : 's'} will move together into
+                a new model.
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
 

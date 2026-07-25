@@ -1,5 +1,6 @@
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 200;
+export const MAX_SPLIT_FILE_COUNT = 500;
 
 export const SUPPORTED_IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'] as const;
 export const SUPPORTED_DOCUMENT_FORMATS = ['pdf', 'txt', 'md'] as const;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_SPLIT_FILE_COUNT } from '../constants/index.js';
 
 const relativePathSchema = z.string().min(1).max(1000);
 const optionalParentPathSchema = z.string().max(1000).optional();
@@ -52,7 +53,12 @@ export const deleteModelFolderSchema = z.object({
 });
 
 export const splitModelFolderSchema = z.object({
-  path: relativePathSchema,
+  path: relativePathSchema.optional(),
+  fileIds: z.array(z.string().uuid()).min(1).max(MAX_SPLIT_FILE_COUNT)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'File IDs must be unique',
+    })
+    .optional(),
   name: z.string().trim().min(1).max(255),
   metadataFieldSlugs: z.array(z.string().trim().min(1).max(255))
     .max(100)
@@ -60,6 +66,8 @@ export const splitModelFolderSchema = z.object({
       message: 'Metadata field slugs must be unique',
     })
     .default([]),
+}).refine((data) => (data.path === undefined) !== (data.fileIds === undefined), {
+  message: 'Exactly one of path or fileIds is required',
 });
 
 export const compressModelFolderSchema = z.object({

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
     request.libraryId = LIBRARY_ID;
   }),
   splitModelFolder: vi.fn(),
+  splitModelFiles: vi.fn(),
 }));
 
 vi.mock('../middleware/auth.js', () => ({ requireAuth: mocks.requireAuth }));
@@ -21,6 +22,7 @@ vi.mock('../middleware/library.js', () => ({ requireLibrary: mocks.requireLibrar
 vi.mock('../services/model.service.js', () => ({
   modelService: {
     splitModelFolder: mocks.splitModelFolder,
+    splitModelFiles: mocks.splitModelFiles,
   },
 }));
 
@@ -32,6 +34,11 @@ describe('Model folder split route', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     mocks.splitModelFolder.mockResolvedValue({
+      sourceModelId: SOURCE_MODEL_ID,
+      newModelId: NEW_MODEL_ID,
+      movedFileCount: 2,
+    });
+    mocks.splitModelFiles.mockResolvedValue({
       sourceModelId: SOURCE_MODEL_ID,
       newModelId: NEW_MODEL_ID,
       movedFileCount: 2,
@@ -87,6 +94,49 @@ describe('Model folder split route', () => {
 
     expect(response.statusCode).toBe(400);
     expect(mocks.splitModelFolder).not.toHaveBeenCalled();
+  });
+
+  it('should validate and delegate selected files as one split', async () => {
+    const fileIds = [
+      '55555555-5555-4555-8555-555555555555',
+      '66666666-6666-4666-8666-666666666666',
+    ];
+    const response = await app.inject({
+      method: 'POST',
+      url: `/models/${SOURCE_MODEL_ID}/folders/split`,
+      payload: {
+        fileIds,
+        name: 'Selected Parts',
+        metadataFieldSlugs: ['artist'],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(mocks.splitModelFiles).toHaveBeenCalledWith(
+      SOURCE_MODEL_ID,
+      fileIds,
+      'Selected Parts',
+      USER_ID,
+      LIBRARY_ID,
+      ['artist'],
+    );
+    expect(mocks.splitModelFolder).not.toHaveBeenCalled();
+  });
+
+  it('should reject requests that provide both a folder and selected files', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/models/${SOURCE_MODEL_ID}/folders/split`,
+      payload: {
+        path: 'bundle',
+        fileIds: ['55555555-5555-4555-8555-555555555555'],
+        name: 'Ambiguous',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mocks.splitModelFolder).not.toHaveBeenCalled();
+    expect(mocks.splitModelFiles).not.toHaveBeenCalled();
   });
 
   it('should default an omitted metadata selection to copying nothing', async () => {

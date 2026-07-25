@@ -681,21 +681,30 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // POST /:id/folders/split — move a folder's contents into a new model
+  // POST /:id/folders/split — move a folder or selected files into a new model
   app.post(
     '/:id/folders/split',
     { preHandler: [requireAuth, requireLibrary, validate(splitModelFolderSchema)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const body = request.body as SplitModelFolderRequest;
-      const result = await modelService.splitModelFolder(
-        id,
-        body.path,
-        body.name,
-        request.user!.id,
-        request.libraryId!,
-        body.metadataFieldSlugs,
-      );
+      const result = body.fileIds !== undefined
+        ? await modelService.splitModelFiles(
+            id,
+            body.fileIds,
+            body.name,
+            request.user!.id,
+            request.libraryId!,
+            body.metadataFieldSlugs,
+          )
+        : await modelService.splitModelFolder(
+            id,
+            body.path,
+            body.name,
+            request.user!.id,
+            request.libraryId!,
+            body.metadataFieldSlugs,
+          );
 
       return reply.status(201).send({ data: result, meta: null, errors: null });
     },
