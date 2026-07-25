@@ -320,11 +320,13 @@ export function CoverCropModal({
               className="relative overflow-hidden rounded-lg bg-muted select-none"
               style={{ lineHeight: 0 }}
             >
-              {/* Full image at natural aspect ratio */}
+              {/* Detail rendition at its natural aspect ratio */}
               <img
                 ref={imgRef}
-                src={`/api${image.originalUrl}`}
+                src={`/api${image.thumbnailUrl}`}
                 alt={image.filename}
+                loading="eager"
+                decoding="async"
                 draggable={false}
                 className="w-full h-auto block"
                 onLoad={() => {
@@ -388,8 +390,10 @@ export function CoverCropModal({
             >
               {displaySize ? (
                 <img
-                  src={`/api${image.originalUrl}`}
+                  src={`/api${image.thumbnailUrl}`}
                   alt="Card preview"
+                  loading="lazy"
+                  decoding="async"
                   draggable={false}
                   className="w-full h-full object-cover"
                   style={{

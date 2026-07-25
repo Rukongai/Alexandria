@@ -17,8 +17,10 @@ After the object is stored, Alexandria creates its `ModelFile` row and updates t
 | Variable | Default | Required | Purpose |
 |---|---|---|---|
 | `STORAGE_BACKEND` | `local` | No | `local` or `s3` |
-| `STORAGE_PATH` | `./data/storage` | Local; migration source | Local managed-storage root |
+| `STORAGE_PATH` | `./data/storage` | Local; migration or default S3-cache path | Local managed-storage root and base for the default S3 thumbnail-cache path |
 | `STORAGE_UPLOAD_CONCURRENCY` | `8` | No | Files uploaded in parallel to a remote backend; max 32, ignored for local storage |
+| `S3_THUMBNAIL_CACHE_MAX_BYTES` | `1073741824` | No | Maximum persistent thumbnail-cache size in bytes; S3 only; `0` disables |
+| `S3_THUMBNAIL_CACHE_PATH` | `<STORAGE_PATH>/.cache/s3-thumbnails` | No | Persistent thumbnail-cache directory; S3 only |
 | `S3_ENDPOINT` | AWS SDK default | Compatible services | Full custom endpoint URL; omit for AWS S3 |
 | `S3_REGION` | `us-east-1` | S3 | Signing region expected by the provider |
 | `S3_BUCKET` | — | S3 | Existing bucket name |
@@ -38,6 +40,12 @@ The standard chain also supports shared AWS configuration and workload credentia
 The backend runs `HeadBucket` before database migrations and before listening for HTTP traffic. An invalid endpoint, bucket, region, or credential therefore stops startup. `S3_BUCKET` is required when `STORAGE_BACKEND=s3`.
 
 Docker Compose passes the storage and common AWS credential variables into the backend. Its `storagedata` volume remains mounted even in S3 mode so it can serve as the source for migration or a rollback to local storage.
+
+## S3 thumbnail cache
+
+S3 remains the authoritative, private store, and authenticated Fastify routes continue to proxy every response. In S3 mode, Alexandria can keep a bounded persistent local cache for logical keys beneath `thumbnails/`. By default the cache lives at `<STORAGE_PATH>/.cache/s3-thumbnails`; `S3_THUMBNAIL_CACHE_PATH` can place it in a dedicated directory elsewhere. A custom path inside `STORAGE_PATH` must remain beneath that reserved default subtree so migration can never exclude authoritative model or thumbnail objects. It never contains model-file keys and is safe to discard and rebuild.
+
+Thumbnail reads are read-through: a hit is served locally, while a miss retrieves the object from S3 and caches it when possible. Concurrent misses for the same logical key share one S3 retrieval. Before a thumbnail mutation changes S3, the old cache entry is removed; if removal fails, a durable invalidation marker prevents stale bytes from being served across restarts. A mutation is rejected before S3 only when neither action succeeds. Successful buffer stores then populate the cache when possible. Cache files are published atomically and least-recently-used entries are evicted when `S3_THUMBNAIL_CACHE_MAX_BYTES` is exceeded. Other cache filesystem or bookkeeping failures are treated as misses and do not fail S3 reads. The default limit is `1073741824` bytes (1 GiB); set it to `0` to disable the cache.
 
 ## Generic S3-compatible example
 
@@ -91,7 +99,7 @@ ETag verification assumes the provider follows the standard S3 scheme — MD5 fo
 
 ## Migrate local storage to S3
 
-Migration copies the existing `STORAGE_PATH` tree into the configured S3 bucket and prefix. It never deletes local source files.
+Migration copies the authoritative objects in the existing `STORAGE_PATH` tree into the configured S3 bucket and prefix. It never deletes local source files. The reserved thumbnail-cache directory is excluded from enumeration because its contents are rebuildable copies, not migration or rollback sources.
 
 1. Stop the backend so no new local objects are written during the copy.
 2. Set `STORAGE_BACKEND=s3`, the `S3_*` variables, and credentials. Keep `STORAGE_PATH` pointed at the existing local data. The migration script does not load the repository's `.env` automatically, so export those values into the shell first. For example, from the repository root:

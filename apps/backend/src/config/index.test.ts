@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_DATABASE_POOL_MAX,
   DEFAULT_STORAGE_UPLOAD_CONCURRENCY,
+  DEFAULT_S3_THUMBNAIL_CACHE_MAX_BYTES,
   MAX_STORAGE_UPLOAD_CONCURRENCY,
   resolveAiEncryptionKey,
   resolveAllowPrivateProviderUrls,
   resolveDatabasePoolMax,
   resolveStorageUploadConcurrency,
+  resolveS3ThumbnailCacheMaxBytes,
+  resolveS3ThumbnailCachePath,
 } from './index.js';
 
 describe('storage upload concurrency configuration', () => {
@@ -38,6 +41,51 @@ describe('storage upload concurrency configuration', () => {
       resolveStorageUploadConcurrency(String(MAX_STORAGE_UPLOAD_CONCURRENCY + 1)),
     ).toThrow('STORAGE_UPLOAD_CONCURRENCY must not exceed');
   });
+});
+
+describe('S3 thumbnail cache configuration', () => {
+  it('defaults to a 1 GiB cache beneath managed storage', () => {
+    expect(resolveS3ThumbnailCacheMaxBytes(undefined)).toBe(
+      DEFAULT_S3_THUMBNAIL_CACHE_MAX_BYTES,
+    );
+    expect(resolveS3ThumbnailCacheMaxBytes('')).toBe(1024 * 1024 * 1024);
+    expect(resolveS3ThumbnailCachePath('/data/storage', undefined)).toBe(
+      '/data/storage/.cache/s3-thumbnails',
+    );
+  });
+
+  it('accepts zero to disable the cache and a custom cache root', () => {
+    expect(resolveS3ThumbnailCacheMaxBytes('0')).toBe(0);
+    expect(resolveS3ThumbnailCacheMaxBytes('2048')).toBe(2048);
+    expect(resolveS3ThumbnailCachePath('/data/storage', '/fast/cache')).toBe('/fast/cache');
+    expect(
+      resolveS3ThumbnailCachePath(
+        '/data/storage',
+        '/data/storage/.cache/s3-thumbnails/fast-tier',
+      ),
+    ).toBe('/data/storage/.cache/s3-thumbnails/fast-tier');
+  });
+
+  it.each([
+    '/data/storage',
+    '/data',
+    '/data/storage/models',
+    '/data/storage/thumbnails',
+    '/data/storage/.cache',
+  ])('rejects a cache path that overlaps authoritative storage: %s', (cachePath) => {
+    expect(() => resolveS3ThumbnailCachePath('/data/storage', cachePath)).toThrow(
+      'S3_THUMBNAIL_CACHE_PATH',
+    );
+  });
+
+  it.each(['-1', '1.5', 'one-gib', ' 1024', '9007199254740992'])(
+    'rejects invalid S3_THUMBNAIL_CACHE_MAX_BYTES value %j',
+    (value) => {
+      expect(() => resolveS3ThumbnailCacheMaxBytes(value)).toThrow(
+        'S3_THUMBNAIL_CACHE_MAX_BYTES must be a non-negative integer',
+      );
+    },
+  );
 });
 
 describe('database configuration', () => {

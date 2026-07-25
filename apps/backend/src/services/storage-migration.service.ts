@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
+import {
+  config,
+  S3_THUMBNAIL_CACHE_RELATIVE_PATH,
+} from '../config/index.js';
 import { forEachWithConcurrency } from '../utils/concurrency.js';
 import type { IStorageService } from './storage.service.js';
 import {
@@ -33,7 +37,11 @@ export async function migrateLocalStorage(
   target: IStorageService,
   onProgress: (progress: StorageMigrationProgress) => void = () => {},
 ): Promise<StorageMigrationResult> {
-  const files = await listFiles(source.getStorageRoot());
+  const root = source.getStorageRoot();
+  const files = await listFiles(root, [
+    path.resolve(root, S3_THUMBNAIL_CACHE_RELATIVE_PATH),
+    path.resolve(config.s3ThumbnailCachePath),
+  ]);
   let copied = 0;
   let skipped = 0;
   let processed = 0;
@@ -79,8 +87,10 @@ export async function migrateLocalStorage(
 
 async function listFiles(
   root: string,
+  excludedDirectories: string[],
 ): Promise<Array<{ absolutePath: string; key: string }>> {
   const files: Array<{ absolutePath: string; key: string }> = [];
+  const excluded = new Set(excludedDirectories.map((directory) => path.resolve(directory)));
 
   async function walk(directory: string): Promise<void> {
     const entries = await fsPromises.readdir(directory, { withFileTypes: true });
@@ -89,6 +99,7 @@ async function listFiles(
     for (const entry of entries) {
       const absolutePath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
+        if (excluded.has(path.resolve(absolutePath))) continue;
         await walk(absolutePath);
       } else if (entry.isFile()) {
         const key = path.relative(root, absolutePath).split(path.sep).join('/');

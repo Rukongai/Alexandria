@@ -1237,7 +1237,7 @@ Retrieve the full detail payload for a model.
 }
 ```
 
-`data` is a `ModelDetail`. `isDuplicate` follows the same rule as `ModelCard`: it is true only for a `ready`, non-empty model when every current file is marked duplicate. `images` contains only files of type `image`, ordered by creation time. `collections` lists the collections this model belongs to as `CollectionSummary` objects. `sourceType` is one of `zip_upload` (legacy), `archive_upload` (zip, rar, 7z, or tar.gz upload), `folder_import`, or `manual`.
+`data` is a `ModelDetail`. `isDuplicate` follows the same rule as `ModelCard`: it is true only for a `ready`, non-empty model when every current file is marked duplicate. `images` contains only files of type `image`, ordered by creation time. Each image's `thumbnailUrl` selects the 800 px detail rendition used by the model hero and crop editor; `originalUrl` is reserved for the lightbox. `collections` lists the collections this model belongs to as `CollectionSummary` objects. `sourceType` is one of `zip_upload` (legacy), `archive_upload` (zip, rar, 7z, or tar.gz upload), `folder_import`, or `manual`.
 
 ---
 
@@ -2454,7 +2454,9 @@ Serve a WebP thumbnail by its ID. The `:id` segment is the thumbnail UUID; the `
 
 **Path parameter:** `id.webp` — thumbnail UUID followed by `.webp` (e.g., `a1b2c3d4-....webp`)
 
-**Response (200):** Raw WebP image bytes. `Content-Type: image/webp`. `Cache-Control: private, max-age=86400` (1 day).
+**Response (200):** Raw WebP image bytes. `Content-Type: image/webp`. `Cache-Control: private, max-age=31536000, immutable` (1 year). `ETag` is stable for the thumbnail's immutable bytes, and `Vary: Cookie` partitions browser cache entries between signed-in accounts.
+
+When `If-None-Match` matches the current `ETag`, the endpoint returns `304 Not Modified` with no response body.
 
 ---
 
@@ -2470,7 +2472,9 @@ Serve a model file by its relative path within the model. The `*` wildcard captu
 
 Pass `download=1` or `download=true` to request an attachment response with `Content-Disposition` set to the stored filename.
 
-**Response (200):** Raw file bytes. `Content-Type` is set from the stored MIME type, or inferred from the file extension. `Cache-Control: private, max-age=86400` (1 day).
+**Response (200):** Raw file bytes. `Content-Type` is set from the stored MIME type, or inferred from the file extension. `Cache-Control: private, max-age=86400` (1 day), with `Vary: Cookie` to partition browser cache entries between signed-in accounts. `Content-Length` is the stored file size, and the strong `ETag` is derived from the file's stored SHA-256 hash.
+
+When `If-None-Match` matches the current `ETag`, the endpoint returns `304 Not Modified` with no response body. The optional `download` query continues to control `Content-Disposition`; it does not change validation or cache behavior.
 
 Supported extension-to-MIME mappings: `.webp`, `.jpg`/`.jpeg`, `.png`, `.gif`, `.tif`/`.tiff`, `.stl`, `.obj`, `.pdf`, `.txt`, `.md`. Files with unrecognized extensions return `application/octet-stream`.
 
