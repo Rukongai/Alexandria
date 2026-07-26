@@ -320,6 +320,37 @@ describe('BatchMetadataForm', () => {
     expect(screen.queryByText('guessed')).toBeNull();
   });
 
+  it('does not submit blank optional metadata values from an archive', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+            metadataFile: { metadata: { url: '', source: 'Dragon Quest' } },
+          }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import one model' }));
+
+    await waitFor(() => expect(commitImportSession).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({ metadata: { source: 'Dragon Quest' } }),
+    ));
+  });
+
   it('lets a saved draft win over the archive metadata.json', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
