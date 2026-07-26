@@ -118,6 +118,23 @@ function createInitialForm(
   };
 }
 
+/**
+ * An archive metadata file often uses an empty string for an unknown optional
+ * value (for example, `url: ""`). Metadata fields such as URL and number do
+ * not accept that placeholder, so omit it rather than turning a prefill into
+ * a failed import. `null` is intentionally retained because it means clear
+ * this value when a saved draft explicitly includes it.
+ */
+function omitBlankMetadataValues(
+  metadata: NonNullable<BatchUploadMetadata['metadata']>,
+): NonNullable<BatchUploadMetadata['metadata']> {
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([, value]) => (
+      typeof value !== 'string' || value.trim().length > 0
+    )),
+  );
+}
+
 /** Where a prefilled field's value came from, for the review-form badges. */
 type FieldSource = 'file' | 'detected' | null;
 
@@ -204,6 +221,7 @@ export function BatchMetadataForm({
     const hasExistingCollection = !!form.collectionId && form.collectionId !== '__new__';
     const modelName = form.modelName.trim();
     const description = form.description.trim();
+    const metadata = omitBlankMetadataValues(form.metadata);
     const batchMetadata: BatchUploadMetadata = {
       modelName,
       description: description || null,
@@ -213,7 +231,7 @@ export function BatchMetadataForm({
         : {}),
       ...(form.artist.trim() ? { artist: form.artist.trim() } : {}),
       ...(form.tags.length > 0 ? { tags: form.tags } : {}),
-      ...(Object.keys(form.metadata).length > 0 ? { metadata: form.metadata } : {}),
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       options: {
         markPreSupported: form.markPreSupported,
         autoThumbnails: form.autoThumbnails,
