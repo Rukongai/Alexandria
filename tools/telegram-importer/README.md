@@ -126,9 +126,11 @@ All three require `--staging-dir`, and `--staging-dir` requires one of them. `TE
 `--stage N --cleanup codex` turns the one-shot staged import into a channel-drain
 loop. The importer downloads at most N new bundles, gives each folder to Codex,
 validates Codex's structured receipt and files, uploads only the validated
-outputs, and then downloads the next batch. It stops when no unstaged bundle
-remains. The batch size bounds staging disk growth; `--cleanup-concurrency`
-independently controls how many Codex cleanup processes run at once.
+outputs, deletes each local output folder after Alexandria confirms it is
+committed, and then downloads the next batch. It stops when no unstaged bundle
+remains. Failed, review-required, and indeterminate folders are retained. The
+batch size bounds staging disk growth; `--cleanup-concurrency` independently
+controls how many Codex cleanup processes run at once.
 
 `--cleanup codex` requires `--stage` and a reference folder containing
 `metadata.json`. Use a completed model folder from this staged workflow. Codex
@@ -168,6 +170,8 @@ cannot perform the upload itself.
 Interrupted `downloaded`, `cleaning`, and `cleanup_failed` records resume cleanup
 before new downloads on the next automated run. A `ready` record resumes only
 after its persisted receipt and current files pass the complete validation again.
+`committed_cleanup_pending` records finish deleting only outputs whose Alexandria
+session and model IDs were already persisted, without replaying their uploads.
 An `uploading` record is indeterminate: Alexandria may already have committed the
 model, so the importer changes it to `needs_review` instead of risking a duplicate
 upload. Bundles already in `needs_review` or `upload_failed` are not retried by the
@@ -278,7 +282,15 @@ and validated output paths in `staged_bundles`. Upload transitions through
 `ready`, `uploading`, and `uploaded`. A later automated invocation revalidates
 `ready` outputs before resuming them; it leaves an interrupted `uploading` record
 for manual Alexandria-session reconciliation because replaying an indeterminate
-remote commit could create a duplicate model.
+remote commit could create a duplicate model. Once Alexandria reports
+`committed`, automated mode first records that output's Alexandria session and
+model IDs as `committed_cleanup_pending`, then removes the corresponding local
+model folder instead of moving it beneath `uploaded/`, and finally records the
+bundle as `uploaded`. On restart it safely finishes a pending deletion; for a
+partially committed split bundle it deletes only the recorded committed outputs
+and leaves the remainder in `needs_review`. These durable lifecycle rows prevent
+the Telegram bundle from being staged again. Manual `--upload-only` and manual
+`--stage` runs retain their completed folders beneath `uploaded/` as before.
 
 **The upload phase performs no deduplication.** No Telegram media signatures, no content hashes, no reads or writes to the `imports` table that the direct path uses. The folders are curated and uploaded as given. Automated mode's `staged_bundles` lifecycle limits which validated folders it hands to the uploader, but it does not add content or Alexandria-model deduplication. The consequence is explicit: moving a folder back out of `uploaded/` and re-running `--upload-only` creates a second Alexandria model. Manual download and upload remain deliberately decoupled, which is what lets folders be split, merged, renamed, and recompressed freely between them.
 

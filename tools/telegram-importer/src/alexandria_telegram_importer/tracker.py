@@ -417,7 +417,12 @@ class ImportTracker:
         return staged
 
     def update_staged_status(self, bundle_key: str, *, status: str) -> StagedBundle:
-        allowed = {"uploading", "uploaded", "upload_failed"}
+        allowed = {
+            "uploading",
+            "committed_cleanup_pending",
+            "uploaded",
+            "upload_failed",
+        }
         if status not in allowed:
             raise ValueError(f"Unsupported staged status {status!r}")
         now = datetime.now(UTC).isoformat()
@@ -433,6 +438,42 @@ class ImportTracker:
         if staged is None:
             raise KeyError(bundle_key)
         return staged
+
+    def record_staged_committed_output(
+        self,
+        bundle_key: str,
+        *,
+        output_folder: str,
+        result: dict[str, Any],
+    ) -> StagedBundle:
+        """Persist remote commit identity before its local folder is deleted."""
+        staged = self.get_staged(bundle_key)
+        if staged is None:
+            raise KeyError(bundle_key)
+        report = dict(staged.cleanup_report or {})
+        committed = report.get("committedOutputs")
+        if not isinstance(committed, dict):
+            committed = {}
+        committed[output_folder] = dict(result)
+        report["committedOutputs"] = committed
+        now = datetime.now(UTC).isoformat()
+        with self._connection:
+            updated = self._connection.execute(
+                """
+                UPDATE staged_bundles
+                SET status = 'committed_cleanup_pending',
+                    cleanup_report = ?,
+                    updated_at = ?
+                WHERE bundle_key = ?
+                """,
+                (json.dumps(report), now, bundle_key),
+            )
+        if updated.rowcount != 1:
+            raise KeyError(bundle_key)
+        result_record = self.get_staged(bundle_key)
+        if result_record is None:
+            raise KeyError(bundle_key)
+        return result_record
 
     def staged_by_status(
         self,

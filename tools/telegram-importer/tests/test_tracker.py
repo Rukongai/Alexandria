@@ -363,7 +363,9 @@ def test_should_treat_recording_the_same_bundle_twice_as_idempotent(tmp_path) ->
         tracker.close()
 
 
-def test_should_add_the_staged_bundles_table_to_an_existing_state_file(tmp_path) -> None:
+def test_should_add_the_staged_bundles_table_to_an_existing_state_file(
+    tmp_path,
+) -> None:
     path = tmp_path / "state.sqlite3"
     legacy = sqlite3.connect(path)
     legacy.execute(
@@ -412,11 +414,26 @@ def test_should_persist_cleanup_lifecycle_and_outputs(tmp_path) -> None:
             output_folders=("002501-dragon-set/dragon",),
             report={"status": "ready"},
         )
+        committed = tracker.record_staged_committed_output(
+            "abc123",
+            output_folder="002501-dragon-set/dragon",
+            result={"sessionId": "session-1", "modelId": "model-1"},
+        )
         uploaded = tracker.update_staged_status("abc123", status="uploaded")
 
         assert cleaning.cleanup_attempts == 1
         assert ready.output_folders == ("002501-dragon-set/dragon",)
         assert ready.cleanup_report == {"status": "ready"}
+        assert committed.status == "committed_cleanup_pending"
+        assert committed.cleanup_report == {
+            "status": "ready",
+            "committedOutputs": {
+                "002501-dragon-set/dragon": {
+                    "sessionId": "session-1",
+                    "modelId": "model-1",
+                },
+            },
+        }
         assert uploaded.status == "uploaded"
         assert tracker.staged_by_status(-100987654, ("uploaded",)) == (uploaded,)
     finally:

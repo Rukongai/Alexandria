@@ -22,7 +22,7 @@ from .codex_cleanup import (
     validate_cleanup_receipt,
 )
 from .folder_metadata import read_metadata
-from .folder_upload import FolderUploader, describe_staging
+from .folder_upload import FolderUploader, delete_committed, describe_staging
 from .grouping import build_bundles
 from .importer import ChannelImporter, describe_plan
 from .models import MediaRef
@@ -699,15 +699,28 @@ async def run_codex_staged_batches(
         if alexandria is None:
             alexandria = await _login(args)
         tracker.update_staged_status(bundle.bundle_key, status="uploading")
+
+        def record_committed(path: Path, result: dict[str, object]) -> None:
+            relative = str(path.resolve().relative_to(args.staging_dir.resolve()))
+            tracker.record_staged_committed_output(
+                bundle.bundle_key,
+                output_folder=relative,
+                result=result,
+            )
+
         try:
             upload_outcomes = await FolderUploader(
                 alexandria=alexandria,
                 work_root=work_root,
                 concurrency=args.concurrency,
                 progress=progress,
+                delete_completed=True,
+                on_committed=record_committed,
             ).run(args.staging_dir, include_paths=revalidation.paths)
         except Exception as error:  # noqa: BLE001 - record the bundle before aborting
-            tracker.update_staged_status(bundle.bundle_key, status="upload_failed")
+            current = tracker.get_staged(bundle.bundle_key)
+            if current is None or current.status != "committed_cleanup_pending":
+                tracker.update_staged_status(bundle.bundle_key, status="upload_failed")
             totals["upload_failed"] += 1
             log.error("Upload failed for %s: %s", label, error)
             return
@@ -716,12 +729,78 @@ async def run_codex_staged_batches(
         failed = upload_outcomes.get("failed", 0)
         totals["uploaded"] += completed
         totals["upload_failed"] += failed
-        tracker.update_staged_status(
-            bundle.bundle_key,
-            status="uploaded"
-            if completed == len(revalidation.paths) and not failed
-            else "upload_failed",
+        if completed == len(revalidation.paths) and not failed:
+            tracker.update_staged_status(bundle.bundle_key, status="uploaded")
+            return
+        current = tracker.get_staged(bundle.bundle_key)
+        if current is not None and current.status == "committed_cleanup_pending":
+            report = dict(current.cleanup_report or {})
+            report["uploadRecovery"] = (
+                "Some outputs committed before another output failed. Committed "
+                "identities are preserved; reconcile the remaining outputs manually."
+            )
+            tracker.update_staged_cleanup(
+                bundle.bundle_key,
+                status="needs_review",
+                output_folders=current.output_folders,
+                report=report,
+            )
+            totals["needs_review"] += 1
+        else:
+            tracker.update_staged_status(bundle.bundle_key, status="upload_failed")
+
+    def reconcile_committed_cleanup(item: StagedBundle) -> None:
+        report = dict(item.cleanup_report or {})
+        committed = report.get("committedOutputs")
+        errors: list[str] = []
+        if not isinstance(committed, dict) or not committed:
+            errors.append("Committed output identities are missing")
+            committed = {}
+        expected = set(item.output_folders)
+        committed_paths = set(committed)
+        if unexpected := committed_paths - expected:
+            errors.append(
+                "Committed outputs are outside the persisted allowlist: "
+                + ", ".join(sorted(unexpected))
+            )
+        for relative, result in committed.items():
+            if not isinstance(result, dict) or not all(
+                isinstance(result.get(key), str) and result[key]
+                for key in ("sessionId", "modelId")
+            ):
+                errors.append(f"Committed identity is incomplete for {relative}")
+                continue
+            if relative not in expected:
+                continue
+            try:
+                delete_committed(args.staging_dir / relative, args.staging_dir)
+            except (OSError, ValueError) as error:
+                errors.append(f"Could not delete committed output {relative}: {error}")
+        if errors:
+            report["cleanupRecoveryErrors"] = errors
+            tracker.update_staged_cleanup(
+                item.bundle_key,
+                status="needs_review",
+                output_folders=item.output_folders,
+                report=report,
+            )
+            totals["needs_review"] += 1
+            return
+        if committed_paths == expected:
+            tracker.update_staged_status(item.bundle_key, status="uploaded")
+            totals["uploaded"] += len(committed_paths)
+            return
+        report["uploadRecovery"] = (
+            "Only part of this split bundle committed before interruption. "
+            "Committed identities are preserved; reconcile remaining outputs manually."
         )
+        tracker.update_staged_cleanup(
+            item.bundle_key,
+            status="needs_review",
+            output_folders=item.output_folders,
+            report=report,
+        )
+        totals["needs_review"] += 1
 
     async def clean_and_upload(
         items: tuple[StagedBundle, ...],
@@ -743,6 +822,17 @@ async def run_codex_staged_batches(
             await upload_ready(bundle, label=label)
 
     try:
+        pending_cleanups = tracker.staged_by_status(
+            telegram.channel_id,
+            ("committed_cleanup_pending",),
+        )
+        for item in pending_cleanups:
+            batch_number += 1
+            print(
+                f"Batch {batch_number}: finishing local cleanup for {item.folder_name}"
+            )
+            reconcile_committed_cleanup(item)
+
         indeterminate_uploads = tracker.staged_by_status(
             telegram.channel_id,
             ("uploading",),
