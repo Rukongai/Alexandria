@@ -189,6 +189,19 @@ export class MetadataService {
     return normalizedValue as string | string[] | number | boolean | null;
   }
 
+  /** Validate a complete metadata map without mutating a model. */
+  async normalizeAndValidateValues(
+    data: SetModelMetadataRequest,
+    executor: DatabaseExecutor = db,
+  ): Promise<SetModelMetadataRequest> {
+    const normalized: SetModelMetadataRequest = {};
+    for (const [fieldSlug, rawValue] of Object.entries(data)) {
+      const field = await this.getFieldBySlug(fieldSlug, executor);
+      normalized[fieldSlug] = this.normalizeAndValidateFieldValue(field, rawValue);
+    }
+    return normalized;
+  }
+
   // ---------------------------------------------------------------------------
   // Field Definition CRUD
   // ---------------------------------------------------------------------------

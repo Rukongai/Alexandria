@@ -2414,6 +2414,9 @@ Metadata is the system for attaching typed attributes to models. Field definitio
 
 List all metadata field definitions.
 
+Field definitions are global Alexandria configuration, not library-scoped.
+`X-Library-Id` does not change this response.
+
 **Auth required:** Yes
 
 **Response (200):**
@@ -2462,6 +2465,60 @@ List all metadata field definitions.
 | `url` | URL string |
 | `enum` | Single value from a predefined list (`config.enumOptions`) |
 | `multi_enum` | Multiple values from a predefined list; Tags uses this type |
+
+---
+
+### POST /metadata/fields/validate
+
+Validate a metadata-value map against the current configured field definitions
+without changing a model. This uses the same field lookup, tag normalization,
+type checks, enum options, URL parser, date parser, and RE2 text-pattern checks
+as model writes and import-session commits.
+
+Like the field-definition list, validation is global rather than library-scoped;
+`X-Library-Id` is ignored. The route performs no model lookup or mutation.
+
+**Auth required:** Yes
+
+**Request body:** A `SetModelMetadataRequest` JSON object keyed by metadata
+field slug. Slugs must be 1–255 characters. Each value is `null`, a string of
+at most 10,000 characters, an array of at most 100 such strings, a finite
+number, or a boolean. The configured field definition then applies the semantic
+type rules described under `PATCH /models/:id/metadata`.
+
+```json
+{
+  "year": 2026,
+  "nsfw": false,
+  "url": "https://example.com/model"
+}
+```
+
+**Response (200):** The standard envelope containing the validated metadata
+map. Non-Tag values are unchanged. In addition to `null`, the default Tags
+field accepts a string or string array, trims names, enforces the 255-character
+name and generated-slug limits, rejects blanks, and removes case-insensitive
+duplicates while preserving first occurrence order.
+
+```json
+{
+  "data": {
+    "year": 2026,
+    "nsfw": false,
+    "url": "https://example.com/model"
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+**Error cases:**
+
+| Code | Status | When |
+|------|--------|------|
+| `VALIDATION_ERROR` | 400 | The request body is malformed or a configured field rejects the supplied value |
+| `UNAUTHORIZED` | 401 | No valid session cookie |
+| `NOT_FOUND` | 404 | A field slug is not configured |
 
 ---
 

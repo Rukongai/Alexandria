@@ -58,6 +58,10 @@ class AlexandriaClient:
             follow_redirects=False,
         )
         self.poll_interval = poll_interval
+        self._metadata_fields_cache: tuple[dict[str, Any], ...] | None = None
+        self._metadata_fields_task: asyncio.Task[tuple[dict[str, Any], ...]] | None = (
+            None
+        )
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -89,6 +93,45 @@ class AlexandriaClient:
         )
         user = self._data(response)
         log.info("Logged into Alexandria as %s", user.get("email", email))
+
+    async def metadata_fields(self) -> tuple[dict[str, Any], ...]:
+        """Configured metadata definitions for commit-payload normalization."""
+        if self._metadata_fields_cache is not None:
+            return self._metadata_fields_cache
+        if self._metadata_fields_task is None:
+            self._metadata_fields_task = asyncio.create_task(
+                self._fetch_metadata_fields()
+            )
+        try:
+            self._metadata_fields_cache = await self._metadata_fields_task
+        except BaseException:
+            self._metadata_fields_task = None
+            raise
+        return self._metadata_fields_cache
+
+    async def _fetch_metadata_fields(self) -> tuple[dict[str, Any], ...]:
+        response = await self._request("GET", "/metadata/fields")
+        fields = self._data(response)
+        if not isinstance(fields, list) or not all(
+            isinstance(field, dict) for field in fields
+        ):
+            raise AlexandriaError("Alexandria returned invalid metadata fields")
+        return tuple(fields)
+
+    async def validate_metadata(
+        self,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply Alexandria's authoritative semantic metadata validation."""
+        response = await self._request(
+            "POST",
+            "/metadata/fields/validate",
+            json=values,
+        )
+        normalized = self._data(response)
+        if not isinstance(normalized, dict):
+            raise AlexandriaError("Alexandria returned invalid normalized metadata")
+        return normalized
 
     async def _upload_part(
         self,

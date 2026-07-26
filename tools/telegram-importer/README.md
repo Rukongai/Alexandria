@@ -221,7 +221,7 @@ missing `models/` directories move the folder to `failed/`.
 
 ### metadata.json
 
-Its top level mirrors Alexandria's commit `batchMetadata` field for field, so it is passed through untranslated:
+Its top level mirrors Alexandria's commit `batchMetadata` field for field:
 
 ```json
 {
@@ -236,6 +236,32 @@ Its top level mirrors Alexandria's commit `batchMetadata` field for field, so it
 ```
 
 `source` records where the bundle came from; the upload phase ignores it, and it survives renaming and splitting. `result` is filled on disposal. `description` is composed from the bundle's captions and source link, so it is edited rather than written from scratch. A folder with no `metadata.json` still uploads, taking its name from its folder name.
+
+Before creating an upload session, the importer fetches Alexandria's globally
+configured metadata field definitions. Concurrent folders share one in-flight
+fetch, and the Alexandria client caches the successful response for later
+folders handled by that client. The importer then normalizes values in the
+nested `metadata` object without rewriting `metadata.json`:
+
+| Configured type | Accepted local normalization |
+|---|---|
+| `text` | Keep a string; stringify a finite number or boolean; reject arrays |
+| `number` | Keep a finite number or parse a numeric string |
+| `boolean` | Keep a boolean or parse a case-insensitive `"true"` or `"false"` string |
+| `enum` | Convert a scalar as text, reject arrays, then require a configured option when the field defines options |
+| `multi_enum` | Wrap a scalar in a list or keep a list, convert each value as text, enforce the 100-value limit, then validate configured options |
+| `date` | Convert a scalar as text, reject arrays, then require an ISO date or datetime, `YYYY`, or `YYYY-MM` |
+| `url` | Convert a scalar as text, reject arrays, then require an HTTP or HTTPS URL with a host |
+
+Null remains null for a configured field, and each resulting string is limited
+to 10,000 characters. Unknown fields, unsupported field types, non-finite
+numbers, invalid URLs or dates, disallowed enum values, and values without one
+of the conversions above fail locally before any model bytes are uploaded. A
+non-empty normalized map is then sent to the authoritative, non-mutating
+`POST /metadata/fields/validate` route, which applies the same Tags, URL, date,
+enum, and configured RE2 text-pattern checks used by import commits. This
+prevents a Codex-prepared folder from reaching commit with metadata Alexandria
+will reject.
 
 Because you edit this file by hand, a JSON syntax error is treated as an error rather than as "no metadata": a **model folder** whose own `metadata.json` will not parse moves to `failed/` without uploading, and the unreadable file is never rewritten — its result is written to a sibling `result.json` instead, so your hand-typed values survive. Fix the typo and re-run. A **container's** unparseable file is still skipped leniently, since a container commits nothing.
 

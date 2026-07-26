@@ -19,6 +19,7 @@ from .folder_metadata import (
     merge_chain,
     metadata_error,
     model_name_from_folder,
+    normalize_batch_metadata,
     read_metadata,
     write_metadata,
 )
@@ -417,7 +418,14 @@ class FolderUploader:
     ) -> str:
         handle = handle or NullModelProgress()
         effective = folder.metadata
-        payload = batch_metadata(effective)
+        payload = normalize_batch_metadata(
+            batch_metadata(effective),
+            await self.alexandria.metadata_fields(),
+        )
+        if generic_metadata := payload.get("metadata"):
+            payload["metadata"] = await self.alexandria.validate_metadata(
+                generic_metadata
+            )
         payload["modelName"] = folder.model_name
 
         # upload() is public and callable without run(), so it owns creating

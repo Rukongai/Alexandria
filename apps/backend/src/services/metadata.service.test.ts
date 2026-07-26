@@ -5,6 +5,7 @@ import {
   beforeAll,
   afterAll,
   beforeEach,
+  vi,
 } from 'vitest';
 import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
@@ -109,6 +110,29 @@ describe('MetadataService – configured value validation', () => {
       .toEqual(['x'.repeat(255)]);
     expect(() => service.normalizeAndValidateFieldValue(tagsField, ['   '])).toThrow();
     expect(() => service.normalizeAndValidateFieldValue(tagsField, ['x'.repeat(256)])).toThrow();
+  });
+
+  it('validates a complete metadata map without mutating a model', async () => {
+    vi.spyOn(service, 'getFieldBySlug').mockImplementation(async (slug) => {
+      if (slug === 'catalog-id') {
+        return field('text', { validationPattern: '^MODEL-[0-9]+$' });
+      }
+      return field('url');
+    });
+
+    await expect(service.normalizeAndValidateValues({
+      'catalog-id': 'MODEL-42',
+      url: 'https://example.com/model',
+    })).resolves.toEqual({
+      'catalog-id': 'MODEL-42',
+      url: 'https://example.com/model',
+    });
+    await expect(service.normalizeAndValidateValues({
+      'catalog-id': 'dragon',
+    })).rejects.toThrow(/does not match the required format/);
+    await expect(service.normalizeAndValidateValues({
+      url: 'https://example.com:bad',
+    })).rejects.toThrow(/HTTP or HTTPS URL/);
   });
 });
 
