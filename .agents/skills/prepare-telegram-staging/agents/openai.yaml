@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Telegram Staging"
+  short_description: "Clean staged models before Alexandria upload"
+  default_prompt: "Use $prepare-telegram-staging to clean one staged Telegram model folder for Alexandria upload."

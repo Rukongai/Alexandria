@@ -127,6 +127,24 @@ reason it carries `rich`, its only presentation dependency — and falls back to
 when output is captured. That display is strictly observational: it is injected into the importer
 and cannot alter, delay, or fail an import.
 
+The staged path remains manual by default, including its existing operator pause, and can optionally
+orchestrate Codex as a non-interactive, per-bundle cleanup worker. Automated cleanup requires a
+completed reference folder containing `metadata.json` and uses the repository-owned cleanup skill
+unless the operator explicitly overrides it. The importer remains the authority boundary: it builds
+the child environment from a narrow runtime/configuration allowlist that excludes Telegram,
+Alexandria, and direct Codex API credentials; gives Codex write access to only one staged bundle;
+requires a structured receipt; and independently validates the claimed output allowlist, absence of
+symlinks, exact reference metadata key sets, Telegram provenance and complete model-message
+coverage, flat images, and the single supported archive's integrity. Only the validated path
+allowlist reaches the uploader. Automated mode drains the channel in bounded batches, skips staging
+failures for the rest of the current invocation, and persists cleanup attempts, receipts, output
+paths, and lifecycle states in the importer's SQLite database. `ready` records are fully revalidated
+against their persisted receipt and current files before upload resumes; an interrupted `uploading`
+record becomes `needs_review` because replaying an indeterminate remote commit could create a
+duplicate. `downloaded`, `cleaning`, and `cleanup_failed` records resume cleanup before any new
+downloads. `needs_review` and `upload_failed` remain for operator intervention. Codex never receives
+Alexandria upload authority.
+
 Duplicate detection is local to the utility's state database and has two layers. Before download, a
 signature over the complete logical model's Telegram document/photo IDs and reported sizes
 can match media already associated with a completed import. After download, a signature over the

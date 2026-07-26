@@ -389,3 +389,64 @@ def test_should_add_the_staged_bundles_table_to_an_existing_state_file(tmp_path)
         assert tracker.get_staged("abc123") is not None
     finally:
         tracker.close()
+
+
+def test_should_persist_cleanup_lifecycle_and_outputs(tmp_path) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        tracker.record_staged(
+            bundle_key="abc123",
+            source_channel_id=-100987654,
+            folder_name="002501-dragon-set",
+            model_message_ids=(2501,),
+        )
+
+        cleaning = tracker.update_staged_cleanup(
+            "abc123",
+            status="cleaning",
+            report={"originalMetadata": {"source": {"bundleKey": "abc123"}}},
+        )
+        ready = tracker.update_staged_cleanup(
+            "abc123",
+            status="ready",
+            output_folders=("002501-dragon-set/dragon",),
+            report={"status": "ready"},
+        )
+        uploaded = tracker.update_staged_status("abc123", status="uploaded")
+
+        assert cleaning.cleanup_attempts == 1
+        assert ready.output_folders == ("002501-dragon-set/dragon",)
+        assert ready.cleanup_report == {"status": "ready"}
+        assert uploaded.status == "uploaded"
+        assert tracker.staged_by_status(-100987654, ("uploaded",)) == (uploaded,)
+    finally:
+        tracker.close()
+
+
+def test_should_migrate_cleanup_columns_into_an_existing_staged_table(tmp_path) -> None:
+    path = tmp_path / "legacy-staged.sqlite3"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        "CREATE TABLE staged_bundles ("
+        "bundle_key TEXT PRIMARY KEY, source_channel_id INTEGER NOT NULL, "
+        "folder_name TEXT NOT NULL, model_message_ids TEXT NOT NULL, "
+        "status TEXT NOT NULL, downloaded_at TEXT NOT NULL)",
+    )
+    legacy.execute(
+        "INSERT INTO staged_bundles VALUES "
+        "('abc123', -100987654, '002501-dragon', '[2501]', 'downloaded', "
+        "'2026-01-01T00:00:00+00:00')",
+    )
+    legacy.commit()
+    legacy.close()
+
+    tracker = ImportTracker(path)
+    try:
+        staged = tracker.get_staged("abc123")
+
+        assert staged is not None
+        assert staged.output_folders == ()
+        assert staged.cleanup_attempts == 0
+        assert staged.updated_at == staged.downloaded_at
+    finally:
+        tracker.close()

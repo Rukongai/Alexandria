@@ -11,6 +11,8 @@ The importer automatically commits every successfully scanned session. Use a dry
 - A running Alexandria instance reachable from the machine running the importer
 - A Telegram account that can read the source channel
 - A Telegram API ID and API hash for that account's application
+- For automated cleanup: a logged-in Codex CLI, `7z`, and extractors for the
+  source archive formats (for example `unar` for RAR)
 
 Create an application in Telegram's API development tools and record its API ID and API hash. This tool signs in as a normal Telegram user (a Telethon "userbot" session); it does not accept a bot token. On the first run, Telegram prompts for the login code and, when enabled, the account's two-factor password. The resulting local session is reused on later runs, so protect it like an account credential.
 
@@ -51,6 +53,14 @@ Set `TELEGRAM_IMPORT_CONCURRENCY` to import several models at the same time; it 
 Set `TELEGRAM_DOWNLOAD_CONNECTIONS` to change how many connections fetch one file at once; it defaults to `8` and `--download-connections` overrides it. See [Download speed](#download-speed).
 
 Set `TELEGRAM_STAGING_DIR` to a default directory for staged model folders; `--staging-dir` overrides it. See [Staged import](#staged-import).
+
+For automated staged cleanup, `TELEGRAM_STAGE_CLEANUP=codex` selects Codex,
+`TELEGRAM_CODEX_CLEANUP_REFERENCE` supplies the completed reference model,
+`TELEGRAM_CODEX_CLEANUP_CONCURRENCY` controls simultaneous Codex processes,
+and `TELEGRAM_CODEX_CLEANUP_TIMEOUT` limits each folder cleanup in seconds.
+`TELEGRAM_CODEX_CLEANUP_SKILL` overrides the repository-owned cleanup skill,
+and `TELEGRAM_CODEX_COMMAND` selects the executable. The matching command-line
+flags override these values.
 
 By default, the reusable Telegram login session and SQLite import state live under `$XDG_DATA_HOME/alexandria-telegram-importer`, or `~/.local/share/alexandria-telegram-importer` when `XDG_DATA_HOME` is unset. Override them with `TELEGRAM_SESSION_PATH` and `TELEGRAM_IMPORT_STATE_PATH`, or with the `--session` and `--state` command-line options.
 
@@ -100,9 +110,71 @@ uv run alexandria-telegram-import --upload-only --staging-dir ./work
 
 # Both, pausing between them
 uv run alexandria-telegram-import --stage 20 --staging-dir ./work
+
+# Drain the channel in batches of 20 through Codex cleanup and upload
+uv run alexandria-telegram-import \
+  --stage 20 \
+  --cleanup codex \
+  --cleanup-reference ./completed-reference-model \
+  --staging-dir ./work
 ```
 
-All three require `--staging-dir`, and `--staging-dir` requires one of them. `TELEGRAM_STAGING_DIR` sets the default directory. `--concurrency` applies to both phases: N bundles stage at once, and N folders upload at once. `--upload-only` is entirely local — it needs no Telegram credentials and opens no Telegram session — and combining it with `--dry-run` prints what would be uploaded without contacting Alexandria. `--stage` prints a summary and waits for Enter; `q` then Enter quits and leaves the folders for a later `--upload-only`. A non-interactive standard input is treated as quitting rather than hanging.
+All three require `--staging-dir`, and `--staging-dir` requires one of them. `TELEGRAM_STAGING_DIR` sets the default directory. `--concurrency` applies to both phases: N bundles stage at once, and N folders upload at once. `--upload-only` is entirely local — it needs no Telegram credentials and opens no Telegram session — and combining it with `--dry-run` prints what would be uploaded without contacting Alexandria. Manual cleanup remains the default: `--stage N` without `--cleanup codex` prints one staging summary and waits for Enter before uploading exactly as before. Enter `q` to leave the folders for a later `--upload-only`; a non-interactive standard input is treated as quitting rather than hanging. Automated cleanup skips this pause and drains batches continuously.
+
+### Automated Codex cleanup
+
+`--stage N --cleanup codex` turns the one-shot staged import into a channel-drain
+loop. The importer downloads at most N new bundles, gives each folder to Codex,
+validates Codex's structured receipt and files, uploads only the validated
+outputs, and then downloads the next batch. It stops when no unstaged bundle
+remains. The batch size bounds staging disk growth; `--cleanup-concurrency`
+independently controls how many Codex cleanup processes run at once.
+
+`--cleanup codex` requires `--stage` and a reference folder containing
+`metadata.json`. Use a completed model folder from this staged workflow. Codex
+treats its metadata keys, key order, folder casing, and tag vocabulary as the
+target shape. The importer independently enforces the reference's exact
+top-level and nested `metadata` key sets before upload. The repository-owned
+`$prepare-telegram-staging` skill performs the variable work: recursive archive
+inspection, character splitting, image classification, metadata research, LZMA2
+repacking, and archive verification. Override its path with `--cleanup-skill`
+only when developing a replacement workflow.
+
+Codex returns one of three states per input bundle:
+
+| State | Importer action |
+|---|---|
+| `ready` | Independently validate and upload only the reported model folders |
+| `needs_review` | Leave the folder in place and continue with the next bundle |
+| `failed` | Record `cleanup_failed`, leave the folder in place, and continue |
+
+Before upload, the importer verifies that reported paths stay inside the assigned
+bundle, every actual model folder was reported, the folder contains no symlinks,
+and metadata has the reference key sets, a non-empty model name, and a null
+result. It also requires the original Telegram channel and bundle IDs, permits
+only original message IDs, and checks that the outputs collectively cover every
+original model message. Finally, `images/` must be flat and `models/` must contain
+exactly one supported archive that passes an independent integrity test. A
+`ready` receipt alone never grants upload authority.
+
+Codex must already have a saved CLI login. The importer builds the child
+environment from a small allowlist of shell, locale, proxy, certificate, and
+Codex configuration variables. It intentionally excludes `CODEX_API_KEY`,
+`CODEX_ACCESS_TOKEN`, Telegram credentials, Alexandria credentials, and every
+other variable. Normal saved Codex authentication is reused instead. Codex runs
+ephemerally in a `workspace-write` sandbox rooted at one staged bundle and
+cannot perform the upload itself.
+
+Interrupted `downloaded`, `cleaning`, and `cleanup_failed` records resume cleanup
+before new downloads on the next automated run. A `ready` record resumes only
+after its persisted receipt and current files pass the complete validation again.
+An `uploading` record is indeterminate: Alexandria may already have committed the
+model, so the importer changes it to `needs_review` instead of risking a duplicate
+upload. Bundles already in `needs_review` or `upload_failed` are not retried by the
+automated loop. Download failures are skipped for the rest of the current drain so
+one unreachable Telegram post cannot trap the loop; they are eligible again on a
+later command. The importer completes all possible batches but exits with status 1
+if any download, cleanup, review, or upload issue occurred during that invocation.
 
 ### Folder layout
 
@@ -201,7 +273,14 @@ Paths relative to the staging root are preserved, each ancestor container's `met
 
 Staged bundles are recorded in a `staged_bundles` table in the same SQLite state file, so consecutive `--download-only 20` runs walk forward through the channel rather than re-staging the same bundles. Deleting a folder by hand does not re-offer that bundle — deleting is recorded as a skip decision. Re-staging it means deleting its row.
 
-**The upload phase performs no deduplication.** No Telegram media signatures, no content hashes, no reads or writes to the `imports` table that the direct path uses. The folders are hand-curated and are uploaded as given. The consequence is explicit: moving a folder back out of `uploaded/` and re-running `--upload-only` creates a second Alexandria model. This follows from the two phases sharing no state, which is what lets folders be split, merged, renamed, and recompressed freely between them.
+Automated cleanup also stores its lifecycle, attempt count, structured receipt,
+and validated output paths in `staged_bundles`. Upload transitions through
+`ready`, `uploading`, and `uploaded`. A later automated invocation revalidates
+`ready` outputs before resuming them; it leaves an interrupted `uploading` record
+for manual Alexandria-session reconciliation because replaying an indeterminate
+remote commit could create a duplicate model.
+
+**The upload phase performs no deduplication.** No Telegram media signatures, no content hashes, no reads or writes to the `imports` table that the direct path uses. The folders are curated and uploaded as given. Automated mode's `staged_bundles` lifecycle limits which validated folders it hands to the uploader, but it does not add content or Alexandria-model deduplication. The consequence is explicit: moving a folder back out of `uploaded/` and re-running `--upload-only` creates a second Alexandria model. Manual download and upload remain deliberately decoupled, which is what lets folders be split, merged, renamed, and recompressed freely between them.
 
 ## Concurrency
 
@@ -216,6 +295,11 @@ Raising it overlaps the slow parts of independent models — one model downloads
 Parts of one split archive are still downloaded and uploaded one at a time, which bounds disk use per model and preserves the abort path when a set turns out to be a duplicate. Attachments for a model are likewise appended one at a time. Concurrency applies between logical models, not inside one.
 
 Interleaved concurrent runs make log output non-sequential; every import log line names the model it refers to. The progress display gives each concurrent model its own numbered row, and the final `Import state:` summary is unaffected.
+
+Automated cleanup has a separate concurrency limit because extraction and LZMA2
+compression are disk- and CPU-intensive. `--cleanup-concurrency N`, or
+`TELEGRAM_CODEX_CLEANUP_CONCURRENCY`, defaults to `1`; increase it independently
+from Telegram download concurrency after measuring available disk and memory.
 
 ## Download speed
 
