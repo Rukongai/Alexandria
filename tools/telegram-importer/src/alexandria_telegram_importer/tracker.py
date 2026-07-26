@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from filelock import FileLock, Timeout
 
@@ -34,6 +35,10 @@ class StagedBundle:
     model_message_ids: tuple[int, ...]
     status: str
     downloaded_at: str
+    output_folders: tuple[str, ...] = ()
+    cleanup_report: dict[str, Any] | None = None
+    cleanup_attempts: int = 0
+    updated_at: str | None = None
 
 
 class ImportTracker:
@@ -100,9 +105,34 @@ class ImportTracker:
                 folder_name TEXT NOT NULL,
                 model_message_ids TEXT NOT NULL,
                 status TEXT NOT NULL,
-                downloaded_at TEXT NOT NULL
+                downloaded_at TEXT NOT NULL,
+                output_folders TEXT NOT NULL DEFAULT '[]',
+                cleanup_report TEXT,
+                cleanup_attempts INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT
             )
             """,
+        )
+        staged_columns = {
+            row["name"]
+            for row in self._connection.execute(
+                "PRAGMA table_info(staged_bundles)",
+            ).fetchall()
+        }
+        staged_migrations = {
+            "output_folders": "TEXT NOT NULL DEFAULT '[]'",
+            "cleanup_report": "TEXT",
+            "cleanup_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "updated_at": "TEXT",
+        }
+        for column, declaration in staged_migrations.items():
+            if column not in staged_columns:
+                self._connection.execute(
+                    f"ALTER TABLE staged_bundles ADD COLUMN {column} {declaration}",
+                )
+        self._connection.execute(
+            "UPDATE staged_bundles SET updated_at = downloaded_at "
+            "WHERE updated_at IS NULL",
         )
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS staged_bundles_channel_idx "
@@ -307,8 +337,8 @@ class ImportTracker:
                 """
                 INSERT INTO staged_bundles (
                     bundle_key, source_channel_id, folder_name,
-                    model_message_ids, status, downloaded_at
-                ) VALUES (?, ?, ?, ?, 'downloaded', ?)
+                    model_message_ids, status, downloaded_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'downloaded', ?, ?)
                 ON CONFLICT(bundle_key) DO NOTHING
                 """,
                 (
@@ -316,6 +346,7 @@ class ImportTracker:
                     source_channel_id,
                     folder_name,
                     json.dumps(model_message_ids),
+                    now,
                     now,
                 ),
             )
@@ -338,6 +369,89 @@ class ImportTracker:
             model_message_ids=tuple(json.loads(row["model_message_ids"])),
             status=row["status"],
             downloaded_at=row["downloaded_at"],
+            output_folders=tuple(json.loads(row["output_folders"] or "[]")),
+            cleanup_report=(
+                json.loads(row["cleanup_report"]) if row["cleanup_report"] else None
+            ),
+            cleanup_attempts=row["cleanup_attempts"] or 0,
+            updated_at=row["updated_at"] or row["downloaded_at"],
+        )
+
+    def update_staged_cleanup(
+        self,
+        bundle_key: str,
+        *,
+        status: str,
+        output_folders: tuple[str, ...] = (),
+        report: dict[str, Any] | None = None,
+    ) -> StagedBundle:
+        allowed = {"cleaning", "ready", "needs_review", "cleanup_failed"}
+        if status not in allowed:
+            raise ValueError(f"Unsupported staged cleanup status {status!r}")
+        now = datetime.now(UTC).isoformat()
+        with self._connection:
+            result = self._connection.execute(
+                """
+                UPDATE staged_bundles
+                SET status = ?,
+                    output_folders = ?,
+                    cleanup_report = ?,
+                    cleanup_attempts = cleanup_attempts + ?,
+                    updated_at = ?
+                WHERE bundle_key = ?
+                """,
+                (
+                    status,
+                    json.dumps(output_folders),
+                    json.dumps(report) if report is not None else None,
+                    1 if status == "cleaning" else 0,
+                    now,
+                    bundle_key,
+                ),
+            )
+        if result.rowcount != 1:
+            raise KeyError(bundle_key)
+        staged = self.get_staged(bundle_key)
+        if staged is None:
+            raise KeyError(bundle_key)
+        return staged
+
+    def update_staged_status(self, bundle_key: str, *, status: str) -> StagedBundle:
+        allowed = {"uploading", "uploaded", "upload_failed"}
+        if status not in allowed:
+            raise ValueError(f"Unsupported staged status {status!r}")
+        now = datetime.now(UTC).isoformat()
+        with self._connection:
+            result = self._connection.execute(
+                "UPDATE staged_bundles SET status = ?, updated_at = ? "
+                "WHERE bundle_key = ?",
+                (status, now, bundle_key),
+            )
+        if result.rowcount != 1:
+            raise KeyError(bundle_key)
+        staged = self.get_staged(bundle_key)
+        if staged is None:
+            raise KeyError(bundle_key)
+        return staged
+
+    def staged_by_status(
+        self,
+        source_channel_id: int,
+        statuses: tuple[str, ...],
+    ) -> tuple[StagedBundle, ...]:
+        if not statuses:
+            return ()
+        placeholders = ", ".join("?" for _ in statuses)
+        rows = self._connection.execute(
+            f"SELECT bundle_key FROM staged_bundles "
+            f"WHERE source_channel_id = ? AND status IN ({placeholders}) "
+            "ORDER BY downloaded_at, bundle_key",
+            (source_channel_id, *statuses),
+        ).fetchall()
+        return tuple(
+            staged
+            for row in rows
+            if (staged := self.get_staged(row["bundle_key"])) is not None
         )
 
     def staged_keys(self, source_channel_id: int) -> set[str]:

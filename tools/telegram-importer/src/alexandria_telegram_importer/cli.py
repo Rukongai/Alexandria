@@ -6,11 +6,22 @@ import getpass
 import logging
 import os
 import sys
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from .alexandria import AlexandriaClient
+from .codex_cleanup import (
+    DEFAULT_CLEANUP_TIMEOUT,
+    CleanupExecutionError,
+    CleanupReceipt,
+    CodexCleanupRunner,
+    find_cleanup_skill,
+    validate_cleanup_receipt,
+)
+from .folder_metadata import read_metadata
 from .folder_upload import FolderUploader, describe_staging
 from .grouping import build_bundles
 from .importer import ChannelImporter, describe_plan
@@ -25,7 +36,7 @@ from .progress import (
 )
 from .staging import BundleStager, bundle_key
 from .telegram_source import TelegramSource
-from .tracker import ImportTracker
+from .tracker import ImportTracker, StagedBundle
 
 log = logging.getLogger(__name__)
 
@@ -176,9 +187,56 @@ def parser() -> argparse.ArgumentParser:
         type=_positive,
         metavar="N",
         help=(
-            "Stage up to N new bundles, pause for reorganization, then upload "
-            "whatever is in --staging-dir"
+            "Stage up to N new bundles, reorganize them manually or with Codex, "
+            "then upload"
         ),
+    )
+    result.add_argument(
+        "--cleanup",
+        choices=("manual", "codex"),
+        default=os.getenv("TELEGRAM_STAGE_CLEANUP", "manual"),
+        help="How --stage reorganizes downloaded folders before upload (default manual)",
+    )
+    result.add_argument(
+        "--cleanup-reference",
+        type=Path,
+        default=(
+            Path(reference)
+            if (reference := os.getenv("TELEGRAM_CODEX_CLEANUP_REFERENCE"))
+            else None
+        ),
+        help="Completed reference model folder whose metadata shape Codex must follow",
+    )
+    result.add_argument(
+        "--cleanup-skill",
+        type=Path,
+        default=(
+            Path(skill)
+            if (skill := os.getenv("TELEGRAM_CODEX_CLEANUP_SKILL"))
+            else None
+        ),
+        help="Override the repository-owned Codex cleanup SKILL.md",
+    )
+    result.add_argument(
+        "--cleanup-concurrency",
+        type=_concurrency,
+        default=os.getenv("TELEGRAM_CODEX_CLEANUP_CONCURRENCY", "1"),
+        help="Number of independent staged bundles Codex cleans at once (default 1)",
+    )
+    result.add_argument(
+        "--cleanup-timeout",
+        type=_positive,
+        default=os.getenv(
+            "TELEGRAM_CODEX_CLEANUP_TIMEOUT",
+            str(DEFAULT_CLEANUP_TIMEOUT),
+        ),
+        metavar="SECONDS",
+        help="Maximum time allowed for one Codex cleanup (default 3600)",
+    )
+    result.add_argument(
+        "--codex-command",
+        default=os.getenv("TELEGRAM_CODEX_COMMAND", "codex"),
+        help="Codex executable used by --cleanup codex (default codex)",
     )
     return result
 
@@ -194,6 +252,17 @@ def validate_staging_args(args: argparse.Namespace) -> None:
     if args.staging_dir is not None and not selected:
         raise SystemExit(
             "--staging-dir requires one of --download-only, --upload-only, or --stage"
+        )
+    if args.cleanup == "codex" and args.stage is None:
+        raise SystemExit("--cleanup codex requires --stage")
+    if args.cleanup == "codex" and args.cleanup_reference is None:
+        raise SystemExit("--cleanup codex requires --cleanup-reference")
+    cleanup_options_used = (
+        args.cleanup_reference is not None or args.cleanup_skill is not None
+    )
+    if cleanup_options_used and args.cleanup != "codex":
+        raise SystemExit(
+            "--cleanup-reference and --cleanup-skill require --cleanup codex"
         )
 
 
@@ -212,6 +281,93 @@ def confirm_upload(summary: str) -> bool:
     return line.strip().lower() != "q"
 
 
+@dataclass(frozen=True, slots=True)
+class StagingResult:
+    items: tuple[StagedBundle, ...]
+    failed_keys: tuple[str, ...]
+    staged_bytes: int
+
+    @property
+    def staged(self) -> int:
+        return len(self.items)
+
+    @property
+    def failed(self) -> int:
+        return len(self.failed_keys)
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyBundle:
+    item: StagedBundle
+    paths: tuple[Path, ...]
+
+    @property
+    def bundle_key(self) -> str:
+        return self.item.bundle_key
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyRevalidation:
+    paths: tuple[Path, ...]
+    errors: tuple[str, ...]
+
+    @property
+    def ready(self) -> bool:
+        return not self.errors
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupBatchResult:
+    ready_bundles: tuple[ReadyBundle, ...]
+    outcomes: dict[str, int]
+
+    @property
+    def ready_paths(self) -> tuple[Path, ...]:
+        return tuple(path for bundle in self.ready_bundles for path in bundle.paths)
+
+    @property
+    def failed(self) -> int:
+        return self.outcomes.get("needs_review", 0) + self.outcomes.get(
+            "cleanup_failed",
+            0,
+        )
+
+
+def revalidate_ready_bundle(
+    bundle: ReadyBundle,
+    *,
+    staging_dir: Path,
+    reference_folder: Path,
+) -> ReadyRevalidation:
+    """Revalidate persisted Codex output immediately before upload."""
+    report = bundle.item.cleanup_report
+    if not isinstance(report, dict):
+        return ReadyRevalidation((), ("Persisted cleanup report is missing",))
+    original_metadata = report.get("originalMetadata")
+    if not isinstance(original_metadata, dict):
+        return ReadyRevalidation((), ("Original staged metadata is missing",))
+    input_folder = (staging_dir / bundle.item.folder_name).resolve()
+    try:
+        receipt = CleanupReceipt.from_payload(report, input_folder=input_folder)
+        validation = validate_cleanup_receipt(
+            receipt,
+            staging_root=staging_dir,
+            original_metadata=original_metadata,
+            reference_folder=reference_folder,
+        )
+    except Exception as error:  # noqa: BLE001 - untrusted persisted/Codex data
+        return ReadyRevalidation((), (f"Cleanup revalidation failed: {error}",))
+    if not validation.ready:
+        return ReadyRevalidation((), validation.errors)
+    validated_paths = tuple(folder.path.resolve() for folder in validation.folders)
+    if {path.resolve() for path in bundle.paths} != set(validated_paths):
+        return ReadyRevalidation(
+            (),
+            ("Persisted output allowlist does not match the validated receipt",),
+        )
+    return ReadyRevalidation(validated_paths, ())
+
+
 async def stage_bundles(
     *,
     telegram: TelegramSource,
@@ -221,13 +377,14 @@ async def stage_bundles(
     limit: int,
     progress: ProgressReporter,
     concurrency: int = 1,
-) -> tuple[int, int, int]:
+    exclude_keys: set[str] | None = None,
+) -> StagingResult:
     """Stage up to `limit` not-yet-staged bundles.
 
-    Returns (staged, failed, bytes). `concurrency` bundles are staged at once,
-    matching what the direct import path does across models.
+    Returns the new persisted bundle records plus failures and downloaded bytes.
+    `concurrency` bundles are staged at once, matching the direct import path.
     """
-    already = tracker.staged_keys(telegram.channel_id)
+    already = tracker.staged_keys(telegram.channel_id) | (exclude_keys or set())
     stager = BundleStager(telegram=telegram, root=staging_dir)
     pending = []
     for bundle in build_bundles(telegram.channel_id, refs):
@@ -237,14 +394,14 @@ async def stage_bundles(
         if key not in already:
             pending.append((key, bundle))
 
-    staged = 0
-    failed = 0
+    staged_items: list[StagedBundle] = []
+    failed_keys: list[str] = []
     staged_bytes = 0
     slots = asyncio.Semaphore(concurrency)
     lock = asyncio.Lock()
 
     async def stage_one(key: str, bundle) -> None:
-        nonlocal staged, failed, staged_bytes
+        nonlocal staged_bytes
         label = bundle.models[0].logical_filename
         async with slots:
             try:
@@ -254,23 +411,24 @@ async def stage_bundles(
             except Exception as error:  # noqa: BLE001
                 log.error("Failed to stage bundle at %s: %s", label, error)
                 async with lock:
-                    failed += 1
+                    failed_keys.append(key)
                 return
             size = sum(
                 path.stat().st_size for path in folder.rglob("*") if path.is_file()
             )
         async with lock:
-            tracker.record_staged(
-                bundle_key=key,
-                source_channel_id=telegram.channel_id,
-                folder_name=folder.name,
-                model_message_ids=tuple(
-                    part.message_id for unit in bundle.models for part in unit.parts
+            staged_items.append(
+                tracker.record_staged(
+                    bundle_key=key,
+                    source_channel_id=telegram.channel_id,
+                    folder_name=folder.name,
+                    model_message_ids=tuple(
+                        part.message_id for unit in bundle.models for part in unit.parts
+                    ),
                 ),
             )
-            staged += 1
             staged_bytes += size
-            _report_staging(progress, staged, len(pending), failed)
+            _report_staging(progress, len(staged_items), len(pending), len(failed_keys))
 
     with guarded_reporter(progress):
         _report_staging(progress, 0, len(pending), 0)
@@ -281,7 +439,161 @@ async def stage_bundles(
     for result in results:
         if isinstance(result, BaseException):
             raise result
-    return staged, failed, staged_bytes
+    return StagingResult(
+        items=tuple(sorted(staged_items, key=lambda item: item.folder_name)),
+        failed_keys=tuple(sorted(failed_keys)),
+        staged_bytes=staged_bytes,
+    )
+
+
+async def cleanup_staged_bundles(
+    *,
+    items: tuple[StagedBundle, ...],
+    staging_dir: Path,
+    tracker: ImportTracker,
+    runner: CodexCleanupRunner,
+    work_root: Path,
+    concurrency: int = 1,
+) -> CleanupBatchResult:
+    """Run isolated Codex cleanups and validate every claimed ready folder."""
+    outcomes: Counter[str] = Counter()
+    ready_bundles: list[ReadyBundle] = []
+    slots = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+
+    async def clean(item: StagedBundle) -> None:
+        input_folder = (staging_dir / item.folder_name).resolve()
+        persisted_original = (
+            item.cleanup_report.get("originalMetadata")
+            if isinstance(item.cleanup_report, dict)
+            else None
+        )
+        original_metadata = (
+            persisted_original
+            if isinstance(persisted_original, dict)
+            else read_metadata(input_folder)
+        )
+        if original_metadata is None:
+            report = {"status": "failed", "error": "Original metadata.json is missing"}
+            tracker.update_staged_cleanup(
+                item.bundle_key,
+                status="cleanup_failed",
+                report=report,
+            )
+            async with lock:
+                outcomes["cleanup_failed"] += 1
+            return
+
+        tracker.update_staged_cleanup(
+            item.bundle_key,
+            status="cleaning",
+            report={"originalMetadata": original_metadata},
+        )
+        try:
+            async with slots:
+                receipt = await runner.run(
+                    bundle_key=item.bundle_key,
+                    input_folder=input_folder,
+                    work_root=work_root,
+                )
+        except CleanupExecutionError as error:
+            log.error("Codex cleanup failed for %s: %s", item.folder_name, error)
+            tracker.update_staged_cleanup(
+                item.bundle_key,
+                status="cleanup_failed",
+                report={
+                    "status": "failed",
+                    "error": str(error),
+                    "originalMetadata": original_metadata,
+                },
+            )
+            async with lock:
+                outcomes["cleanup_failed"] += 1
+            return
+
+        report = {
+            **receipt.as_payload(),
+            "originalMetadata": original_metadata,
+        }
+        relative_outputs = tuple(
+            str(path.relative_to(staging_dir.resolve()))
+            for path in receipt.output_folders
+            if path == staging_dir.resolve()
+            or path.is_relative_to(staging_dir.resolve())
+        )
+        if receipt.status != "ready":
+            status = (
+                "needs_review" if receipt.status == "needs_review" else "cleanup_failed"
+            )
+            tracker.update_staged_cleanup(
+                item.bundle_key,
+                status=status,
+                output_folders=relative_outputs,
+                report=report,
+            )
+            log.warning(
+                "Codex left %s in %s: %s", item.folder_name, status, receipt.summary
+            )
+            async with lock:
+                outcomes[status] += 1
+            return
+
+        try:
+            validation = await asyncio.to_thread(
+                validate_cleanup_receipt,
+                receipt,
+                staging_root=staging_dir,
+                original_metadata=original_metadata,
+                reference_folder=runner.reference_folder,
+            )
+        except Exception as error:
+            report["validationErrors"] = [f"Unexpected validation error: {error}"]
+            tracker.update_staged_cleanup(
+                item.bundle_key,
+                status="cleanup_failed",
+                output_folders=relative_outputs,
+                report=report,
+            )
+            log.exception("Cleanup validation crashed for %s", item.folder_name)
+            async with lock:
+                outcomes["cleanup_failed"] += 1
+            return
+        if not validation.ready:
+            report["validationErrors"] = list(validation.errors)
+            tracker.update_staged_cleanup(
+                item.bundle_key,
+                status="cleanup_failed",
+                output_folders=relative_outputs,
+                report=report,
+            )
+            log.error(
+                "Cleanup validation failed for %s: %s",
+                item.folder_name,
+                "; ".join(validation.errors),
+            )
+            async with lock:
+                outcomes["cleanup_failed"] += 1
+            return
+
+        validated_paths = tuple(folder.path.resolve() for folder in validation.folders)
+        ready_item = tracker.update_staged_cleanup(
+            item.bundle_key,
+            status="ready",
+            output_folders=tuple(
+                str(path.relative_to(staging_dir.resolve())) for path in validated_paths
+            ),
+            report=report,
+        )
+        log.info("Codex prepared %s: %s", item.folder_name, receipt.summary)
+        async with lock:
+            ready_bundles.append(ReadyBundle(ready_item, validated_paths))
+            outcomes["ready"] += 1
+
+    await asyncio.gather(*(clean(item) for item in items))
+    return CleanupBatchResult(
+        ready_bundles=tuple(sorted(ready_bundles, key=lambda item: item.bundle_key)),
+        outcomes=dict(outcomes),
+    )
 
 
 def _report_staging(
@@ -306,6 +618,14 @@ def _upload_summary(outcomes: dict[str, int]) -> str:
     )
 
 
+def _cleanup_summary(outcomes: dict[str, int]) -> str:
+    if not outcomes:
+        return "Cleanup state: no new folders"
+    return "Cleanup state: " + ", ".join(
+        f"{status}={count}" for status, count in sorted(outcomes.items())
+    )
+
+
 async def _login(args: argparse.Namespace) -> AlexandriaClient:
     email = os.getenv("ALEXANDRIA_EMAIL") or input("Alexandria email: ").strip()
     password = os.getenv("ALEXANDRIA_PASSWORD") or getpass.getpass(
@@ -319,6 +639,209 @@ async def _login(args: argparse.Namespace) -> AlexandriaClient:
     )
     await client.login(email, password)
     return client
+
+
+async def run_codex_staged_batches(
+    *,
+    args: argparse.Namespace,
+    telegram: TelegramSource,
+    tracker: ImportTracker,
+    refs: list[MediaRef],
+    progress: ProgressReporter,
+    work_root: Path,
+) -> int:
+    """Drain Telegram through stage, Codex cleanup, and scoped upload batches."""
+    skill_path = args.cleanup_skill or find_cleanup_skill()
+    if skill_path is None:
+        raise SystemExit(
+            "Repository Codex cleanup skill was not found; use --cleanup-skill",
+        )
+    runner = CodexCleanupRunner(
+        skill_path=skill_path,
+        reference_folder=args.cleanup_reference,
+        command=args.codex_command,
+        timeout_seconds=args.cleanup_timeout,
+    )
+    try:
+        runner.preflight()
+    except CleanupExecutionError as error:
+        raise SystemExit(str(error)) from error
+
+    excluded_keys: set[str] = set()
+    totals: Counter[str] = Counter()
+    batch_number = 0
+    alexandria: AlexandriaClient | None = None
+
+    async def upload_ready(bundle: ReadyBundle, *, label: str) -> None:
+        nonlocal alexandria
+        revalidation = await asyncio.to_thread(
+            revalidate_ready_bundle,
+            bundle,
+            staging_dir=args.staging_dir,
+            reference_folder=runner.reference_folder,
+        )
+        if not revalidation.ready:
+            report = dict(bundle.item.cleanup_report or {})
+            report["preUploadValidationErrors"] = list(revalidation.errors)
+            tracker.update_staged_cleanup(
+                bundle.bundle_key,
+                status="cleanup_failed",
+                output_folders=bundle.item.output_folders,
+                report=report,
+            )
+            totals["cleanup_failed"] += 1
+            log.error(
+                "%s failed pre-upload validation: %s",
+                label,
+                "; ".join(revalidation.errors),
+            )
+            return
+        if alexandria is None:
+            alexandria = await _login(args)
+        tracker.update_staged_status(bundle.bundle_key, status="uploading")
+        try:
+            upload_outcomes = await FolderUploader(
+                alexandria=alexandria,
+                work_root=work_root,
+                concurrency=args.concurrency,
+                progress=progress,
+            ).run(args.staging_dir, include_paths=revalidation.paths)
+        except Exception as error:  # noqa: BLE001 - record the bundle before aborting
+            tracker.update_staged_status(bundle.bundle_key, status="upload_failed")
+            totals["upload_failed"] += 1
+            log.error("Upload failed for %s: %s", label, error)
+            return
+        print(f"{label}: {_upload_summary(upload_outcomes)}")
+        completed = upload_outcomes.get("completed", 0)
+        failed = upload_outcomes.get("failed", 0)
+        totals["uploaded"] += completed
+        totals["upload_failed"] += failed
+        tracker.update_staged_status(
+            bundle.bundle_key,
+            status="uploaded"
+            if completed == len(revalidation.paths) and not failed
+            else "upload_failed",
+        )
+
+    async def clean_and_upload(
+        items: tuple[StagedBundle, ...],
+        *,
+        label: str,
+    ) -> None:
+        cleanup = await cleanup_staged_bundles(
+            items=items,
+            staging_dir=args.staging_dir,
+            tracker=tracker,
+            runner=runner,
+            work_root=work_root,
+            concurrency=args.cleanup_concurrency,
+        )
+        print(f"{label}: {_cleanup_summary(cleanup.outcomes)}")
+        for status, count in cleanup.outcomes.items():
+            totals[status] += count
+        for bundle in cleanup.ready_bundles:
+            await upload_ready(bundle, label=label)
+
+    try:
+        indeterminate_uploads = tracker.staged_by_status(
+            telegram.channel_id,
+            ("uploading",),
+        )
+        for item in indeterminate_uploads:
+            report = dict(item.cleanup_report or {})
+            report["uploadRecovery"] = (
+                "A previous process stopped after upload began. Reconcile the "
+                "Alexandria session before retrying to avoid a duplicate model."
+            )
+            tracker.update_staged_cleanup(
+                item.bundle_key,
+                status="needs_review",
+                output_folders=item.output_folders,
+                report=report,
+            )
+            totals["needs_review"] += 1
+            log.error(
+                "Upload state is indeterminate for %s; manual reconciliation required",
+                item.folder_name,
+            )
+
+        resumable_uploads = tracker.staged_by_status(
+            telegram.channel_id,
+            ("ready",),
+        )
+        for item in resumable_uploads:
+            batch_number += 1
+            paths = tuple(
+                (args.staging_dir / path).resolve() for path in item.output_folders
+            )
+            print(f"Batch {batch_number}: resuming upload for {item.folder_name}")
+            await upload_ready(
+                ReadyBundle(item, paths),
+                label=f"Batch {batch_number}",
+            )
+
+        resumable_cleanups = tracker.staged_by_status(
+            telegram.channel_id,
+            ("downloaded", "cleaning", "cleanup_failed"),
+        )
+        for offset in range(0, len(resumable_cleanups), args.stage):
+            items = resumable_cleanups[offset : offset + args.stage]
+            batch_number += 1
+            totals["resumed"] += len(items)
+            print(f"Batch {batch_number}: resuming cleanup for {len(items)} folder(s)")
+            await clean_and_upload(items, label=f"Batch {batch_number}")
+
+        while True:
+            staging = await stage_bundles(
+                telegram=telegram,
+                tracker=tracker,
+                refs=refs,
+                staging_dir=args.staging_dir,
+                limit=args.stage,
+                progress=progress,
+                concurrency=args.concurrency,
+                exclude_keys=excluded_keys,
+            )
+            excluded_keys.update(staging.failed_keys)
+            totals["stage_failed"] += staging.failed
+            if not staging.items and not staging.failed_keys:
+                break
+
+            batch_number += 1
+            print(
+                f"Batch {batch_number}: "
+                + _staging_summary(
+                    args.staging_dir,
+                    staging.staged,
+                    staging.failed,
+                    staging.staged_bytes,
+                ),
+            )
+            if not staging.items:
+                continue
+            totals["staged"] += staging.staged
+            await clean_and_upload(staging.items, label=f"Batch {batch_number}")
+    finally:
+        if alexandria is not None:
+            await alexandria.close()
+
+    print(
+        "Automated staged import: "
+        + ", ".join(
+            [f"batches={batch_number}"]
+            + [f"{status}={count}" for status, count in sorted(totals.items())],
+        ),
+    )
+    failed = any(
+        totals.get(status, 0)
+        for status in (
+            "stage_failed",
+            "needs_review",
+            "cleanup_failed",
+            "upload_failed",
+        )
+    )
+    return 1 if failed else 0
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -382,7 +905,16 @@ async def run(args: argparse.Namespace) -> int:
 
         if args.download_only is not None or args.stage is not None:
             tracker = ImportTracker(args.state)
-            staged, failed_to_stage, staged_bytes = await stage_bundles(
+            if args.stage is not None and args.cleanup == "codex":
+                return await run_codex_staged_batches(
+                    args=args,
+                    telegram=telegram,
+                    tracker=tracker,
+                    refs=refs,
+                    progress=progress,
+                    work_root=work_root,
+                )
+            staging = await stage_bundles(
                 telegram=telegram,
                 tracker=tracker,
                 refs=refs,
@@ -392,12 +924,16 @@ async def run(args: argparse.Namespace) -> int:
                 concurrency=args.concurrency,
             )
             summary = _staging_summary(
-                args.staging_dir, staged, failed_to_stage, staged_bytes
+                args.staging_dir,
+                staging.staged,
+                staging.failed,
+                staging.staged_bytes,
             )
+            failed_to_stage = staging.failed
             if args.download_only is not None:
                 print(summary)
                 return 1 if failed_to_stage else 0
-            if not confirm_upload(summary):
+            if args.cleanup == "manual" and not confirm_upload(summary):
                 return 1 if failed_to_stage else 0
 
         if args.stage is not None:

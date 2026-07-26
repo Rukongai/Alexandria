@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import zipfile
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -283,8 +284,28 @@ class FolderUploader:
                     by_name[path.name] = path
         return tuple(by_name.values())
 
-    async def run(self, root: Path) -> dict[str, int]:
+    async def run(
+        self,
+        root: Path,
+        *,
+        include_paths: Sequence[Path] | None = None,
+    ) -> dict[str, int]:
         found, ambiguous = discover(root)
+        if include_paths is not None:
+            selected = {path.resolve() for path in include_paths}
+            discoverable = {
+                *(folder.path.resolve() for folder in found),
+                *(path.resolve() for path, _ in ambiguous),
+            }
+            if missing := selected - discoverable:
+                joined = ", ".join(str(path) for path in sorted(missing))
+                raise ValueError(f"Selected staging folders are not uploadable: {joined}")
+            found = [folder for folder in found if folder.path.resolve() in selected]
+            ambiguous = [
+                (path, reason)
+                for path, reason in ambiguous
+                if path.resolve() in selected
+            ]
         outcomes: Counter[str] = Counter()
         settled = 0
         total = len(found) + len(ambiguous)

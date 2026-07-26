@@ -469,6 +469,22 @@ async def test_should_keep_going_after_one_folder_fails(tmp_path) -> None:
     assert (tmp_path / "failed" / "002501-broken").is_dir()
 
 
+async def test_should_upload_only_the_explicit_folder_allowlist(tmp_path) -> None:
+    selected = make_folder(tmp_path / "002501-selected", models=["selected.7z"])
+    untouched = make_folder(tmp_path / "002502-untouched", models=["untouched.7z"])
+    alexandria = FakeAlexandria()
+
+    outcomes = await FolderUploader(
+        alexandria=alexandria,
+        work_root=tmp_path / "work",
+    ).run(tmp_path, include_paths=(selected,))
+
+    assert outcomes == {"completed": 1}
+    assert (tmp_path / "uploaded" / "002501-selected").is_dir()
+    assert untouched.is_dir()
+    assert alexandria.uploads == [("selected.zip", False)]
+
+
 # --- Data-loss regressions ------------------------------------------------
 
 
