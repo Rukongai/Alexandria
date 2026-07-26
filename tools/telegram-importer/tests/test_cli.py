@@ -169,6 +169,8 @@ def test_should_accept_codex_cleanup_for_a_staged_import(tmp_path) -> None:
             str(tmp_path / "reference"),
             "--codex-model",
             "gpt-5.4",
+            "--codex-reasoning-effort",
+            "high",
             "--staging-dir",
             str(tmp_path / "staging"),
         ],
@@ -178,6 +180,7 @@ def test_should_accept_codex_cleanup_for_a_staged_import(tmp_path) -> None:
     assert args.cleanup_concurrency == 1
     assert args.cleanup_timeout == 3600
     assert args.codex_model == "gpt-5.4"
+    assert args.codex_reasoning_effort == "high"
 
 
 def test_should_treat_a_closed_stdin_as_quitting_the_pause(monkeypatch) -> None:
@@ -446,6 +449,7 @@ async def test_should_continue_with_the_next_codex_batch_after_upload(
         cleanup_reference=tmp_path / "reference",
         codex_command="codex",
         codex_model=None,
+        codex_reasoning_effort=None,
         cleanup_timeout=60,
         cleanup_concurrency=1,
         concurrency=1,
@@ -558,6 +562,7 @@ async def test_should_refuse_a_mutated_ready_bundle_on_resume(
         cleanup_reference=reference,
         codex_command="codex",
         codex_model=None,
+        codex_reasoning_effort=None,
         cleanup_timeout=60,
         cleanup_concurrency=1,
         concurrency=1,
@@ -623,6 +628,7 @@ async def test_should_require_review_for_an_indeterminate_upload(
         cleanup_reference=tmp_path / "reference",
         codex_command="codex",
         codex_model=None,
+        codex_reasoning_effort=None,
         cleanup_timeout=60,
         cleanup_concurrency=1,
         concurrency=1,
@@ -797,6 +803,7 @@ async def test_should_finish_pending_local_deletion_after_restart(
             cleanup_reference=tmp_path / "reference",
             codex_command="codex",
             codex_model=None,
+            codex_reasoning_effort=None,
             cleanup_timeout=60,
             cleanup_concurrency=1,
             concurrency=1,
@@ -873,6 +880,7 @@ async def test_should_retain_uncommitted_split_outputs_after_restart(
             cleanup_reference=tmp_path / "reference",
             codex_command="codex",
             codex_model=None,
+            codex_reasoning_effort=None,
             cleanup_timeout=60,
             cleanup_concurrency=1,
             concurrency=1,

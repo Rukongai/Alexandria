@@ -60,8 +60,9 @@ For automated staged cleanup, `TELEGRAM_STAGE_CLEANUP=codex` selects Codex,
 and `TELEGRAM_CODEX_CLEANUP_TIMEOUT` limits each folder cleanup in seconds.
 `TELEGRAM_CODEX_CLEANUP_SKILL` overrides the repository-owned cleanup skill,
 `TELEGRAM_CODEX_COMMAND` selects the executable, and `TELEGRAM_CODEX_MODEL`
-selects the cleanup model. The matching command-line flags override these
-values; omit `--codex-model` to use the Codex CLI default.
+selects the cleanup model. `TELEGRAM_CODEX_REASONING_EFFORT` selects its
+reasoning effort, such as `high`. The matching command-line flags override
+these values; omit either option to use the Codex CLI default.
 
 By default, the reusable Telegram login session and SQLite import state live under `$XDG_DATA_HOME/alexandria-telegram-importer`, or `~/.local/share/alexandria-telegram-importer` when `XDG_DATA_HOME` is unset. Override them with `TELEGRAM_SESSION_PATH` and `TELEGRAM_IMPORT_STATE_PATH`, or with the `--session` and `--state` command-line options.
 
@@ -118,6 +119,7 @@ uv run alexandria-telegram-import \
   --cleanup codex \
   --cleanup-reference ./completed-reference-model \
   --codex-model gpt-5.4 \
+  --codex-reasoning-effort high \
   --staging-dir ./work
 ```
 
