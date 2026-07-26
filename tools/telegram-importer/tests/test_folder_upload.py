@@ -296,6 +296,16 @@ class FakeAlexandria:
         self.commits: list[dict] = []
         self.session = {"id": "session-1", "status": "ready_for_review"}
         self.fail_commit = False
+        self.fields: list[dict] = []
+        self.metadata_validation_error: str | None = None
+
+    async def metadata_fields(self):
+        return tuple(self.fields)
+
+    async def validate_metadata(self, values):
+        if self.metadata_validation_error:
+            raise ValueError(self.metadata_validation_error)
+        return values
 
     async def upload_file(self, path, upload_name, *, multipart, on_progress=None):
         self.uploads.append((upload_name, multipart))
@@ -333,9 +343,18 @@ async def test_should_upload_a_folder_and_return_its_model_id(tmp_path) -> None:
         tmp_path / "002501-dragon",
         models=["dragon.7z"],
         images=["render.jpg"],
-        metadata={"modelName": "Dragon", "artist": "Foo", "tags": ["dragon"]},
+        metadata={
+            "modelName": "Dragon",
+            "artist": "Foo",
+            "tags": ["dragon"],
+            "metadata": {"month-9g9z": 6, "has-archive-edm5": True},
+        },
     )
     alexandria = FakeAlexandria()
+    alexandria.fields = [
+        {"slug": "month-9g9z", "type": "text", "config": None},
+        {"slug": "has-archive-edm5", "type": "text", "config": None},
+    ]
     [folder], _ = discover(tmp_path)
 
     model_id = await FolderUploader(
@@ -358,6 +377,10 @@ async def test_should_upload_a_folder_and_return_its_model_id(tmp_path) -> None:
     assert alexandria.commits[0]["modelName"] == "Dragon"
     assert alexandria.commits[0]["batch_metadata"]["artist"] == "Foo"
     assert alexandria.commits[0]["batch_metadata"]["tags"] == ["dragon"]
+    assert alexandria.commits[0]["batch_metadata"]["metadata"] == {
+        "month-9g9z": "6",
+        "has-archive-edm5": "true",
+    }
 
 
 async def test_should_include_container_images_in_every_descendant_folder_archive(
@@ -448,6 +471,54 @@ async def test_should_move_a_folder_to_failed_when_upload_raises(tmp_path) -> No
         ),
     )
     assert "commit exploded" in payload["result"]["error"]
+
+
+async def test_should_reject_invalid_metadata_before_creating_an_upload(
+    tmp_path,
+) -> None:
+    make_folder(
+        tmp_path / "002501-dragon",
+        models=["dragon.7z"],
+        metadata={"metadata": {"unknown-field": 6}},
+    )
+    alexandria = FakeAlexandria()
+
+    outcomes = await FolderUploader(
+        alexandria=alexandria,
+        work_root=tmp_path / "work",
+    ).run(tmp_path)
+
+    assert outcomes == {"failed": 1}
+    assert alexandria.uploads == []
+    failed = tmp_path / "failed" / "002501-dragon" / "metadata.json"
+    assert "not configured" in json.loads(failed.read_text())["result"]["error"]
+
+
+async def test_should_apply_backend_metadata_validation_before_upload(tmp_path) -> None:
+    make_folder(
+        tmp_path / "002501-dragon",
+        models=["dragon.7z"],
+        metadata={"metadata": {"catalog-id": "wrong"}},
+    )
+    alexandria = FakeAlexandria()
+    alexandria.fields = [
+        {
+            "slug": "catalog-id",
+            "type": "text",
+            "config": {"validationPattern": "^MODEL-[0-9]+$"},
+        },
+    ]
+    alexandria.metadata_validation_error = "Value does not match the required format"
+
+    outcomes = await FolderUploader(
+        alexandria=alexandria,
+        work_root=tmp_path / "work",
+    ).run(tmp_path)
+
+    assert outcomes == {"failed": 1}
+    assert alexandria.uploads == []
+    failed = tmp_path / "failed" / "002501-dragon" / "metadata.json"
+    assert "required format" in json.loads(failed.read_text())["result"]["error"]
 
 
 async def test_should_delete_a_committed_folder_when_requested(tmp_path) -> None:

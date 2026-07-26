@@ -136,10 +136,20 @@ Alexandria, and direct Codex API credentials; gives Codex write access to only o
 requires a structured receipt; and independently validates the claimed output allowlist, absence of
 symlinks, exact reference metadata key sets, Telegram provenance and complete model-message
 coverage, flat images, and the single supported archive's integrity. Only the validated path
-allowlist reaches the uploader. Automated mode drains the channel in bounded batches, skips staging
-failures for the rest of the current invocation, and persists cleanup attempts, receipts, output
-paths, and lifecycle states in the importer's SQLite database. `ready` records are fully revalidated
-against their persisted receipt and current files before upload resumes; an interrupted `uploading`
+allowlist reaches the uploader. Before creating an upload session, FolderUploader reads Alexandria's
+globally configured metadata field definitions. Cold concurrent reads share one in-flight request,
+and the successful result is cached on the Alexandria client for later folders. FolderUploader
+normalizes only deterministic generic-field conversions: finite numbers and booleans to text,
+numeric strings to numbers, `true`/`false` strings to booleans, and scalars to multi-enum lists;
+arrays are rejected for scalar fields and null remains null for a configured field. A non-empty
+normalized map is then checked through the authoritative, non-mutating
+`POST /metadata/fields/validate` route, which shares the import commit's Tags, URL, date,
+enum-option, RE2 pattern, value-count, and length validation. Unknown fields, unsupported types,
+and ambiguous or invalid values fail without transferring model bytes. Automated mode drains the
+channel in bounded batches, skips staging failures for the rest of the current invocation, and
+persists cleanup attempts, receipts, output paths, and lifecycle states in the importer's SQLite
+database. `ready` records are fully revalidated against their persisted receipt and current files
+before upload resumes; an interrupted `uploading`
 record becomes `needs_review` because replaying an indeterminate remote commit could create a
 duplicate. `downloaded`, `cleaning`, and `cleanup_failed` records resume cleanup before any new
 downloads. `needs_review` and `upload_failed` remain for operator intervention. Codex never receives
@@ -755,6 +765,7 @@ All smart-collection by-id routes enforce ownership via `requireOwnedSmartCollec
 | Method | Route | Purpose | Service Chain | Library-scoped |
 |--------|-------|---------|---------------|---------------|
 | GET | /metadata/fields | List all field definitions | MetadataService → PresenterService | No |
+| POST | /metadata/fields/validate | Validate and normalize a metadata map without mutation | MetadataService | No |
 | POST | /metadata/fields | Create custom field | MetadataService | No |
 | PATCH | /metadata/fields/:id | Update field definition | MetadataService | No |
 | DELETE | /metadata/fields/:id | Delete (not defaults) | MetadataService | No |
