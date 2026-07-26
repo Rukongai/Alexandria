@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { postForLibrary, putRaw, setActiveLibraryId } from './client';
+import { getBlob, postForLibrary, putRaw, setActiveLibraryId } from './client';
 
 describe('upload API client cancellation', () => {
   afterEach(() => {
@@ -32,5 +32,20 @@ describe('upload API client cancellation', () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.headers).toEqual(expect.objectContaining({ 'X-Library-Id': 'library-a' }));
     expect(init.signal).toBeUndefined();
+  });
+
+  it('sends the active library header when downloading a binary response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(['mesh']),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    setActiveLibraryId('library-b');
+
+    await getBlob('/models/model-1/files/file-1/archive/download?path=body.stl');
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).toEqual(expect.objectContaining({ 'X-Library-Id': 'library-b' }));
+    expect(init.credentials).toBe('include');
   });
 });

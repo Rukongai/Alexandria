@@ -26,6 +26,7 @@ import { SplitFolderDialog } from '../components/models/SplitFolderDialog';
 import { ModelBreadcrumb } from '../components/models/ModelBreadcrumb';
 import { ModelViewer3DModal } from '../components/models/ModelViewer3DModal';
 import { TextFilePreviewModal } from '../components/models/TextFilePreviewModal';
+import { ArchivePreviewModal } from '../components/models/ArchivePreviewModal';
 import { ModelDetailSkeleton } from '../components/models/ModelDetailSkeleton';
 import { collectStlFiles, type StlFileRef, type TextFileRef } from '../lib/model-files';
 import { useLibraryPath } from '../hooks/use-libraries';
@@ -158,6 +159,8 @@ export function ModelDetailPage() {
   const [activeStl, setActiveStl] = React.useState<StlFileRef | null>(null);
   const [textPreviewOpen, setTextPreviewOpen] = React.useState(false);
   const [activeTextFile, setActiveTextFile] = React.useState<TextFileRef | null>(null);
+  const [archivePreviewOpen, setArchivePreviewOpen] = React.useState(false);
+  const [activeArchive, setActiveArchive] = React.useState<{ fileId: string; name: string } | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = React.useState(false);
   const [mergeDialogOpen, setMergeDialogOpen] = React.useState(false);
   const [splitTarget, setSplitTarget] = React.useState<
@@ -396,6 +399,10 @@ export function ModelDetailPage() {
               onRenameFile={(fileId, filename) => fileMutation.mutate({ type: 'rename-file', fileId, filename })}
               onMoveFile={(fileId, parentPath) => runFileAction({ type: 'move-file', fileId, parentPath })}
               onDeleteFile={(fileId, name) => fileMutation.mutate({ type: 'delete-file', fileId, name })}
+              onBrowseArchive={(fileId, name) => {
+                setActiveArchive({ fileId, name });
+                setArchivePreviewOpen(true);
+              }}
               onExtractArchive={(fileId, name) => fileMutation.mutate({ type: 'extract-archive', fileId, name })}
               onMoveFiles={(fileIds, parentPath) => runFileAction({ type: 'move-files', fileIds, parentPath })}
               onDeleteFiles={(fileIds) => fileMutation.mutate({ type: 'delete-files', fileIds })}
@@ -429,6 +436,14 @@ export function ModelDetailPage() {
         onOpenChange={setTextPreviewOpen}
         file={activeTextFile}
       />
+      {id && (
+        <ArchivePreviewModal
+          modelId={id}
+          open={archivePreviewOpen}
+          onOpenChange={setArchivePreviewOpen}
+          archive={activeArchive}
+        />
+      )}
       <SplitFolderDialog
         open={Boolean(splitTarget)}
         folderPath={splitTarget?.type === 'folder' ? splitTarget.path : undefined}

@@ -54,7 +54,7 @@ The `runSeed` function is also exported for use as a standalone CLI script (`npm
 │                                                          │
 │   ModelDetailPage: ModelBreadcrumb + ModelHero +         │
 │     ModelDetailPanel (Info/Collections/Files tabs)       │
-│     + SplitFolderDialog for folder or file extraction    │
+│     + ArchivePreviewModal + SplitFolderDialog            │
 │   ToolsPage: library maintenance tools + duplicate scan  │
 │   ModelViewer3DModal → lazy ModelViewer3DScene (three.js)│
 │   lib/model-files.ts: STL path helpers (pure)           │
@@ -424,6 +424,14 @@ For a derived folder archive, `createModelFileAndRecalculateStats` inserts the `
 
 **Behavior:** Normalizes the requested and derived archive paths, serializes concurrent requests for the same model and folder, and admits at most one compression process at a time per backend instance. It resolves descendant files and explicit empty folders and rejects a missing folder. Before reading source objects, it rejects any file, folder namespace, or storage object already occupying `<folder-path>.7z`. It streams source objects through StorageService into an isolated temporary directory, delegates explicit LZMA2 archive creation to FileProcessingService, and stores and verifies the result through the configured storage backend. ModelService then records the archive as `application/x-7z-compressed` and updates model totals transactionally. The source folder is never changed. Failures before database persistence trigger best-effort deletion of the newly written archive object, and temporary data is always removed.
 
+### ArchiveBrowserService
+
+**Owns:** Read-only listing and single-entry download preparation for one stored archive model file.
+
+**Does not own:** Model ownership and library scope (delegates to ModelService), archive format parsing or extraction safeguards (FileProcessingService), managed object access (StorageService), or persistence of extracted files.
+
+**Behavior:** Resolves an archive file only after ModelService verifies the requested model belongs to the active library. It streams the managed archive into an isolated temporary directory and delegates extraction to FileProcessingService, so all existing ZIP, TAR.GZ, RAR, and 7z traversal/link protections apply. Listing returns safe files plus inferred parent directories. A requested download path is normalized, rejected when unsafe, then checked against a fresh manifest before opening the extracted file stream; a client cannot download an arbitrary temporary path. The temporary directory is removed after listing, on preparation failure, or when the download stream closes/errors. Neither operation writes `ModelFile` rows or changes the model.
+
 ### MetadataService
 
 **Owns:** Metadata field definitions, metadata values on models, optimized storage routing for performance-critical field types.
@@ -713,6 +721,8 @@ Because `ModelViewer3DScene` is lazy-loaded, Vite emits three.js as a separate a
 | GET | /models | Browse/search with filters | SearchService → PresenterService | Yes |
 | GET | /models/:id | Model detail | ModelService → PresenterService | Yes |
 | GET | /models/:id/files | File tree | ModelService → PresenterService | Yes |
+| GET | /models/:id/files/:fileId/archive | List a stored archive's safe contents | ArchiveBrowserService → ModelService + StorageService + FileProcessingService | Yes |
+| GET | /models/:id/files/:fileId/archive/download | Stream one validated archive entry | ArchiveBrowserService → ModelService + StorageService + FileProcessingService | Yes |
 | POST | /models/:id/folders/compress | Create a non-destructive sibling 7z archive | ModelFolderArchiveService → ModelService + FileProcessingService + StorageService | Yes |
 | POST | /models/upload | Upload archive → scan (returns sessionId) | IngestionService → ImportSessionService → JobService | Yes |
 | POST | /models/upload/init | Initiate chunked upload session | UploadService | No |

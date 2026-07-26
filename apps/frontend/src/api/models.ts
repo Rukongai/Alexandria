@@ -20,8 +20,9 @@ import type {
   SplitModelFolderRequest,
   SplitModelFolderResponse,
   CompressFolderResponse,
+  ArchiveContents,
 } from '@alexandria/shared';
-import { get, post, postForLibrary, patch, del, putRaw, postForm } from './client';
+import { get, getBlob, post, postForLibrary, patch, del, putRaw, postForm } from './client';
 import { buildQueryString } from '../lib/query';
 
 export async function getModels(params: ModelSearchParams): Promise<ApiResponse<ModelCard[]>> {
@@ -101,6 +102,25 @@ export async function extractModelArchive(
 ): Promise<ExtractArchiveResponse> {
   const response = await post<ExtractArchiveResponse>(`/models/${id}/files/${fileId}/extract`);
   return response.data;
+}
+
+export async function getModelArchiveContents(
+  id: string,
+  fileId: string,
+  signal?: AbortSignal,
+): Promise<ArchiveContents> {
+  const response = await get<ArchiveContents>(`/models/${id}/files/${fileId}/archive`, signal);
+  return response.data;
+}
+
+export async function downloadModelArchiveEntry(
+  id: string,
+  fileId: string,
+  path: string,
+): Promise<Blob> {
+  return getBlob(
+    `/models/${encodeURIComponent(id)}/files/${encodeURIComponent(fileId)}/archive/download?path=${encodeURIComponent(path)}`,
+  );
 }
 
 export async function updateModelFolder(

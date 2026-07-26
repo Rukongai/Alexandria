@@ -51,6 +51,10 @@ vi.mock('../components/models/TextFilePreviewModal', () => ({
   TextFilePreviewModal: () => null,
 }));
 
+vi.mock('../components/models/ArchivePreviewModal', () => ({
+  ArchivePreviewModal: () => null,
+}));
+
 vi.mock('../components/models/ModelDetailSkeleton', () => ({
   ModelDetailSkeleton: () => <div>Loading model</div>,
 }));

@@ -1315,6 +1315,43 @@ Retrieve the file tree for a model. The flat list of `ModelFile` records is asse
 
 ---
 
+### GET /models/:id/files/:fileId/archive
+
+List the safe entries in one stored archive model file without adding its contents to the model.
+
+**Auth required:** Yes. The model must belong to the active library.
+
+**Path parameters:** `id` — model UUID; `fileId` — archive `ModelFile` UUID belonging to that model.
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "entries": [
+      { "path": "parts", "sizeBytes": 0, "isDirectory": true },
+      { "path": "parts/body.stl", "sizeBytes": 2097152, "isDirectory": false }
+    ]
+  },
+  "meta": null,
+  "errors": null
+}
+```
+
+`entries` includes files and inferred parent directories, sorted case-insensitively by path. The server validates archive paths and link entries using the same extraction safeguards as ingestion. Unsupported archive files return `400 VALIDATION_ERROR`; a missing model/file or a model outside the active library returns `404 NOT_FOUND`.
+
+---
+
+### GET /models/:id/files/:fileId/archive/download?path=...
+
+Download exactly one file listed by the archive endpoint as an attachment. `path` is the archive-relative forward-slash path and must be 1–1,000 characters.
+
+**Auth required:** Yes. The model must belong to the active library.
+
+The server extracts to an isolated temporary directory, revalidates the requested path against a freshly generated archive manifest, streams the file, and removes temporary data after streaming. It does not create a `ModelFile` or modify the model. Invalid paths return `400 VALIDATION_ERROR`; entries not present in the current archive manifest return `404 NOT_FOUND`.
+
+---
+
 ### POST /models/:id/files/delete
 
 Delete a selected set of files from one model. The model must belong to the authenticated user and the active library selected by `X-Library-Id`, or the user's default library when the header is omitted.

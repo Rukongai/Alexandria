@@ -83,3 +83,7 @@ export const splitModelFolderSchema = z.object({
 export const compressModelFolderSchema = z.object({
   path: relativePathSchema,
 });
+
+export const archiveEntryQuerySchema = z.object({
+  path: z.string().min(1).max(1000),
+});
