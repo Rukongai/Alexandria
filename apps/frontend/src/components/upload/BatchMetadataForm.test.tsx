@@ -46,6 +46,18 @@ const characterField: MetadataFieldDetail = {
   sortOrder: 7,
 };
 
+const monthField: MetadataFieldDetail = {
+  id: '44444444-4444-4444-8444-444444444444',
+  name: 'Month',
+  slug: 'month-9g9z',
+  type: 'text',
+  isDefault: false,
+  isFilterable: true,
+  isBrowsable: true,
+  config: null,
+  sortOrder: 8,
+};
+
 function collectionSelect(): HTMLSelectElement {
   const select = screen.getByRole('option', { name: '— None —' }).closest('select');
   if (!select) throw new Error('collection select not found');
@@ -390,6 +402,39 @@ describe('BatchMetadataForm', () => {
     await waitFor(() => expect(commitImportSession).toHaveBeenCalledWith(
       'session-1',
       expect.objectContaining({ metadata: { source: 'Dragon Quest' } }),
+    ));
+  });
+
+  it('coerces metadata-file values to their configured field type before import', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+    vi.mocked(getFields).mockResolvedValue([monthField]);
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+            metadataFile: { metadata: { 'month-9g9z': 6 } },
+          }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText('Month')).toHaveValue('6'));
+    fireEvent.click(screen.getByRole('button', { name: 'Import one model' }));
+
+    await waitFor(() => expect(commitImportSession).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({ metadata: { 'month-9g9z': '6' } }),
     ));
   });
 
