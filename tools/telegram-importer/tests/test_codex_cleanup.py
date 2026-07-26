@@ -131,6 +131,49 @@ def test_should_validate_one_ready_model_folder(tmp_path) -> None:
     assert [folder.path for folder in validation.folders] == [model]
 
 
+def test_should_allow_nested_metadata_fields_missing_from_the_reference(tmp_path) -> None:
+    staging = tmp_path / "staging"
+    model = staging / "002501-dragon"
+    original = metadata()
+    cleaned = metadata()
+    del cleaned["metadata"]["year"]
+    make_ready_folder(model, cleaned)
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    (reference / "metadata.json").write_text(json.dumps(original), encoding="utf-8")
+
+    validation = validate_cleanup_receipt(
+        receipt(model, model),
+        staging_root=staging,
+        original_metadata=original,
+        reference_folder=reference,
+    )
+
+    assert validation.ready
+
+
+def test_should_reject_nested_metadata_fields_absent_from_the_reference(tmp_path) -> None:
+    staging = tmp_path / "staging"
+    model = staging / "002501-dragon"
+    original = metadata()
+    cleaned = metadata()
+    cleaned["metadata"]["unconfigured"] = "value"
+    make_ready_folder(model, cleaned)
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    (reference / "metadata.json").write_text(json.dumps(original), encoding="utf-8")
+
+    validation = validate_cleanup_receipt(
+        receipt(model, model),
+        staging_root=staging,
+        original_metadata=original,
+        reference_folder=reference,
+    )
+
+    assert not validation.ready
+    assert any("unconfigured" in error for error in validation.errors)
+
+
 def test_should_reject_unreported_split_outputs(tmp_path) -> None:
     staging = tmp_path / "staging"
     bundle = staging / "002501-dragons"
