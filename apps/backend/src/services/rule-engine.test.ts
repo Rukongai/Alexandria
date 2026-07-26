@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { RuleNode, RuleCondition } from '@alexandria/shared';
+import { smartCollectionDefinitionSchema, type RuleNode, type RuleCondition } from '@alexandria/shared';
 import { buildLeafCondition, compileRuleTree, buildTsQuery, collectConditions } from './rule-engine.js';
 
 const dialect = new PgDialect();
@@ -66,6 +66,28 @@ describe('buildLeafCondition — builtin fields', () => {
   it('status/is and isNot', () => {
     expect(renderLeaf(cond(builtin('status'), 'is', 'ready')).sql).toContain('"status" =');
     expect(renderLeaf(cond(builtin('status'), 'isNot', 'ready')).sql).toContain('<>');
+  });
+
+  it('hasDuplicates/is and isNot compare the duplicate-review flag as a boolean', () => {
+    const isDuplicate = renderLeaf(cond(builtin('hasDuplicates'), 'is', 'true'));
+    expect(isDuplicate.sql).toContain('"is_duplicate" =');
+    expect(isDuplicate.params).toContain(true);
+
+    const isNotDuplicate = renderLeaf(cond(builtin('hasDuplicates'), 'isNot', 'true'));
+    expect(isNotDuplicate.sql).toContain('"is_duplicate" <>');
+    expect(isNotDuplicate.params).toContain(true);
+  });
+
+  it('rejects invalid values for hasDuplicates', () => {
+    expect(() => buildLeafCondition(cond(builtin('hasDuplicates'), 'is', 'yes'))).toThrow();
+  });
+
+  it('validates hasDuplicates values in the shared rule definition schema', () => {
+    const valid = cond(builtin('hasDuplicates'), 'is', 'true');
+    const invalid = cond(builtin('hasDuplicates'), 'is', 'yes');
+
+    expect(smartCollectionDefinitionSchema.safeParse(valid).success).toBe(true);
+    expect(smartCollectionDefinitionSchema.safeParse(invalid).success).toBe(false);
   });
 
   it('manualPreview/exists and notExists check for an explicitly pinned cover', () => {

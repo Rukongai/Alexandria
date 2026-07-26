@@ -248,6 +248,7 @@ type BuiltinRuleField =
   | 'name'         // full-text search / exact match on model name
   | 'description'  // ILIKE substring match on description
   | 'status'       // models.status column
+  | 'hasDuplicates' // whether the model is marked duplicate after duplicate review
   | 'manualPreview' // whether previewImageFileId is explicitly set
   | 'fileType'     // EXISTS in model_files for the given file_type
   | 'collection'   // membership in a collection (by UUID value)
@@ -278,6 +279,10 @@ preview image (`previewImageFileId` is non-null), while `notExists` matches mode
 (`previewImageFileId` is null). Both operators take a `null` value. This rule does not test
 whether the model has image files; a model without a pinned preview uses the automatic
 first-image fallback when an image is available.
+
+For the built-in `hasDuplicates` field, `is` and `isNot` take the string value `"true"` or
+`"false"`. The field matches the model's duplicate-review flag (`isDuplicate`); it does not run
+duplicate detection as part of evaluating the rule.
 
 Legal operator combinations — which operators are valid for which fields — are defined in `LEGAL_OPERATORS_BY_BUILTIN` and `LEGAL_OPERATORS_BY_METADATA_TYPE` in `packages/shared/src/types/smart-collection.ts`. The shared validator enforces built-in legality; metadata legality is checked server-side once the field definition is resolved.
 

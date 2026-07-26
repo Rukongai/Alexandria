@@ -83,6 +83,17 @@ function validateCondition(node: RuleCondition, ctx: z.RefinementCtx, path: (str
         path: [...path, 'operator'],
       });
     }
+    if (
+      node.field.field === 'hasDuplicates'
+      && node.value !== 'true'
+      && node.value !== 'false'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Field 'hasDuplicates' requires a value of 'true' or 'false'",
+        path: [...path, 'value'],
+      });
+    }
   }
 }
 

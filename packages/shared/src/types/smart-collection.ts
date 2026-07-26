@@ -18,6 +18,7 @@ export type BuiltinRuleField =
   | 'name' // models.search_vector / models.name
   | 'description' // models.search_vector
   | 'status' // models.status
+  | 'hasDuplicates' // models.is_duplicate (duplicate-review flag)
   | 'manualPreview' // models.preview_image_file_id (user-pinned cover)
   | 'fileType' // model_files.file_type (EXISTS)
   | 'collection' // collection_models membership
@@ -27,6 +28,7 @@ export const BUILTIN_RULE_FIELDS: readonly BuiltinRuleField[] = [
   'name',
   'description',
   'status',
+  'hasDuplicates',
   'manualPreview',
   'fileType',
   'collection',
@@ -109,6 +111,7 @@ export const LEGAL_OPERATORS_BY_BUILTIN: Record<BuiltinRuleField, readonly RuleO
   name: ['contains', 'equals'],
   description: ['contains'],
   status: ['is', 'isNot'],
+  hasDuplicates: ['is', 'isNot'],
   manualPreview: ['exists', 'notExists'],
   fileType: ['has', 'notHas'],
   collection: ['inCollection', 'notInCollection'],
