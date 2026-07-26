@@ -134,14 +134,13 @@ work/002501-dragon-set/
 
 A folder holding **both** its own `models/` and a descendant model folder is a half-finished split. It is moved to `failed/` without uploading, because committing the leftovers would silently drop everything already moved into the children.
 
-### How models/ is uploaded
+### How a staged folder is uploaded
 
-- Exactly one entry, and it is an archive (`.zip`, `.rar`, `.7z`, `.tar.gz`, `.tgz`) — uploaded byte for byte, with no recompression. This is what makes a hand-made `.7z` worth creating.
-- Every entry a member of one complete split set (`.partN.rar`, `.zNN` plus `.zip`, `.zip.NNN`) — uploaded through the multipart `split` endpoints. An incomplete set, or one mixing two base names, falls through to the zip case rather than being guessed at.
-- Anything else — several files, loose model files, subfolders, an archive sitting beside a stray `readme.txt` — zipped into one archive preserving paths relative to `models/`.
-- Empty or missing — the folder moves to `failed/`.
-
-Every file in `images/` is appended as an attachment after the scan reaches `ready_for_review`.
+Each model folder is compressed into one ZIP before upload. The ZIP preserves the model
+folder itself and its contents — including `models/`, `images/`, and `metadata.json` when
+present — rather than uploading only the model archive and appending images afterward.
+Container images inherited by a child model are included under that child's `images/`
+directory. Empty or missing `models/` directories move the folder to `failed/`.
 
 ### metadata.json
 
