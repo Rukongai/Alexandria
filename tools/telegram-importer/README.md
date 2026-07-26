@@ -102,7 +102,7 @@ uv run alexandria-telegram-import --upload-only --staging-dir ./work
 uv run alexandria-telegram-import --stage 20 --staging-dir ./work
 ```
 
-All three require `--staging-dir`, and `--staging-dir` requires one of them. `TELEGRAM_STAGING_DIR` sets the default directory. `--stage` prints a summary and waits for Enter; `q` then Enter quits and leaves the folders for a later `--upload-only`. A non-interactive standard input is treated as quitting rather than hanging.
+All three require `--staging-dir`, and `--staging-dir` requires one of them. `TELEGRAM_STAGING_DIR` sets the default directory. `--concurrency` applies to both phases: N bundles stage at once, and N folders upload at once. `--upload-only` is entirely local — it needs no Telegram credentials and opens no Telegram session — and combining it with `--dry-run` prints what would be uploaded without contacting Alexandria. `--stage` prints a summary and waits for Enter; `q` then Enter quits and leaves the folders for a later `--upload-only`. A non-interactive standard input is treated as quitting rather than hanging.
 
 ### Folder layout
 
@@ -161,6 +161,10 @@ Its top level mirrors Alexandria's commit `batchMetadata` field for field, so it
 
 `source` records where the bundle came from; the upload phase ignores it, and it survives renaming and splitting. `result` is filled on disposal. `description` is composed from the bundle's captions and source link, so it is edited rather than written from scratch. A folder with no `metadata.json` still uploads, taking its name from its folder name.
 
+Because you edit this file by hand, a JSON syntax error is treated as an error rather than as "no metadata": a **model folder** whose own `metadata.json` will not parse moves to `failed/` without uploading, and the unreadable file is never rewritten — its result is written to a sibling `result.json` instead, so your hand-typed values survive. Fix the typo and re-run. A **container's** unparseable file is still skipped leniently, since a container commits nothing.
+
+Values merge from the staging root downward, so `<staging-dir>/metadata.json` and `<staging-dir>/images/` supply defaults to every folder in the directory — the natural place for channel-wide artist, tags, or collection.
+
 Values merge from the outermost container down to the model folder:
 
 | Field | Rule |
@@ -169,6 +173,8 @@ Values merge from the outermost container down to the model folder:
 | `tags` | Merged across every level, de-duplicated |
 | `metadata`, `options` | Merged key by key, nearest wins per key |
 | `modelName` | **Never inherits** — from the folder's own file, or its folder name |
+
+A child cannot clear an inherited value by setting it to `null`; omit the field or set a replacement.
 
 `modelName` is excluded deliberately: inheriting it would commit all eight models of a release as "Dragon Set". Everything else inheriting means the collection, artist, and tags are set once at the release root.
 
@@ -189,7 +195,7 @@ work/
     002502-broken/         <- result.error written into its metadata.json
 ```
 
-Paths relative to the staging root are preserved, each ancestor container's `metadata.json` is copied alongside, and a container left with no model folders is removed. The staging root therefore always shows exactly what is left to do. Delete `uploaded/` once the results have been checked.
+Paths relative to the staging root are preserved, each ancestor container's `metadata.json` is copied alongside, and a container is removed once it holds nothing but its own `metadata.json`. A container still holding an unsplit archive, a half-organized subfolder, or shared images is left alone — that is work in progress, not leftovers. The staging root therefore always shows exactly what is left to do. Delete `uploaded/` once the results have been checked.
 
 ### State and duplicates
 

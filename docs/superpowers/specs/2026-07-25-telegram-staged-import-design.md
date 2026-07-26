@@ -182,8 +182,21 @@ rather than written from scratch.
 traceable to its Telegram origin after being renamed and split. `result` is filled on
 disposal with `{"modelId", "sessionId", "uploadedAt"}` or `{"error", "failedAt"}`.
 
-Unknown top-level keys are preserved on rewrite. A file that is absent, unparseable, or not
-a JSON object is treated as "no metadata" — the folder still uploads.
+Unknown top-level keys are preserved on rewrite. A file that is absent is treated as "no
+metadata" — the folder still uploads, named from its folder.
+
+An **unparseable** file is not the same thing, and is handled differently by level. This file is
+edited by hand, so a JSON syntax error is likely, and silently defaulting would commit a wrongly
+named model while destroying the typed values:
+
+- A **model folder** whose own `metadata.json` will not parse moves to `failed/` without
+  uploading.
+- A **container's** unparseable file is skipped leniently — a container commits nothing.
+- In both cases the unreadable file is never rewritten. Its result goes to a sibling
+  `result.json`, so hand-typed values survive.
+
+*(Revised after review: the original spec said "unparseable → treated as no metadata" at every
+level, which made a typo silently destructive.)*
 
 ---
 
@@ -209,7 +222,8 @@ container. The split itself is the signal — no flag, no rename.
 ### Inheritance
 
 `metadata.json` files merge from the staging root down to the model folder, at arbitrary
-depth:
+depth. The staging root participates as a container itself, so `<staging-dir>/metadata.json`
+and `<staging-dir>/images/` supply channel-wide defaults:
 
 - **Scalars** (`description`, `artist`, `collectionId`, `newCollectionName`) — nearest
   ancestor wins.
@@ -271,7 +285,13 @@ Per model folder, not per release — six can succeed while two fail.
 - Each ancestor container's `metadata.json` is **copied** (not moved) alongside, so the
   archived copy is self-describing and later folders from the same release still see their
   defaults.
-- A container left with no model folders beneath it is removed from the staging root.
+- A container is removed once it holds nothing but its own `metadata.json`. Emptiness is
+  judged by what is on disk, **not** by whether discovery can still find a model folder —
+  a container may hold an unsplit archive, a half-organized subfolder, or shared images, none
+  of which discovery sees and all of which are the operator's work in progress.
+
+  *(Revised after review: the original rule, "a container left with no model folders is
+  removed", deleted exactly that work in progress.)*
 - A move that collides with an existing path gets a `-2`, `-3` suffix rather than
   overwriting.
 
@@ -377,4 +397,7 @@ the staged flow explicitly does not want.
 | Container metadata inherits, `modelName` does not | Set collection/artist/tags once per release; never commit eight models under one name. |
 | Container `images/` inherit | Silently dropping deliberately-placed images is worse than storing them per model. |
 | Ambiguous folder fails rather than uploads | A half-finished split would otherwise silently drop most of a release. |
+| Pruning judges emptiness by disk contents, not by discovery | Discovery only sees model folders, so pruning on it deletes unsplit archives and shared images. |
+| An unparseable model-folder `metadata.json` fails the folder | It is the one file operators edit by hand; defaulting silently commits a wrong name and destroys the typed values. |
+| `--concurrency` applies to both phases | Otherwise moving from the direct path to `--download-only` is a silent throughput regression. |
 | Backend prefill never auto-applies | Cannot change the outcome of any existing upload path. |
