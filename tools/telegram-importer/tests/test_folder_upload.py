@@ -87,7 +87,8 @@ def test_should_build_the_inheritance_chain_from_root_to_leaf(tmp_path) -> None:
 
     [folder], _ = discover(tmp_path)
 
-    assert folder.chain[0]["artist"] == "Foo Studios"
+    # chain[0] is the staging root itself; the release folder follows it.
+    assert [level.get("artist") for level in folder.chain] == [None, "Foo Studios", None]
     assert folder.chain[-1]["modelName"] == "Knight"
     assert folder.metadata["artist"] == "Foo Studios"
     assert folder.metadata["tags"] == ["dragon"]
@@ -509,3 +510,94 @@ async def test_should_keep_going_after_one_folder_fails(tmp_path) -> None:
     assert outcomes == {"completed": 1, "failed": 1}
     assert (tmp_path / "uploaded" / "002502-good").is_dir()
     assert (tmp_path / "failed" / "002501-broken").is_dir()
+
+
+# --- Data-loss regressions ------------------------------------------------
+
+
+def test_should_not_prune_a_container_that_still_holds_unsplit_files(tmp_path) -> None:
+    """The half-finished split is the whole point of the pause; pruning it is data loss."""
+    release = tmp_path / "002501-release"
+    make_folder(release / "knight", models=["knight.7z"])
+    (release / "mage").mkdir()
+    (release / "mage" / "mage.part1.rar").write_bytes(b"unfinished split")
+    (release / "images").mkdir()
+    (release / "images" / "group.png").write_bytes(b"group render")
+
+    dispose(release / "knight", tmp_path, "uploaded", {"modelId": "m1"})
+
+    assert (release / "mage" / "mage.part1.rar").is_file()
+    assert (release / "images" / "group.png").is_file()
+
+
+def test_should_not_prune_a_container_holding_a_loose_archive(tmp_path) -> None:
+    release = tmp_path / "002501-release"
+    make_folder(release / "knight", models=["knight.7z"])
+    (release / "leftover.7z").write_bytes(b"loose archive")
+
+    dispose(release / "knight", tmp_path, "uploaded", {"modelId": "m1"})
+
+    assert (release / "leftover.7z").is_file()
+
+
+def test_should_still_prune_a_genuinely_empty_container(tmp_path) -> None:
+    release = tmp_path / "002501-release"
+    release.mkdir()
+    (release / "metadata.json").write_text("{}", encoding="utf-8")
+    make_folder(release / "knight", models=["knight.7z"])
+
+    dispose(release / "knight", tmp_path, "uploaded", {"modelId": "m1"})
+
+    assert not release.exists()
+
+
+def test_should_never_overwrite_a_metadata_file_it_could_not_parse(tmp_path) -> None:
+    folder = make_folder(tmp_path / "002501-dragon", models=["a.zip"])
+    original = '{"modelName": "Hand Typed", "artist": "Me",}'
+    (folder / "metadata.json").write_text(original, encoding="utf-8")
+
+    destination = dispose(folder, tmp_path, "failed", {"error": "bad json"})
+
+    assert (destination / "metadata.json").read_text(encoding="utf-8") == original
+    assert json.loads((destination / "result.json").read_text(encoding="utf-8")) == {
+        "error": "bad json",
+    }
+
+
+def test_should_fail_a_model_folder_whose_own_metadata_is_unparseable(tmp_path) -> None:
+    folder = make_folder(tmp_path / "002501-dragon", models=["a.zip"])
+    (folder / "metadata.json").write_text('{"modelName": "X",}', encoding="utf-8")
+
+    found, ambiguous = discover(tmp_path)
+
+    assert found == []
+    assert [path.name for path, _ in ambiguous] == ["002501-dragon"]
+    assert "metadata.json" in ambiguous[0][1]
+
+
+def test_should_merge_metadata_from_the_staging_root_downward(tmp_path) -> None:
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"artist": "Channel Artist", "tags": ["channel"]}), encoding="utf-8"
+    )
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "banner.png").write_bytes(b"banner")
+    make_folder(tmp_path / "002501-dragon", models=["a.zip"], images=["own.png"])
+
+    [folder], ambiguous = discover(tmp_path)
+
+    assert ambiguous == []
+    assert folder.metadata["artist"] == "Channel Artist"
+    assert folder.metadata["tags"] == ["channel"]
+    assert sorted(p.name for p in folder.image_dirs[0].iterdir()) == ["banner.png"]
+
+
+def test_should_not_walk_a_nested_directory_named_failed_or_uploaded(tmp_path) -> None:
+    release = tmp_path / "002501-release"
+    release.mkdir()
+    make_folder(release / "knight", models=["knight.7z"])
+    make_folder(release / "failed" / "old", models=["old.7z"])
+    make_folder(release / "uploaded" / "done", models=["done.7z"])
+
+    found, _ = discover(tmp_path)
+
+    assert [folder.path.name for folder in found] == ["knight"]

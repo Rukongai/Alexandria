@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 import tempfile
@@ -16,6 +17,7 @@ from .folder_metadata import (
     METADATA_FILENAME,
     batch_metadata,
     merge_chain,
+    metadata_error,
     model_name_from_folder,
     read_metadata,
     write_metadata,
@@ -45,6 +47,7 @@ IMAGES_DIRNAME = "images"
 UPLOADED_DIRNAME = "uploaded"
 FAILED_DIRNAME = "failed"
 RESERVED_DIRNAMES = frozenset({UPLOADED_DIRNAME, FAILED_DIRNAME})
+RESULT_FILENAME = "result.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,10 +87,27 @@ def discover(root: Path) -> tuple[list[ModelFolder], list[tuple[Path, str]]]:
     ambiguous: list[tuple[Path, str]] = []
     if not root.is_dir():
         return found, ambiguous
-    for child in sorted(root.iterdir()):
-        if child.is_dir() and child.name not in RESERVED_DIRNAMES:
-            _visit(child, (), (), found, ambiguous)
+
+    # The staging root participates in the chain like any container, so it is
+    # the natural place for channel-wide defaults.
+    root_chain: tuple[dict[str, Any], ...] = (read_metadata(root) or {},)
+    root_images = root / IMAGES_DIRNAME
+    root_image_dirs = (root_images,) if root_images.is_dir() else ()
+
+    for child in _child_directories(root):
+        _visit(child, root_chain, root_image_dirs, found, ambiguous)
     return found, ambiguous
+
+
+def _child_directories(directory: Path) -> list[Path]:
+    """Subdirectories that can hold model folders, at any depth."""
+    return [
+        child
+        for child in sorted(directory.iterdir())
+        if child.is_dir()
+        and child.name not in RESERVED_DIRNAMES
+        and child.name not in {MODELS_DIRNAME, IMAGES_DIRNAME}
+    ]
 
 
 def _visit(
@@ -99,13 +119,15 @@ def _visit(
 ) -> None:
     chain = (*chain, read_metadata(directory) or {})
     has_models = (directory / MODELS_DIRNAME).is_dir()
-    subdirectories = [
-        child
-        for child in sorted(directory.iterdir())
-        if child.is_dir() and child.name not in {MODELS_DIRNAME, IMAGES_DIRNAME}
-    ]
+    subdirectories = _child_directories(directory)
 
     if has_models:
+        # A model folder commits on the strength of its own metadata.json, so a
+        # typo in one must not quietly produce a wrongly-named model. Container
+        # files stay lenient: the operator never edited those.
+        if error := metadata_error(directory):
+            ambiguous.append((directory, error))
+            return
         nested: list[ModelFolder] = []
         nested_ambiguous: list[tuple[Path, str]] = []
         for child in subdirectories:
@@ -226,9 +248,17 @@ def dispose(
     destination_parent.mkdir(parents=True, exist_ok=True)
     destination = unique_child(destination_parent, folder.name)
 
-    payload = read_metadata(folder) or {}
-    payload["result"] = result
-    write_metadata(folder, payload)
+    # Never rewrite a file we could not parse — it holds hand-typed values that
+    # exist nowhere else, and `or {}` would replace them with the result alone.
+    if metadata_error(folder):
+        (folder / RESULT_FILENAME).write_text(
+            json.dumps(result, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        payload = read_metadata(folder) or {}
+        payload["result"] = result
+        write_metadata(folder, payload)
 
     shutil.move(str(folder), str(destination))
 
@@ -246,12 +276,27 @@ def dispose(
 
 
 def _prune_empty_containers(directory: Path, root: Path) -> None:
-    """Remove containers that no longer hold any model folder."""
+    """Remove containers that hold nothing but their own metadata.json.
+
+    Emptiness is judged by what is actually on disk, not by whether `discover`
+    can still find a model folder. A container may hold an unsplit archive, a
+    half-organized subfolder, or shared images — none of which `discover` sees,
+    and all of which are the operator's work in progress.
+    """
     while directory != root and directory.is_dir():
-        remaining, ambiguous = discover(directory)
-        if remaining or ambiguous:
+        leftovers = [
+            child
+            for child in directory.iterdir()
+            if child.name not in {METADATA_FILENAME, RESULT_FILENAME}
+        ]
+        if leftovers:
             return
-        shutil.rmtree(directory, ignore_errors=True)
+        try:
+            shutil.rmtree(directory)
+            log.info("Removed emptied container %s", directory)
+        except OSError as error:
+            log.warning("Could not remove emptied container %s: %s", directory, error)
+            return
         directory = directory.parent
 
 

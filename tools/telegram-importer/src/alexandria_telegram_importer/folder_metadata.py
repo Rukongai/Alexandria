@@ -30,20 +30,37 @@ _INHERITED_MAPPINGS = ("metadata", "options")
 _FOLDER_PREFIX_RE = re.compile(r"^\d{4,}-")
 
 
-def read_metadata(folder: Path) -> dict[str, Any] | None:
-    """Read one folder's metadata.json, or None when it is absent or unusable."""
+def _load(folder: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (payload, error).
+
+    `error` is set only when the file exists but cannot be used, which is
+    distinct from it being absent. Callers that are about to overwrite or
+    commit on the strength of this file need to tell those two apart: a
+    typo in a hand-edited file must never be treated as "no metadata".
+    """
     path = folder / METADATA_FILENAME
     if not path.is_file():
-        return None
+        return None, None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        log.warning("Ignoring unreadable %s: %s", path, error)
-        return None
+        return None, f"{METADATA_FILENAME} could not be read: {error}"
     if not isinstance(payload, dict):
-        log.warning("Ignoring %s: expected a JSON object", path)
-        return None
+        return None, f"{METADATA_FILENAME} must contain a JSON object"
+    return payload, None
+
+
+def read_metadata(folder: Path) -> dict[str, Any] | None:
+    """Read one folder's metadata.json, or None when it is absent or unusable."""
+    payload, error = _load(folder)
+    if error:
+        log.warning("Ignoring %s: %s", folder / METADATA_FILENAME, error)
     return payload
+
+
+def metadata_error(folder: Path) -> str | None:
+    """A message when this folder's metadata.json exists but is unusable."""
+    return _load(folder)[1]
 
 
 def write_metadata(folder: Path, payload: dict[str, Any]) -> None:

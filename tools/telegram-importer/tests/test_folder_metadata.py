@@ -107,3 +107,20 @@ def test_should_strip_non_commit_keys_from_batch_metadata() -> None:
     )
 
     assert payload == {"modelName": "Dragon", "tags": ["a"]}
+
+
+def test_should_report_an_error_for_an_unparseable_metadata_file(tmp_path) -> None:
+    from alexandria_telegram_importer.folder_metadata import metadata_error
+
+    assert metadata_error(tmp_path) is None
+
+    (tmp_path / "metadata.json").write_text('{"a": 1,}', encoding="utf-8")
+    error = metadata_error(tmp_path)
+    assert error is not None
+    assert "metadata.json" in error
+
+    (tmp_path / "metadata.json").write_text("[1, 2]", encoding="utf-8")
+    assert "JSON object" in (metadata_error(tmp_path) or "")
+
+    (tmp_path / "metadata.json").write_text('{"a": 1}', encoding="utf-8")
+    assert metadata_error(tmp_path) is None
