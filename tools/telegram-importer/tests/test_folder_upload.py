@@ -8,10 +8,10 @@ import pytest
 
 from alexandria_telegram_importer.folder_upload import (
     FolderUploader,
-    build_upload_paths,
+    ModelFolder,
+    build_folder_archive,
     discover,
     dispose,
-    plan_models_dir,
 )
 
 
@@ -136,134 +136,63 @@ def test_should_ignore_a_directory_with_neither_models_nor_subfolders(tmp_path) 
     assert ambiguous == []
 
 
-def models_dir(tmp_path: Path, names, subdir_files=()) -> Path:
-    target = tmp_path / "models"
-    target.mkdir(parents=True, exist_ok=True)
-    for name in names:
-        (target / name).write_bytes(name.encode())
-    for relative in subdir_files:
-        path = target / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(relative.encode())
-    return target
+def test_should_build_a_zip_of_the_complete_model_folder(tmp_path) -> None:
+    folder_path = make_folder(
+        tmp_path / "002501-dragon",
+        models=["dragon.7z"],
+        images=["render.jpg"],
+        metadata={"modelName": "Dragon"},
+    )
+    (folder_path / "models" / "parts").mkdir()
+    (folder_path / "models" / "parts" / "base.stl").write_bytes(b"base")
+    [folder], _ = discover(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    archive_path = build_folder_archive(folder, (), work, "Dragon")
+
+    assert archive_path.name == "Dragon.zip"
+    with zipfile.ZipFile(archive_path) as archive:
+        assert sorted(archive.namelist()) == [
+            "images/render.jpg",
+            "metadata.json",
+            "models/dragon.7z",
+            "models/parts/base.stl",
+        ]
 
 
-def test_should_upload_a_lone_archive_as_is(tmp_path) -> None:
-    plan = plan_models_dir(models_dir(tmp_path, ["dragon.7z"]))
+def test_should_add_inherited_images_to_the_model_folder_archive(tmp_path) -> None:
+    release = tmp_path / "release"
+    (release / "images").mkdir(parents=True)
+    (release / "images" / "group.jpg").write_bytes(b"group")
+    make_folder(release / "knight", models=["knight.7z"], images=["knight.jpg"])
+    [folder], _ = discover(tmp_path)
+    uploader = FolderUploader(alexandria=None, work_root=tmp_path / "work")
+    (tmp_path / "work").mkdir()
 
-    assert plan.kind == "as_is"
-    assert [path.name for path in plan.paths] == ["dragon.7z"]
-
-
-def test_should_detect_a_rar_split_set_in_part_order(tmp_path) -> None:
-    plan = plan_models_dir(
-        models_dir(tmp_path, ["dragon.part2.rar", "dragon.part1.rar"]),
+    archive_path = build_folder_archive(
+        folder, uploader.image_paths(folder), tmp_path / "work", "Knight"
     )
 
-    assert plan.kind == "split"
-    assert [path.name for path in plan.paths] == [
-        "dragon.part1.rar",
-        "dragon.part2.rar",
-    ]
-
-
-def test_should_detect_a_classic_zip_split_set(tmp_path) -> None:
-    plan = plan_models_dir(models_dir(tmp_path, ["dragon.z01", "dragon.zip"]))
-
-    assert plan.kind == "split"
-    assert [path.name for path in plan.paths] == ["dragon.z01", "dragon.zip"]
-
-
-def test_should_detect_a_numbered_zip_split_set(tmp_path) -> None:
-    plan = plan_models_dir(
-        models_dir(tmp_path, ["dragon.zip.001", "dragon.zip.002"]),
-    )
-
-    assert plan.kind == "split"
-
-
-def test_should_zip_an_incomplete_split_set_rather_than_guessing(tmp_path) -> None:
-    plan = plan_models_dir(
-        models_dir(tmp_path, ["dragon.part1.rar", "dragon.part3.rar"]),
-    )
-
-    assert plan.kind == "zip"
-
-
-def test_should_zip_a_set_that_mixes_two_base_names(tmp_path) -> None:
-    plan = plan_models_dir(
-        models_dir(tmp_path, ["dragon.part1.rar", "wizard.part2.rar"]),
-    )
-
-    assert plan.kind == "zip"
-
-
-def test_should_zip_an_archive_that_sits_beside_another_file(tmp_path) -> None:
-    plan = plan_models_dir(models_dir(tmp_path, ["dragon.7z", "readme.txt"]))
-
-    assert plan.kind == "zip"
-
-
-def test_should_zip_loose_model_files(tmp_path) -> None:
-    plan = plan_models_dir(models_dir(tmp_path, ["knight.stl", "base.stl"]))
-
-    assert plan.kind == "zip"
-
-
-def test_should_zip_a_lone_subdirectory(tmp_path) -> None:
-    plan = plan_models_dir(models_dir(tmp_path, [], subdir_files=["parts/knight.stl"]))
-
-    assert plan.kind == "zip"
+    with zipfile.ZipFile(archive_path) as archive:
+        assert sorted(archive.namelist()) == [
+            "images/group.jpg",
+            "images/knight.jpg",
+            "models/knight.7z",
+        ]
 
 
 def test_should_reject_an_empty_or_missing_models_directory(tmp_path) -> None:
-    with pytest.raises(ValueError, match="empty"):
-        plan_models_dir(models_dir(tmp_path, []))
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    empty = make_folder(tmp_path / "empty", models=[])
+    work = tmp_path / "work"
+    work.mkdir()
 
     with pytest.raises(ValueError, match="missing"):
-        plan_models_dir(tmp_path / "absent")
-
-
-def test_should_build_a_zip_preserving_paths_relative_to_models(tmp_path) -> None:
-    source = models_dir(tmp_path, ["knight.stl"], subdir_files=["parts/base.stl"])
-    work = tmp_path / "work"
-    work.mkdir()
-
-    paths, multipart = build_upload_paths(
-        plan_models_dir(source), work, "Dragon Knight"
-    )
-
-    assert multipart is False
-    assert len(paths) == 1
-    assert paths[0].name == "Dragon Knight.zip"
-    with zipfile.ZipFile(paths[0]) as archive:
-        assert sorted(archive.namelist()) == ["knight.stl", "parts/base.stl"]
-
-
-def test_should_pass_an_as_is_archive_through_without_repacking(tmp_path) -> None:
-    source = models_dir(tmp_path, ["dragon.7z"])
-    work = tmp_path / "work"
-    work.mkdir()
-
-    paths, multipart = build_upload_paths(plan_models_dir(source), work, "Dragon")
-
-    assert multipart is False
-    assert paths == (source / "dragon.7z",)
-    assert paths[0].read_bytes() == b"dragon.7z"
-
-
-def test_should_report_a_split_set_as_multipart(tmp_path) -> None:
-    source = models_dir(tmp_path, ["dragon.part1.rar", "dragon.part2.rar"])
-    work = tmp_path / "work"
-    work.mkdir()
-
-    paths, multipart = build_upload_paths(plan_models_dir(source), work, "Dragon")
-
-    assert multipart is True
-    assert [path.name for path in paths] == [
-        "dragon.part1.rar",
-        "dragon.part2.rar",
-    ]
+        build_folder_archive(ModelFolder(missing, (), ()), (), work, "Missing")
+    with pytest.raises(ValueError, match="empty"):
+        build_folder_archive(ModelFolder(empty, (), ()), (), work, "Empty")
 
 
 def test_should_move_a_successful_folder_under_uploaded_preserving_its_path(
@@ -356,6 +285,7 @@ def test_should_suffix_a_disposal_that_collides_with_an_earlier_one(tmp_path) ->
 class FakeAlexandria:
     def __init__(self) -> None:
         self.uploads: list[tuple[str, bool]] = []
+        self.archives: list[tuple[str, list[str]]] = []
         self.appended: list[str] = []
         self.commits: list[dict] = []
         self.session = {"id": "session-1", "status": "ready_for_review"}
@@ -363,6 +293,8 @@ class FakeAlexandria:
 
     async def upload_file(self, path, upload_name, *, multipart, on_progress=None):
         self.uploads.append((upload_name, multipart))
+        with zipfile.ZipFile(path) as archive:
+            self.archives.append((upload_name, sorted(archive.namelist())))
         return f"upload-{len(self.uploads)}"
 
     async def complete_upload(self, upload_ids, *, multipart):
@@ -405,14 +337,24 @@ async def test_should_upload_a_folder_and_return_its_model_id(tmp_path) -> None:
     ).upload(folder)
 
     assert model_id == "model-1"
-    assert alexandria.uploads == [("dragon.7z", False)]
-    assert alexandria.appended == ["render.jpg"]
+    assert alexandria.uploads == [("Dragon.zip", False)]
+    assert alexandria.archives == [
+        (
+            "Dragon.zip",
+            [
+                "images/render.jpg",
+                "metadata.json",
+                "models/dragon.7z",
+            ],
+        ),
+    ]
+    assert alexandria.appended == []
     assert alexandria.commits[0]["modelName"] == "Dragon"
     assert alexandria.commits[0]["batch_metadata"]["artist"] == "Foo"
     assert alexandria.commits[0]["batch_metadata"]["tags"] == ["dragon"]
 
 
-async def test_should_append_container_images_to_every_model_beneath_it(
+async def test_should_include_container_images_in_every_descendant_folder_archive(
     tmp_path,
 ) -> None:
     release = tmp_path / "002501-dragon-set"
@@ -427,7 +369,16 @@ async def test_should_append_container_images_to_every_model_beneath_it(
         folder
     )
 
-    assert sorted(alexandria.appended) == ["group.jpg", "knight.jpg"]
+    assert alexandria.archives == [
+        (
+            "knight.zip",
+            [
+                "images/group.jpg",
+                "images/knight.jpg",
+                "models/knight.zip",
+            ],
+        ),
+    ]
 
 
 async def test_should_prefer_a_models_own_image_over_a_container_duplicate(
@@ -447,7 +398,7 @@ async def test_should_prefer_a_models_own_image_over_a_container_duplicate(
     ]
 
 
-async def test_should_upload_a_split_set_as_multipart(tmp_path) -> None:
+async def test_should_zip_split_archives_with_the_rest_of_the_folder(tmp_path) -> None:
     make_folder(
         tmp_path / "002501-dragon", models=["dragon.part1.rar", "dragon.part2.rar"]
     )
@@ -458,9 +409,15 @@ async def test_should_upload_a_split_set_as_multipart(tmp_path) -> None:
         folder
     )
 
-    assert alexandria.uploads == [
-        ("dragon.part1.rar", True),
-        ("dragon.part2.rar", True),
+    assert alexandria.uploads == [("dragon.zip", False)]
+    assert alexandria.archives == [
+        (
+            "dragon.zip",
+            [
+                "models/dragon.part1.rar",
+                "models/dragon.part2.rar",
+            ],
+        ),
     ]
 
 
@@ -603,29 +560,6 @@ def test_should_not_walk_a_nested_directory_named_failed_or_uploaded(tmp_path) -
     assert [folder.path.name for folder in found] == ["knight"]
 
 
-async def test_should_append_images_in_one_batched_request(tmp_path) -> None:
-    make_folder(
-        tmp_path / "002501-dragon",
-        models=["a.7z"],
-        images=["one.jpg", "two.jpg", "three.jpg"],
-    )
-    alexandria = FakeAlexandria()
-    calls: list[int] = []
-    original = alexandria.append_files
-
-    async def counting(session_id, paths, upload_names):
-        calls.append(len(paths))
-        return await original(session_id, paths, upload_names)
-
-    alexandria.append_files = counting
-    [folder], _ = discover(tmp_path)
-
-    await FolderUploader(alexandria=alexandria, work_root=tmp_path / "w").upload(folder)
-
-    assert calls == [3]
-    assert sorted(alexandria.appended) == ["one.jpg", "three.jpg", "two.jpg"]
-
-
 def test_should_describe_what_a_dry_run_would_upload(tmp_path) -> None:
     from alexandria_telegram_importer.folder_upload import describe_staging
 
@@ -635,6 +569,6 @@ def test_should_describe_what_a_dry_run_would_upload(tmp_path) -> None:
 
     report = describe_staging(tmp_path)
 
-    assert "as_is  002501-dragon -> 'dragon' (1 image(s))" in report
+    assert "zip    002501-dragon -> 'dragon' (1 image(s))" in report
     assert "FAIL   002502-broken" in report
     assert "1 model folder(s) would be uploaded" in report

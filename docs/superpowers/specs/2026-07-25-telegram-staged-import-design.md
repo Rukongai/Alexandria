@@ -241,21 +241,13 @@ and tags once, and each child folder needs at most its own name.
 ### Per-folder upload
 
 1. Resolve effective metadata by merging the inheritance chain.
-2. Classify `models/`:
-   - `models/` holds **exactly one entry** and it is an archive file
-     (`.zip`, `.rar`, `.7z`, `.tar.gz`, `.tgz`) → upload as-is, byte for byte. No
-     recompression — this is what makes a hand-made `.7z` worth creating.
-   - **Every** entry is a member of one recognized split set (`.partN.rar`,
-     `.zNN` + `.zip`, `.zip.NNN`) → multipart `split` upload, reusing the existing
-     part-role detection in `grouping.py`. A set that is incomplete or mixes two
-     different base names falls through to the zip case rather than being guessed at.
-   - Anything else — several files, loose model files, subdirectories, one archive
-     alongside a stray `readme.txt` → zipped with `ZIP_DEFLATED` into one archive
-     preserving paths relative to `models/`.
-   - Empty or missing → error, folder moves to `failed/`.
-3. Upload → wait for `ready_for_review`.
-4. Append every file in `images/` as attachments, plus every file in each ancestor
-   container's `images/` (see below). Batched at 100 as the direct path does.
+2. Require a non-empty `models/` directory; an empty or missing one moves the folder to
+   `failed/`.
+3. Compress the entire model folder with `ZIP_DEFLATED`, preserving its `models/`,
+   `images/`, and `metadata.json` contents at the archive root. This lets Alexandria
+   detect `metadata.json` and prefill the pending review session. Inherited container
+   images are included under the model folder's `images/` directory.
+4. Upload the ZIP → wait for `ready_for_review`.
 5. Commit with `batchMetadata` built from the effective metadata.
 6. Wait for `committed`.
 
@@ -264,8 +256,9 @@ continues with the remaining folders. `--concurrency` applies across model folde
 
 ### Container images
 
-Files in a container's `images/` directory are appended to **every** model folder beneath
-it, in addition to that folder's own images. The case this serves: a release has ten
+Files in a container's `images/` directory are included in the ZIP for **every** model
+folder beneath it, under that model folder's `images/` directory in addition to its own
+images. The case this serves: a release has ten
 renders, three belong to the knight, three to the mage, and four are group shots that
 belong to no single model. Distribute the six, leave the four, and every model gets the
 group renders.
@@ -368,9 +361,10 @@ the staged flow explicitly does not want.
 - Discovery: model folder, container, nested container, ambiguous parent → `failed/`.
 - Inheritance: scalar override, tag merge, per-key `metadata` merge, `modelName` not
   inheriting, missing child `metadata.json` falling back to the folder name.
-- Classification: single archive uploaded as-is (byte-identical), split set detected as
-  multipart, loose files zipped with relative paths preserved, empty `models/` failing.
-- Container `images/` appended to every descendant; name collision favours the model's own.
+- Complete model-folder ZIP: `models/`, `images/`, and folder metadata are all present;
+  empty `models/` fails.
+- Container `images/` are included in every descendant ZIP; name collision favours the
+  model's own.
 - Disposal: relative path preserved, container `metadata.json` copied, emptied container
   removed, collision suffixing, `result` written in both directions.
 - A folder with no `metadata.json` uploads with a folder-derived name.
@@ -391,7 +385,7 @@ the staged flow explicitly does not want.
 |---|---|
 | One staged folder per bundle, not per logical model | The bundle is what shares images. Per-model staging re-creates the mis-grouping the feature exists to fix. |
 | `models/` and `images/` subfolders | Unambiguous after hand-renaming and recompression; no extension guessing at upload time. |
-| Single archive uploaded as-is | Re-wrapping a hand-made `.7z` in a zip wastes the compression work that motivated the pause. |
+| Complete model folder uploaded as one ZIP | Alexandria receives the curated `models/` and `images/` structure together, rather than a model-only archive plus separate attachments. |
 | Phases share no state | Folders will be split, merged, and renamed between them, so any download→upload correspondence would be wrong more often than right. |
 | No dedupe on upload | Follows from the above. Hand-curated input is trusted. |
 | Container metadata inherits, `modelName` does not | Set collection/artist/tags once per release; never commit eight models under one name. |

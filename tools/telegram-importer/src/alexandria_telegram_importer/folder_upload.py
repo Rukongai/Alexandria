@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .alexandria import session_filenames
 from .folder_metadata import (
     METADATA_FILENAME,
     batch_metadata,
@@ -22,14 +21,7 @@ from .folder_metadata import (
     read_metadata,
     write_metadata,
 )
-from .grouping import (
-    ARCHIVE_EXTENSIONS,
-    multipart_part_role,
-    partition_logical_models,
-    safe_filename,
-    validate_logical_model,
-)
-from .models import MediaKind, MediaRef
+from .grouping import safe_filename
 from .progress import (
     ModelProgress,
     NullModelProgress,
@@ -151,88 +143,38 @@ def _visit(
         _visit(child, chain, image_dirs, found, ambiguous)
 
 
-@dataclass(frozen=True, slots=True)
-class ModelsPlan:
-    kind: str  # "as_is" | "split" | "zip"
-    paths: tuple[Path, ...]
+def build_folder_archive(
+    folder: ModelFolder,
+    images: tuple[Path, ...],
+    work_dir: Path,
+    model_name: str,
+) -> Path:
+    """Create one ZIP of the complete staged model folder.
 
-
-def _is_split_member(filename: str) -> bool:
-    try:
-        multipart_part_role(filename)
-    except ValueError:
-        return False
-    return True
-
-
-def _split_order(entries: list[Path]) -> tuple[Path, ...] | None:
-    """Return the entries when they form one complete split set, else None.
-
-    Reuses grouping's part detection and validation so the importer and the
-    staged flow agree on what a complete set is. Order is not meaningful:
-    FileProcessingService.processSplitArchive reassembles by filename, not by
-    upload order, so the entries are returned as given.
+    Alexandria receives the operator's curated folder contents as one archive,
+    rather than a models-only upload followed by separate image attachments.
+    Keeping metadata.json at the archive root lets Alexandria prefill the
+    pending review session. Inherited container images are placed under the
+    model folder's `images/` directory, preserving existing image inheritance.
     """
-    if len(entries) < 2 or not all(entry.is_file() for entry in entries):
-        return None
-    if not all(_is_split_member(entry.name) for entry in entries):
-        return None
-    refs = [
-        MediaRef(message_id=index, filename=entry.name, kind=MediaKind.MODEL)
-        for index, entry in enumerate(entries)
-    ]
-    units = partition_logical_models(0, refs)
-    if len(units) != 1 or not units[0].multipart:
-        return None
-    try:
-        validate_logical_model(units[0])
-    except ValueError as error:
-        log.info("Not treating %s as a split set: %s", entries[0].parent, error)
-        return None
-    return tuple(entries)
+    if not folder.models_dir.is_dir():
+        raise ValueError(f"{folder.models_dir} is missing")
+    if not any(folder.models_dir.iterdir()):
+        raise ValueError(f"{folder.models_dir} is empty")
 
-
-def plan_models_dir(models_dir: Path) -> ModelsPlan:
-    if not models_dir.is_dir():
-        raise ValueError(f"{models_dir} is missing")
-    entries = sorted(models_dir.iterdir())
-    if not entries:
-        raise ValueError(f"{models_dir} is empty")
-
-    only = entries[0]
-    if (
-        len(entries) == 1
-        and only.is_file()
-        and only.name.lower().endswith(ARCHIVE_EXTENSIONS)
-    ):
-        return ModelsPlan(kind="as_is", paths=(only,))
-
-    if ordered := _split_order(entries):
-        return ModelsPlan(kind="split", paths=ordered)
-
-    return ModelsPlan(kind="zip", paths=tuple(entries))
-
-
-def build_upload_paths(
-    plan: ModelsPlan, work_dir: Path, model_name: str
-) -> tuple[tuple[Path, ...], bool]:
-    """Resolve a plan into paths to upload and whether they are a split set.
-
-    An `as_is` or `split` plan uploads the operator's own files untouched —
-    that is what makes hand-made compression worth doing.
-    """
-    if plan.kind == "as_is":
-        return plan.paths, False
-    if plan.kind == "split":
-        return plan.paths, True
-
-    models_dir = plan.paths[0].parent
     archive_path = work_dir / f"{safe_filename(model_name, 'model')}.zip"
+    members = {
+        str(path.relative_to(folder.path)): path
+        for path in sorted(folder.path.rglob("*"))
+        if path.is_file()
+    }
+    for image in images:
+        members[str(Path(IMAGES_DIRNAME) / image.name)] = image
+
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(models_dir.rglob("*")):
-            if path.is_file():
-                archive.write(path, arcname=str(path.relative_to(models_dir)))
-    return (archive_path,), False
+        for name, path in sorted(members.items()):
+            archive.write(path, arcname=name)
+    return archive_path
 
 
 def dispose(
@@ -299,9 +241,6 @@ def _prune_empty_containers(directory: Path, root: Path) -> None:
             log.warning("Could not remove emptied container %s: %s", directory, error)
             return
         directory = directory.parent
-
-
-ATTACHMENT_BATCH_SIZE = 100
 
 
 def _uploaded_at() -> dict[str, str]:
@@ -425,30 +364,29 @@ class FolderUploader:
         with tempfile.TemporaryDirectory(
             prefix="alexandria-folder-", dir=self.work_root
         ) as temp:
-            plan = plan_models_dir(folder.models_dir)
-            if plan.kind == "zip":
-                handle.phase("packaging")
+            handle.phase("packaging")
             # Zipping an arbitrary tree can take minutes; off-thread so it does
             # not stall sibling transfers and their progress at --concurrency > 1.
-            paths, multipart = await asyncio.to_thread(
-                build_upload_paths, plan, Path(temp), payload["modelName"]
+            archive_path = await asyncio.to_thread(
+                build_folder_archive,
+                folder,
+                self.image_paths(folder),
+                Path(temp),
+                payload["modelName"],
             )
 
             upload_ids: list[str] = []
             try:
-                for path in paths:
-                    with handle.transfer("upload", path.name) as transfer:
-                        upload_ids.append(
-                            await self.alexandria.upload_file(
-                                path,
-                                path.name,
-                                multipart=multipart,
-                                on_progress=transfer.advance,
-                            ),
-                        )
-                session_id = await self.alexandria.complete_upload(
-                    upload_ids, multipart=multipart
-                )
+                with handle.transfer("upload", archive_path.name) as transfer:
+                    upload_ids.append(
+                        await self.alexandria.upload_file(
+                            archive_path,
+                            archive_path.name,
+                            multipart=False,
+                            on_progress=transfer.advance,
+                        ),
+                    )
+                session_id = await self.alexandria.complete_upload(upload_ids, multipart=False)
             except Exception:
                 await self.alexandria.abort_uploads(upload_ids)
                 raise
@@ -462,8 +400,6 @@ class FolderUploader:
             if session["status"] == "error":
                 raise RuntimeError(session.get("error") or "Alexandria ingestion failed")
 
-            await self._append_images(folder, session_id, session, handle)
-
             handle.phase("committing")
             await self.alexandria.commit(
                 session_id,
@@ -476,30 +412,6 @@ class FolderUploader:
                 raise RuntimeError(committed.get("error") or "Alexandria commit failed")
             return committed["modelId"]
 
-    async def _append_images(
-        self,
-        folder: ModelFolder,
-        session_id: str,
-        session: dict[str, Any],
-        handle: ModelProgress,
-    ) -> None:
-        present = session_filenames(session)
-        pending = tuple(
-            path for path in self.image_paths(folder) if path.name not in present
-        )
-        if not pending:
-            return
-        handle.phase("attachments")
-        done = 0
-        handle.attachments(done, len(pending))
-        for offset in range(0, len(pending), ATTACHMENT_BATCH_SIZE):
-            batch = pending[offset : offset + ATTACHMENT_BATCH_SIZE]
-            await self.alexandria.append_files(
-                session_id, batch, tuple(path.name for path in batch)
-            )
-            done += len(batch)
-            handle.attachments(done, len(pending))
-
 
 def describe_staging(root: Path) -> str:
     """Dry-run report for the upload phase: what would be uploaded, and how."""
@@ -507,7 +419,10 @@ def describe_staging(root: Path) -> str:
     lines: list[str] = []
     for folder in found:
         try:
-            kind = plan_models_dir(folder.models_dir).kind
+            if not folder.models_dir.is_dir():
+                raise ValueError(f"{folder.models_dir} is missing")
+            if not any(folder.models_dir.iterdir()):
+                raise ValueError(f"{folder.models_dir} is empty")
         except ValueError as error:
             lines.append(f"  SKIP  {folder.path.relative_to(root)}: {error}")
             continue
@@ -516,7 +431,7 @@ def describe_staging(root: Path) -> str:
             if item.is_file()
         )
         lines.append(
-            f"  {kind:<6} {folder.path.relative_to(root)} "
+            f"  zip    {folder.path.relative_to(root)} "
             f"-> {folder.model_name!r} ({images} image(s))"
         )
     for path, reason in ambiguous:
