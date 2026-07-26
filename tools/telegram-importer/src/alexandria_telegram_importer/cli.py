@@ -5,16 +5,29 @@ import asyncio
 import getpass
 import logging
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from .alexandria import AlexandriaClient
+from .folder_upload import FolderUploader, describe_staging
+from .grouping import build_bundles
 from .importer import ChannelImporter, describe_plan
+from .models import MediaRef
 from .parallel_download import DEFAULT_CONNECTIONS, MAX_CONNECTIONS
-from .progress import reporter_from_args
+from .progress import (
+    ProgressReporter,
+    format_bytes,
+    guarded_model,
+    guarded_reporter,
+    reporter_from_args,
+)
+from .staging import BundleStager, bundle_key
 from .telegram_source import TelegramSource
 from .tracker import ImportTracker
+
+log = logging.getLogger(__name__)
 
 
 def _data_dir() -> Path:
@@ -32,6 +45,18 @@ def _concurrency(value: str) -> int:
         ) from error
     if parsed < 1:
         raise argparse.ArgumentTypeError("concurrency must be at least 1")
+    return parsed
+
+
+def _positive(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"count must be an integer, got {value!r}"
+        ) from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("count must be at least 1")
     return parsed
 
 
@@ -123,10 +148,212 @@ def parser() -> argparse.ArgumentParser:
         help=("Disable the progress display entirely and log as earlier versions did"),
     )
     result.add_argument("--verbose", action="store_true")
+    result.add_argument(
+        "--staging-dir",
+        type=Path,
+        default=(
+            Path(staging) if (staging := os.getenv("TELEGRAM_STAGING_DIR")) else None
+        ),
+        help=(
+            "Directory holding staged model folders. Required by --download-only, "
+            "--upload-only, and --stage"
+        ),
+    )
+    staging_mode = result.add_mutually_exclusive_group()
+    staging_mode.add_argument(
+        "--download-only",
+        type=_positive,
+        metavar="N",
+        help="Stage up to N new Telegram bundles as folders, then exit",
+    )
+    staging_mode.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="Upload every model folder already in --staging-dir, then exit",
+    )
+    staging_mode.add_argument(
+        "--stage",
+        type=_positive,
+        metavar="N",
+        help=(
+            "Stage up to N new bundles, pause for reorganization, then upload "
+            "whatever is in --staging-dir"
+        ),
+    )
     return result
 
 
+def validate_staging_args(args: argparse.Namespace) -> None:
+    selected = (
+        args.download_only is not None or args.upload_only or args.stage is not None
+    )
+    if selected and args.staging_dir is None:
+        raise SystemExit(
+            "--staging-dir is required by --download-only, --upload-only, and --stage"
+        )
+    if args.staging_dir is not None and not selected:
+        raise SystemExit(
+            "--staging-dir requires one of --download-only, --upload-only, or --stage"
+        )
+
+
+def confirm_upload(summary: str) -> bool:
+    """Pause between the phases. A non-interactive stdin quits rather than hangs."""
+    print(summary)
+    print(
+        "Reorganize the folders now — split releases, compress, rename, "
+        "edit metadata.json."
+    )
+    print("Press Enter to upload, or q then Enter to quit without uploading.")
+    line = sys.stdin.readline()
+    if not line:
+        print("No input available; leaving the staged folders in place.")
+        return False
+    return line.strip().lower() != "q"
+
+
+async def stage_bundles(
+    *,
+    telegram: TelegramSource,
+    tracker: ImportTracker,
+    refs: list[MediaRef],
+    staging_dir: Path,
+    limit: int,
+    progress: ProgressReporter,
+    concurrency: int = 1,
+) -> tuple[int, int, int]:
+    """Stage up to `limit` not-yet-staged bundles.
+
+    Returns (staged, failed, bytes). `concurrency` bundles are staged at once,
+    matching what the direct import path does across models.
+    """
+    already = tracker.staged_keys(telegram.channel_id)
+    stager = BundleStager(telegram=telegram, root=staging_dir)
+    pending = []
+    for bundle in build_bundles(telegram.channel_id, refs):
+        if len(pending) >= limit:
+            break
+        key = bundle_key(telegram.channel_id, bundle)
+        if key not in already:
+            pending.append((key, bundle))
+
+    staged = 0
+    failed = 0
+    staged_bytes = 0
+    slots = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+
+    async def stage_one(key: str, bundle) -> None:
+        nonlocal staged, failed, staged_bytes
+        label = bundle.models[0].logical_filename
+        async with slots:
+            try:
+                with guarded_model(progress, label, parts=1) as handle:
+                    folder = await stager.stage(bundle, handle)
+            # One unreachable Telegram post must not stop the rest of the run.
+            except Exception as error:  # noqa: BLE001
+                log.error("Failed to stage bundle at %s: %s", label, error)
+                async with lock:
+                    failed += 1
+                return
+            size = sum(
+                path.stat().st_size for path in folder.rglob("*") if path.is_file()
+            )
+        async with lock:
+            tracker.record_staged(
+                bundle_key=key,
+                source_channel_id=telegram.channel_id,
+                folder_name=folder.name,
+                model_message_ids=tuple(
+                    part.message_id for unit in bundle.models for part in unit.parts
+                ),
+            )
+            staged += 1
+            staged_bytes += size
+            _report_staging(progress, staged, len(pending), failed)
+
+    with guarded_reporter(progress):
+        _report_staging(progress, 0, len(pending), 0)
+        results = await asyncio.gather(
+            *(stage_one(key, bundle) for key, bundle in pending),
+            return_exceptions=True,
+        )
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return staged, failed, staged_bytes
+
+
+def _report_staging(
+    progress: ProgressReporter, staged: int, total: int, failed: int
+) -> None:
+    try:
+        progress.totals(staged, total, {"staged": staged, "failed": failed})
+    except Exception as error:  # noqa: BLE001 - a display fault is not a staging fault
+        log.debug("Progress reporter could not record totals: %s", error)
+
+
+def _staging_summary(
+    staging_dir: Path, staged: int, failed: int, staged_bytes: int
+) -> str:
+    line = f"{staged} folders staged in {staging_dir} ({format_bytes(staged_bytes)})."
+    return line + (f" {failed} bundle(s) failed to stage." if failed else "")
+
+
+def _upload_summary(outcomes: dict[str, int]) -> str:
+    return "Upload state: " + ", ".join(
+        f"{status}={count}" for status, count in sorted(outcomes.items())
+    )
+
+
+async def _login(args: argparse.Namespace) -> AlexandriaClient:
+    email = os.getenv("ALEXANDRIA_EMAIL") or input("Alexandria email: ").strip()
+    password = os.getenv("ALEXANDRIA_PASSWORD") or getpass.getpass(
+        "Alexandria password: "
+    )
+    client = AlexandriaClient(
+        args.alexandria_url,
+        library_id=args.library_id,
+        poll_interval=args.poll_interval,
+        allow_insecure_http=args.allow_insecure_http,
+    )
+    await client.login(email, password)
+    return client
+
+
 async def run(args: argparse.Namespace) -> int:
+    alexandria: AlexandriaClient | None = None
+    tracker: ImportTracker | None = None
+    progress = reporter_from_args(
+        no_progress=args.no_progress,
+        dry_run=args.dry_run,
+        verbose=args.verbose,
+    )
+    work_root = args.state.parent / f"{args.state.name}.work"
+
+    # Uploading staged folders touches nothing but the staging directory and
+    # Alexandria. It must not need Telegram credentials, open a Telegram
+    # session file, or scan the channel — so it returns before any of that.
+    if args.upload_only:
+        if not args.staging_dir.is_dir():
+            raise SystemExit(f"Staging directory {args.staging_dir} does not exist")
+        if args.dry_run:
+            print(describe_staging(args.staging_dir))
+            return 0
+        try:
+            alexandria = await _login(args)
+            outcomes = await FolderUploader(
+                alexandria=alexandria,
+                work_root=work_root,
+                concurrency=args.concurrency,
+                progress=progress,
+            ).run(args.staging_dir)
+            print(_upload_summary(outcomes))
+            return 1 if outcomes.get("failed") else 0
+        finally:
+            if alexandria:
+                await alexandria.close()
+
     api_id_text = os.getenv("TELEGRAM_API_ID") or os.getenv("API_ID")
     api_hash = os.getenv("TELEGRAM_API_HASH") or os.getenv("API_HASH")
     if not api_id_text or not api_hash:
@@ -143,8 +370,7 @@ async def run(args: argparse.Namespace) -> int:
         phone=os.getenv("TELEGRAM_PHONE") or os.getenv("PHONE") or None,
         download_connections=args.download_connections,
     )
-    alexandria: AlexandriaClient | None = None
-    tracker: ImportTracker | None = None
+
     try:
         await telegram.connect(_channel(args.channel))
         refs = await telegram.collect_media(min_message_id=args.from_message_id)
@@ -152,29 +378,48 @@ async def run(args: argparse.Namespace) -> int:
             print(describe_plan(telegram.channel_id, refs))
             return 0
 
-        email = os.getenv("ALEXANDRIA_EMAIL") or input("Alexandria email: ").strip()
-        password = os.getenv("ALEXANDRIA_PASSWORD") or getpass.getpass(
-            "Alexandria password: "
-        )
-        alexandria = AlexandriaClient(
-            args.alexandria_url,
-            library_id=args.library_id,
-            poll_interval=args.poll_interval,
-            allow_insecure_http=args.allow_insecure_http,
-        )
-        await alexandria.login(email, password)
-        tracker = ImportTracker(args.state)
+        failed_to_stage = 0
+
+        if args.download_only is not None or args.stage is not None:
+            tracker = ImportTracker(args.state)
+            staged, failed_to_stage, staged_bytes = await stage_bundles(
+                telegram=telegram,
+                tracker=tracker,
+                refs=refs,
+                staging_dir=args.staging_dir,
+                limit=args.download_only or args.stage,
+                progress=progress,
+                concurrency=args.concurrency,
+            )
+            summary = _staging_summary(
+                args.staging_dir, staged, failed_to_stage, staged_bytes
+            )
+            if args.download_only is not None:
+                print(summary)
+                return 1 if failed_to_stage else 0
+            if not confirm_upload(summary):
+                return 1 if failed_to_stage else 0
+
+        if args.stage is not None:
+            alexandria = await _login(args)
+            outcomes = await FolderUploader(
+                alexandria=alexandria,
+                work_root=work_root,
+                concurrency=args.concurrency,
+                progress=progress,
+            ).run(args.staging_dir)
+            print(_upload_summary(outcomes))
+            return 1 if outcomes.get("failed") or failed_to_stage else 0
+
+        alexandria = await _login(args)
+        tracker = tracker or ImportTracker(args.state)
         counts = await ChannelImporter(
             telegram=telegram,
             alexandria=alexandria,
             tracker=tracker,
-            work_root=args.state.parent / f"{args.state.name}.work",
+            work_root=work_root,
             concurrency=args.concurrency,
-            progress=reporter_from_args(
-                no_progress=args.no_progress,
-                dry_run=args.dry_run,
-                verbose=args.verbose,
-            ),
+            progress=progress,
         ).run(refs)
         print(
             "Import state: "
@@ -194,6 +439,7 @@ async def run(args: argparse.Namespace) -> int:
 def main() -> None:
     load_dotenv()
     args = parser().parse_args()
+    validate_staging_args(args)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",

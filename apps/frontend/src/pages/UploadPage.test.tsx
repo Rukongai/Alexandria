@@ -54,6 +54,7 @@ const failedSession: ImportSession = {
   originalFilename: 'failed-upload.zip',
   status: 'error',
   draftMetadata: null,
+  draftFileLayout: null,
   detected: null,
   modelId: null,
   commitProgress: null,

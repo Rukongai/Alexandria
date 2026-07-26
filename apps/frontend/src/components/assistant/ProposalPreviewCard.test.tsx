@@ -162,6 +162,64 @@ describe('ProposalPreviewCard', () => {
     expect(screen.getByText('markNsfw: No')).toBeVisible();
   });
 
+  it('should render a human-readable staged-upload file organization', () => {
+    const importSessionId = 'abababab-abab-4bab-8bab-abababababab';
+
+    render(
+      <ProposalPreviewCard
+        proposal={{
+          proposalId: 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+          summary: 'Organize the staged dragon upload',
+          expiresAt: '2026-07-21T12:15:00.000Z',
+          display: {
+            collections: {},
+            images: {},
+            importSessionLayouts: {
+              [importSessionId]: {
+                fileCount: 27,
+                sampleDestinationPaths: [
+                  'Images/Renders/NSFW/front.png',
+                  'Model/Standard/body.stl',
+                ],
+              },
+            },
+          },
+          changes: [{
+            type: 'organize_import_session_files',
+            importSessionId,
+            originalFilename: 'Artist - 2026-07 - Dragon.zip',
+            expectedUpdatedAt: '2026-07-21T12:00:00.000Z',
+            layout: {
+              rootFolders: ['Model', 'Images'],
+              prefixMappings: [
+                { sourcePrefix: 'Renders', destinationPrefix: 'Images/Renders' },
+                { sourcePrefix: 'Standard', destinationPrefix: 'Model/Standard' },
+              ],
+              fileMappings: [{
+                sourcePath: 'loose/body.stl',
+                destinationPath: 'Model/Standard/body.stl',
+              }],
+            },
+          }],
+        }}
+        isApplying={false}
+        isApplied={false}
+        onApply={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Organize upload Artist - 2026-07 - Dragon.zip')).toBeVisible();
+    expect(screen.getByText('Create root folders: Model and Images')).toBeVisible();
+    expect(screen.getByText('Move Renders → Images/Renders')).toBeVisible();
+    expect(screen.getByText('Move Standard → Model/Standard')).toBeVisible();
+    expect(screen.getByText('Move file loose/body.stl → Model/Standard/body.stl')).toBeVisible();
+    expect(screen.getByText('27 files will be organized')).toBeVisible();
+    expect(screen.getByText('Sample destinations')).toBeVisible();
+    expect(screen.getByText('Images/Renders/NSFW/front.png')).toBeVisible();
+    expect(screen.getByText('Model/Standard/body.stl')).toBeVisible();
+  });
+
   it('should summarize bulk metadata operations without rendering frozen model IDs', () => {
     const modelIds = Array.from(
       { length: 1000 },

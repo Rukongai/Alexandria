@@ -113,6 +113,13 @@
       "when": 1784771954000,
       "tag": "0015_add_duplicate_review_persistence",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784771955000,
+      "tag": "0016_add_import_session_draft_file_layout",
+      "breakpoints": true
     }
   ]
 }

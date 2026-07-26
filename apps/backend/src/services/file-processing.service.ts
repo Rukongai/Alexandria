@@ -31,9 +31,18 @@ const execFileAsync = promisify(execFile);
 
 const STORAGE_PROGRESS_MIN_BYTES = 1024 * 1024;
 const STORAGE_PROGRESS_MAX_INTERVAL_MS = 250;
+const URL_SCAN_TEXT_EXTENSIONS = new Set([
+  '.txt', '.md', '.markdown', '.url', '.html', '.htm', '.json', '.nfo',
+]);
+const URL_SCAN_MAX_FILES = 20;
+const URL_SCAN_MAX_BYTES_PER_FILE = 64 * 1024;
+const URL_SCAN_MAX_TOTAL_BYTES = 512 * 1024;
+const URL_SCAN_MAX_CANDIDATES = 24;
 
 export interface FileManifestEntry {
   filename: string;
+  /** Original staged path when relativePath is a reviewed destination path. */
+  sourceRelativePath?: string;
   relativePath: string;
   fileType: FileType;
   mimeType: string;
@@ -44,6 +53,11 @@ export interface FileManifestEntry {
 export interface FileManifest {
   entries: FileManifestEntry[];
   totalSizeBytes: number;
+}
+
+export interface ManifestUrlCandidate {
+  url: string;
+  relativePath: string;
 }
 
 export type ManifestStorageProgress = Omit<ImportCommitProgress, 'phase' | 'percent'>;
@@ -336,6 +350,70 @@ export interface DiscoveredModel {
 }
 
 export class FileProcessingService {
+  /** Extract bounded HTTP(S) candidates without sending arbitrary file text to an AI provider. */
+  async extractManifestUrlCandidates(
+    extractDir: string,
+    manifest: FileManifest,
+  ): Promise<ManifestUrlCandidate[]> {
+    const root = path.resolve(extractDir);
+    const candidates: ManifestUrlCandidate[] = [];
+    const seen = new Set<string>();
+    let scannedFiles = 0;
+    let scannedBytes = 0;
+
+    for (const entry of manifest.entries) {
+      if (scannedFiles >= URL_SCAN_MAX_FILES
+        || scannedBytes >= URL_SCAN_MAX_TOTAL_BYTES
+        || candidates.length >= URL_SCAN_MAX_CANDIDATES) break;
+      const extension = path.extname(entry.filename).toLowerCase();
+      if (!entry.mimeType.startsWith('text/') && !URL_SCAN_TEXT_EXTENSIONS.has(extension)) continue;
+
+      const sourceRelativePath = entry.sourceRelativePath ?? entry.relativePath;
+      const filePath = path.resolve(root, sourceRelativePath);
+      if (filePath !== root && !filePath.startsWith(`${root}${path.sep}`)) continue;
+      const bytesToRead = Math.min(
+        entry.sizeBytes,
+        URL_SCAN_MAX_BYTES_PER_FILE,
+        URL_SCAN_MAX_TOTAL_BYTES - scannedBytes,
+      );
+      if (bytesToRead <= 0) continue;
+
+      let handle: fsPromises.FileHandle | undefined;
+      try {
+        handle = await fsPromises.open(filePath, 'r');
+        const buffer = Buffer.alloc(bytesToRead);
+        const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0);
+        scannedFiles += 1;
+        scannedBytes += bytesRead;
+        const content = buffer.subarray(0, bytesRead).toString('utf8');
+        for (const match of content.matchAll(/https?:\/\/[^\s<>"'`\])}]+/giu)) {
+          const candidate = match[0].replace(/[.,;:!?]+$/u, '');
+          let parsed: URL;
+          try {
+            parsed = new URL(candidate);
+          } catch {
+            continue;
+          }
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
+          const key = parsed.href.toLocaleLowerCase('en-US');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          candidates.push({ url: parsed.href, relativePath: entry.relativePath });
+          if (candidates.length >= URL_SCAN_MAX_CANDIDATES) break;
+        }
+      } catch {
+        // A missing or unreadable optional text file should not fail inspection.
+      } finally {
+        await handle?.close().catch(() => {});
+      }
+    }
+    return candidates.sort((a, b) => {
+      const aPatreon = /(?:^|\.)patreon\.com$/iu.test(new URL(a.url).hostname) ? 0 : 1;
+      const bPatreon = /(?:^|\.)patreon\.com$/iu.test(new URL(b.url).hostname) ? 0 : 1;
+      return aPatreon - bPatreon;
+    });
+  }
+
   /** Create a 7z archive whose root contains sourceDir's children, not sourceDir itself. */
   async create7zArchive(sourceDir: string, archivePath: string): Promise<void> {
     await fsPromises.mkdir(path.dirname(archivePath), { recursive: true });
@@ -781,7 +859,7 @@ export class FileProcessingService {
       uploadConcurrencyFor(storage),
       async (entry) => {
         const storagePath = `models/${modelId}/${entry.relativePath}`;
-        const sourcePath = path.join(extractDir, entry.relativePath);
+        const sourcePath = path.join(extractDir, entry.sourceRelativePath ?? entry.relativePath);
         const readStream = fs.createReadStream(sourcePath);
         let fileBytes = 0;
         currentFilename = entry.filename;

@@ -316,7 +316,7 @@ interface SmartCollectionDetail {
 
 ### ImportSession
 
-A staged archive upload awaiting review and commit. Created by `POST /models/upload`, the single-file chunked complete endpoint, or multipart complete; destroyed by commit or discard. One session always creates one model, even when its scan input contains several independent archives or one supported split ZIP or modern split RAR set. The database schema is in `apps/backend/src/db/schema/import-session.ts`; migration `0008_add_import_sessions.sql` creates the table and `0013_add_import_session_draft_metadata.sql` adds the persisted review draft.
+A staged archive upload awaiting review and commit. Created by `POST /models/upload`, the single-file chunked complete endpoint, or multipart complete; destroyed by commit or discard. One session always creates one model, even when its scan input contains several independent archives or one supported split ZIP or modern split RAR set. The database schema is in `apps/backend/src/db/schema/import-session.ts`; migration `0008_add_import_sessions.sql` creates the table, `0013_add_import_session_draft_metadata.sql` adds the metadata review draft, and `0016_add_import_session_draft_file_layout.sql` adds the separately persisted file-layout review draft.
 
 ```typescript
 interface ImportSession {
@@ -327,6 +327,7 @@ interface ImportSession {
   status: ImportSessionStatus;
   detected: DetectedImportMetadata | null; // null while scanning
   draftMetadata: BatchUploadMetadata | null; // reviewed values staged for explicit commit
+  draftFileLayout: ImportFileLayoutPlan | null; // reviewed destination layout; independent of metadata
   manifest: unknown | null;                // internal file manifest; not exposed in API responses
   stagingPath: string | null;              // server-side path to extracted files; not exposed in API responses
   modelId: string | null;                  // set during commit; FK → models (set null on model delete)
@@ -378,6 +379,13 @@ type AiChange =
       patch: BatchUploadMetadata; // non-empty; nested metadata/options merge on apply
     }
   | {
+      type: 'organize_import_session_files';
+      importSessionId: string;
+      originalFilename: string; // identity guard captured at preview time
+      expectedUpdatedAt: string; // optimistic stale-state guard from ImportSession.updatedAt
+      layout: ImportFileLayoutPlan;
+    }
+  | {
       type: 'bulk_metadata';
       modelIds: string[]; // 1–500 sorted, unique, owned IDs frozen at preview time
       operations: BulkMetadataOperation[]; // 1–25 operations on distinct field slugs
@@ -409,6 +417,10 @@ interface AiChangePreviewDisplay {
     modelCount: number;
     sampleModelNames: string[]; // server-derived; at most five names
   };
+  importSessionLayouts?: Record<string, {
+    fileCount: number;
+    sampleDestinationPaths: string[]; // first five expanded destinations
+  }>;
 }
 ```
 
@@ -793,11 +805,12 @@ interface ImportSession {
   status: ImportSessionStatus;
   detected: DetectedImportMetadata | null; // null until scan completes
   draftMetadata: BatchUploadMetadata | null; // staged review values; applying them does not commit
+  draftFileLayout: ImportFileLayoutPlan | null; // independently staged layout; applying it does not commit
   modelId: string | null;       // set once commit begins
   commitProgress: ImportCommitProgress | null; // non-null only while committing
   error: string | null;
   createdAt: string;
-  updatedAt: string;             // changes whenever session state or draft metadata changes
+  updatedAt: string;             // changes whenever session state or either review draft changes
 }
 
 type ImportSessionStatus =
@@ -862,9 +875,27 @@ interface BatchUploadMetadata {
   metadata?: SetModelMetadataRequest; // configured fields keyed by slug
   options?: UploadOptions;
 }
+
+interface ImportFileLayoutPrefixMapping {
+  sourcePrefix: string;      // slash-separated; empty string is the archive-root fallback
+  destinationPrefix: string; // folder below Model or Images
+}
+
+interface ImportFileLayoutFileMapping {
+  sourcePath: string;        // exact scanned file path
+  destinationPath: string;   // exact reviewed destination path
+}
+
+interface ImportFileLayoutPlan {
+  rootFolders: ['Model', 'Images'];
+  prefixMappings: ImportFileLayoutPrefixMapping[]; // maximum 100
+  fileMappings?: ImportFileLayoutFileMapping[];    // maximum 100
+}
 ```
 
 `collectionId` and `newCollectionName` are mutually exclusive. An assistant-applied draft patch shallow-merges direct fields and separately merges `metadata` and `options`; choosing either collection form removes the other from the stored draft. At commit, an explicitly supplied `batchMetadata` object replaces the entire stored draft as the request source. When `batchMetadata` is omitted, the stored draft is used. Within the effective object, dedicated `artist` and `tags` fields override the same slugs in `metadata`.
+
+`ImportFileLayoutPlan` is compact: an exact `fileMappings` entry wins, otherwise the longest matching `sourcePrefix` wins, and the empty prefix may provide a root fallback. At least one mapping is required; source prefixes and exact source paths must be unique. Semantic validation expands the plan against the scanned manifest, requires every source file to resolve, rejects missing sources and case-insensitive destination/file-folder collisions, and requires every destination below `Model/` or `Images/`. Images must resolve below `Images/` and printable files below `Model/`. Paths use forward slashes and reject empty, `.` or `..` segments and control characters. Proposal application replaces `draftFileLayout` without changing `draftMetadata`; an explicit commit-time `batchMetadata` likewise has no effect on the saved layout.
 
 The file and byte counters in `ImportCommitProgress` describe transfer into managed storage, while `percent` describes the whole commit pipeline. Storage occupies 0–80%; later phases report 85% (`saving_records`), 90% (`generating_thumbnails`), 95% (`applying_metadata`), and 100% (`complete`). After storage finishes, the counters remain at their totals while the later phases run.
 

@@ -50,6 +50,8 @@ Set `TELEGRAM_IMPORT_CONCURRENCY` to import several models at the same time; it 
 
 Set `TELEGRAM_DOWNLOAD_CONNECTIONS` to change how many connections fetch one file at once; it defaults to `8` and `--download-connections` overrides it. See [Download speed](#download-speed).
 
+Set `TELEGRAM_STAGING_DIR` to a default directory for staged model folders; `--staging-dir` overrides it. See [Staged import](#staged-import).
+
 By default, the reusable Telegram login session and SQLite import state live under `$XDG_DATA_HOME/alexandria-telegram-importer`, or `~/.local/share/alexandria-telegram-importer` when `XDG_DATA_HOME` is unset. Override them with `TELEGRAM_SESSION_PATH` and `TELEGRAM_IMPORT_STATE_PATH`, or with the `--session` and `--state` command-line options.
 
 ## Preview and import
@@ -84,6 +86,122 @@ uv run alexandria-telegram-import \
 `--from-message-id N` considers only Telegram messages with IDs greater than `N`. `--poll-interval` changes the default two-second Alexandria session polling interval. `--concurrency N` sets how many models are imported at the same time. Run `uv run alexandria-telegram-import --help` for all options.
 
 During a real run, each model is downloaded, scanned by Alexandria, held until `ready_for_review`, given its assigned attachments, committed with a derived name and Telegram-source description, and awaited until `committed`. The commit sets only that name and description; the importer does not assign a collection or map Telegram content into artist, tags, or custom metadata. A failure is recorded and the run continues with the remaining models. The command exits with status 1 when the state database contains failed or completion-uncertain imports after the run.
+
+## Staged import
+
+The default run sends every model straight to Alexandria. A staged import splits that into a download phase and an upload phase with a pause in between, so a release can be reorganized before anything is committed. It exists for three things the direct path cannot do: splitting a release that holds several distinct models, compressing archives yourself rather than downloading and re-uploading later, and correcting names and metadata before commit rather than after.
+
+```bash
+# Stage 20 bundles as folders and exit
+uv run alexandria-telegram-import --download-only 20 --staging-dir ./work
+
+# Upload every model folder currently in ./work and exit
+uv run alexandria-telegram-import --upload-only --staging-dir ./work
+
+# Both, pausing between them
+uv run alexandria-telegram-import --stage 20 --staging-dir ./work
+```
+
+All three require `--staging-dir`, and `--staging-dir` requires one of them. `TELEGRAM_STAGING_DIR` sets the default directory. `--concurrency` applies to both phases: N bundles stage at once, and N folders upload at once. `--upload-only` is entirely local — it needs no Telegram credentials and opens no Telegram session — and combining it with `--dry-run` prints what would be uploaded without contacting Alexandria. `--stage` prints a summary and waits for Enter; `q` then Enter quits and leaves the folders for a later `--upload-only`. A non-interactive standard input is treated as quitting rather than hanging.
+
+### Folder layout
+
+One folder per *bundle* — the attachments and the consecutive run of model media that grouping assigns to each other — rather than one per logical model, because the images belong to the whole bundle:
+
+```
+work/002501-dragon-set/
+  metadata.json
+  models/    every model medium, original filenames, split parts intact
+  images/    every attachment medium
+```
+
+The name is the first model message ID zero-padded to six digits, plus a slug of the first model's filename. Both subfolders are always created, even when empty.
+
+### Reorganizing
+
+A folder holding `models/` is a **model folder** and becomes one Alexandria model. A folder holding only subfolders is a **container** and is recursed into. So splitting a release means moving its archives into per-model child folders and removing the now-empty parent `models/` — the split itself is the signal, with no flag to set:
+
+```
+work/002501-dragon-set/
+  metadata.json          <- release defaults
+  images/                <- group renders, inherited by every model below
+  dragon-knight/
+    metadata.json        <- modelName only; everything else inherited
+    models/  images/
+  dragon-mage/
+    models/  images/     <- no metadata.json: name comes from the folder
+```
+
+A folder holding **both** its own `models/` and a descendant model folder is a half-finished split. It is moved to `failed/` without uploading, because committing the leftovers would silently drop everything already moved into the children.
+
+### How models/ is uploaded
+
+- Exactly one entry, and it is an archive (`.zip`, `.rar`, `.7z`, `.tar.gz`, `.tgz`) — uploaded byte for byte, with no recompression. This is what makes a hand-made `.7z` worth creating.
+- Every entry a member of one complete split set (`.partN.rar`, `.zNN` plus `.zip`, `.zip.NNN`) — uploaded through the multipart `split` endpoints. An incomplete set, or one mixing two base names, falls through to the zip case rather than being guessed at.
+- Anything else — several files, loose model files, subfolders, an archive sitting beside a stray `readme.txt` — zipped into one archive preserving paths relative to `models/`.
+- Empty or missing — the folder moves to `failed/`.
+
+Every file in `images/` is appended as an attachment after the scan reaches `ready_for_review`.
+
+### metadata.json
+
+Its top level mirrors Alexandria's commit `batchMetadata` field for field, so it is passed through untranslated:
+
+```json
+{
+  "schemaVersion": 1,
+  "modelName": "Dragon Knight",
+  "description": "…captions, related models, and the t.me source link…",
+  "artist": null, "tags": [], "metadata": {}, "options": {},
+  "collectionId": null, "newCollectionName": null,
+  "source": { "channelId": -100…, "modelMessageIds": [2501], "link": "https://t.me/…" },
+  "result": null
+}
+```
+
+`source` records where the bundle came from; the upload phase ignores it, and it survives renaming and splitting. `result` is filled on disposal. `description` is composed from the bundle's captions and source link, so it is edited rather than written from scratch. A folder with no `metadata.json` still uploads, taking its name from its folder name.
+
+Because you edit this file by hand, a JSON syntax error is treated as an error rather than as "no metadata": a **model folder** whose own `metadata.json` will not parse moves to `failed/` without uploading, and the unreadable file is never rewritten — its result is written to a sibling `result.json` instead, so your hand-typed values survive. Fix the typo and re-run. A **container's** unparseable file is still skipped leniently, since a container commits nothing.
+
+Values merge from the staging root downward, so `<staging-dir>/metadata.json` and `<staging-dir>/images/` supply defaults to every folder in the directory — the natural place for channel-wide artist, tags, or collection.
+
+Values merge from the outermost container down to the model folder:
+
+| Field | Rule |
+|---|---|
+| `description`, `artist`, `collectionId`, `newCollectionName` | Nearest level wins |
+| `tags` | Merged across every level, de-duplicated |
+| `metadata`, `options` | Merged key by key, nearest wins per key |
+| `modelName` | **Never inherits** — from the folder's own file, or its folder name |
+
+A child cannot clear an inherited value by setting it to `null`; omit the field or set a replacement.
+
+`modelName` is excluded deliberately: inheriting it would commit all eight models of a release as "Dragon Set". Everything else inheriting means the collection, artist, and tags are set once at the release root.
+
+Files in a container's `images/` are appended to **every** model folder beneath it, so group renders you do not want to file per-model still reach each model. They are stored once per model, and a model's own `images/` wins a filename collision.
+
+### Disposal
+
+Each model folder settles independently — six can succeed while two fail:
+
+```
+work/
+  002503-wizard-set/       <- still pending
+  uploaded/
+    002501-dragon-set/
+      metadata.json        <- copied from the container
+      dragon-knight/       <- result.modelId written into its metadata.json
+  failed/
+    002502-broken/         <- result.error written into its metadata.json
+```
+
+Paths relative to the staging root are preserved, each ancestor container's `metadata.json` is copied alongside, and a container is removed once it holds nothing but its own `metadata.json`. A container still holding an unsplit archive, a half-organized subfolder, or shared images is left alone — that is work in progress, not leftovers. The staging root therefore always shows exactly what is left to do. Delete `uploaded/` once the results have been checked.
+
+### State and duplicates
+
+Staged bundles are recorded in a `staged_bundles` table in the same SQLite state file, so consecutive `--download-only 20` runs walk forward through the channel rather than re-staging the same bundles. Deleting a folder by hand does not re-offer that bundle — deleting is recorded as a skip decision. Re-staging it means deleting its row.
+
+**The upload phase performs no deduplication.** No Telegram media signatures, no content hashes, no reads or writes to the `imports` table that the direct path uses. The folders are hand-curated and are uploaded as given. The consequence is explicit: moving a folder back out of `uploaded/` and re-running `--upload-only` creates a second Alexandria model. This follows from the two phases sharing no state, which is what lets folders be split, merged, renamed, and recompressed freely between them.
 
 ## Concurrency
 

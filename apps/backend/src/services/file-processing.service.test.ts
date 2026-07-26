@@ -330,6 +330,67 @@ describe('FileProcessingService – managed-storage progress', () => {
   });
 });
 
+describe('FileProcessingService – reviewed layout sources and URL inspection', () => {
+  it('reads the original staged source while writing the reviewed destination', async () => {
+    const extractDir = path.join(tmpDir, 'reviewed-layout-source');
+    await fsPromises.mkdir(path.join(extractDir, 'original'), { recursive: true });
+    await fsPromises.writeFile(path.join(extractDir, 'original', 'body.stl'), 'body');
+    const stored = vi.fn<IStorageService['store']>(async (_key, data) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of data as NodeJS.ReadableStream) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks).toString()).toBe('body');
+      return {};
+    });
+    const storage = { kind: 'local', store: stored } as unknown as IStorageService;
+    const manifest: FileManifest = {
+      entries: [{
+        filename: 'body.stl',
+        sourceRelativePath: 'original/body.stl',
+        relativePath: 'Model/Standard/body.stl',
+        fileType: 'stl',
+        mimeType: 'model/stl',
+        sizeBytes: 4,
+        hash: 'hash',
+      }],
+      totalSizeBytes: 4,
+    };
+
+    await service.copyManifestToStorage(extractDir, 'model-1', manifest, storage);
+
+    expect(stored).toHaveBeenCalledWith(
+      'models/model-1/Model/Standard/body.stl',
+      expect.anything(),
+      expect.any(Function),
+    );
+  });
+
+  it('extracts bounded HTTP(S) candidates and prioritizes Patreon without returning file text', async () => {
+    const extractDir = path.join(tmpDir, 'url-inspection');
+    await fsPromises.mkdir(extractDir, { recursive: true });
+    const readme = 'Store: https://example.com/model.\nCreator: https://www.patreon.com/maker';
+    await fsPromises.writeFile(path.join(extractDir, 'README.txt'), readme);
+    await fsPromises.writeFile(path.join(extractDir, 'binary.stl'), 'https://ignored.example/file');
+    const manifest: FileManifest = {
+      entries: [
+        {
+          filename: 'README.txt', relativePath: 'README.txt', fileType: 'document',
+          mimeType: 'text/plain', sizeBytes: Buffer.byteLength(readme), hash: 'text',
+        },
+        {
+          filename: 'binary.stl', relativePath: 'binary.stl', fileType: 'stl',
+          mimeType: 'model/stl', sizeBytes: 28, hash: 'binary',
+        },
+      ],
+      totalSizeBytes: Buffer.byteLength(readme) + 28,
+    };
+
+    await expect(service.extractManifestUrlCandidates(extractDir, manifest)).resolves.toEqual([
+      { url: 'https://www.patreon.com/maker', relativePath: 'README.txt' },
+      { url: 'https://example.com/model', relativePath: 'README.txt' },
+    ]);
+  });
+});
+
 afterAll(async () => {
   await fsPromises.rm(tmpDir, { recursive: true, force: true });
 });
