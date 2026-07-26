@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, FolderOpen, User } from 'lucide-react';
-import type { DetectedImportMetadata, BatchUploadMetadata } from '@alexandria/shared';
+import type {
+  DetectedImportMetadata,
+  BatchUploadMetadata,
+  MetadataFieldDetail,
+  MetadataFieldType,
+} from '@alexandria/shared';
 import { getCollections } from '../../api/collections';
 import { getFields, getFieldValues } from '../../api/metadata';
 import { useCommitSession } from '../../hooks/use-import-sessions';
@@ -35,8 +40,9 @@ interface FormState {
   markNsfw: boolean;
   skipDuplicatesByHash: boolean;
   metadata: NonNullable<BatchUploadMetadata['metadata']>;
-  metadataTypes: Record<string, 'array' | 'boolean' | 'number' | 'string'>;
 }
+
+type MetadataInputType = 'array' | 'boolean' | 'number' | 'string';
 
 function archiveName(filename: string): string {
   return filename.replace(/\.(tar\.gz|zip|rar|7z)$/i, '').trim() || filename;
@@ -93,14 +99,6 @@ function createInitialForm(
   const collection = resolveCollection(draftMetadata, fromFile);
 
   const metadata = { ...(draftMetadata?.metadata ?? fromFile?.metadata ?? {}) };
-  const metadataTypes = Object.fromEntries(
-    Object.entries(metadata).map(([field, value]) => [
-      field,
-      Array.isArray(value) ? 'array' : typeof value === 'boolean'
-        ? 'boolean' : typeof value === 'number' ? 'number' : 'string',
-    ]),
-  ) as FormState['metadataTypes'];
-
   return {
     modelName:
       draftMetadata?.modelName ?? fromFile?.modelName ?? archiveName(originalFilename),
@@ -114,7 +112,6 @@ function createInitialForm(
     markNsfw: draftMetadata?.options?.markNsfw ?? false,
     skipDuplicatesByHash: draftMetadata?.options?.skipDuplicatesByHash ?? true,
     metadata,
-    metadataTypes,
   };
 }
 
@@ -133,6 +130,47 @@ function omitBlankMetadataValues(
       typeof value !== 'string' || value.trim().length > 0
     )),
   );
+}
+
+function metadataInputType(
+  value: unknown,
+  configuredType?: MetadataFieldType,
+): MetadataInputType {
+  if (configuredType === 'boolean') return 'boolean';
+  if (configuredType === 'number') return 'number';
+  if (configuredType === 'multi_enum') return 'array';
+  if (configuredType) return 'string';
+  if (Array.isArray(value)) return 'array';
+  if (typeof value === 'boolean') return 'boolean';
+  if (typeof value === 'number') return 'number';
+  return 'string';
+}
+
+/** Convert untyped metadata-file values to their configured field representation. */
+function normalizeMetadataForConfiguredFields(
+  metadata: NonNullable<BatchUploadMetadata['metadata']>,
+  fields: MetadataFieldDetail[],
+): NonNullable<BatchUploadMetadata['metadata']> {
+  const fieldsBySlug = new Map(fields.map((field) => [field.slug, field]));
+  return Object.fromEntries(Object.entries(metadata).map(([slug, value]) => {
+    const type = fieldsBySlug.get(slug)?.type;
+    if (value === null || !type) return [slug, value];
+    if (['text', 'date', 'url', 'enum'].includes(type) && typeof value !== 'string') {
+      return [slug, String(value)];
+    }
+    if (type === 'number' && typeof value === 'string' && value.trim() !== '') {
+      return [slug, Number(value)];
+    }
+    if (type === 'boolean' && typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') return [slug, true];
+      if (normalized === 'false') return [slug, false];
+    }
+    if (type === 'multi_enum' && typeof value === 'string') {
+      return [slug, value.split(',').map((item) => item.trim()).filter(Boolean)];
+    }
+    return [slug, value];
+  }));
 }
 
 /** Where a prefilled field's value came from, for the review-form badges. */
@@ -212,6 +250,7 @@ export function BatchMetadataForm({
     staleTime: 60_000,
   });
   const metadataFieldNames = new Map(metadataFields.map((field) => [field.slug, field.name]));
+  const metadataFieldTypes = new Map(metadataFields.map((field) => [field.slug, field.type]));
 
   const commitMutation = useCommitSession();
 
@@ -221,7 +260,9 @@ export function BatchMetadataForm({
     const hasExistingCollection = !!form.collectionId && form.collectionId !== '__new__';
     const modelName = form.modelName.trim();
     const description = form.description.trim();
-    const metadata = omitBlankMetadataValues(form.metadata);
+    const metadata = omitBlankMetadataValues(
+      normalizeMetadataForConfiguredFields(form.metadata, metadataFields),
+    );
     const batchMetadata: BatchUploadMetadata = {
       modelName,
       description: description || null,
@@ -382,7 +423,7 @@ export function BatchMetadataForm({
                 <Label htmlFor={`draft-metadata-${field}`} className="truncate text-[12px] capitalize">
                   {metadataFieldNames.get(field) ?? field.replace(/[-_]+/g, ' ')}
                 </Label>
-                {form.metadataTypes[field] === 'boolean' ? (
+                {metadataInputType(value, metadataFieldTypes.get(field)) === 'boolean' ? (
                   <Checkbox
                     id={`draft-metadata-${field}`}
                     checked={value === true}
@@ -395,10 +436,13 @@ export function BatchMetadataForm({
                 ) : (
                   <Input
                     id={`draft-metadata-${field}`}
-                    type={form.metadataTypes[field] === 'number' ? 'number' : 'text'}
+                    type={metadataInputType(value, metadataFieldTypes.get(field)) === 'number' ? 'number' : 'text'}
                     value={Array.isArray(value) ? value.join(', ') : value === null ? '' : String(value)}
                     onChange={(event) => setForm((current) => {
-                      const type = current.metadataTypes[field];
+                      const type = metadataInputType(
+                        current.metadata[field],
+                        metadataFieldTypes.get(field),
+                      );
                       const nextValue = type === 'array'
                         ? event.target.value.split(',').map((item) => item.trim()).filter(Boolean)
                         : type === 'number'
