@@ -467,9 +467,10 @@ def _model_folder_errors(
     reference_nested = reference_metadata.get("metadata")
     if not isinstance(nested, dict) or not isinstance(reference_nested, dict):
         errors.append(f"{metadata_path}: metadata must be an object")
-    elif set(nested) != set(reference_nested):
+    elif extra_keys := set(nested) - set(reference_nested):
         errors.append(
-            f"{metadata_path}: nested metadata keys do not match the reference"
+            f"{metadata_path}: nested metadata contains fields not in the reference: "
+            + ", ".join(sorted(extra_keys))
         )
     if (
         not isinstance(payload.get("modelName"), str)

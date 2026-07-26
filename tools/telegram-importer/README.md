@@ -136,7 +136,9 @@ controls how many Codex cleanup processes run at once.
 `metadata.json`. Use a completed model folder from this staged workflow. Codex
 treats its metadata keys, key order, folder casing, and tag vocabulary as the
 target shape. The importer independently enforces the reference's exact
-top-level and nested `metadata` key sets before upload. The repository-owned
+top-level key set and rejects nested `metadata` keys that are absent from the
+reference; nested reference fields may be omitted when they do not apply. The
+repository-owned
 `$prepare-telegram-staging` skill performs the variable work: recursive archive
 inspection, character splitting, image classification, metadata research, LZMA2
 repacking, and archive verification. Override its path with `--cleanup-skill`
@@ -152,7 +154,8 @@ Codex returns one of three states per input bundle:
 
 Before upload, the importer verifies that reported paths stay inside the assigned
 bundle, every actual model folder was reported, the folder contains no symlinks,
-and metadata has the reference key sets, a non-empty model name, and a null
+and metadata has the reference's top-level keys and no unknown nested fields,
+a non-empty model name, and a null
 result. It also requires the original Telegram channel and bundle IDs, permits
 only original message IDs, and checks that the outputs collectively cover every
 original model message. Finally, `images/` must be flat and `models/` must contain
