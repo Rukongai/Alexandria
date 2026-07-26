@@ -65,7 +65,6 @@ CLEANUP_OUTPUT_SCHEMA: dict[str, Any] = {
         "outputFolders": {
             "type": "array",
             "items": {"type": "string"},
-            "uniqueItems": True,
         },
         "summary": {"type": "string"},
         "warnings": {"type": "array", "items": {"type": "string"}},
