@@ -101,7 +101,10 @@ describe('FileTree', () => {
     expect(screen.getAllByRole('button', { name: /in 3d/i })).toHaveLength(1);
   });
 
-  it('offers extraction for a nested archive file', () => {
+  it.each([
+    'alternate-parts.tar.gz',
+    'alternate-parts.7z',
+  ])('offers extraction for a nested %s archive file', (archiveName) => {
     const onExtractArchive = vi.fn();
     render(
       <FileTree
@@ -112,7 +115,7 @@ describe('FileTree', () => {
             isDuplicate: false,
             children: [
               {
-                name: 'alternate-parts.tar.gz',
+                name: archiveName,
                 type: 'file',
                 fileType: 'other',
                 id: 'a1',
@@ -126,9 +129,9 @@ describe('FileTree', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Extract alternate-parts.tar.gz' }));
+    fireEvent.click(screen.getByRole('button', { name: `Extract ${archiveName}` }));
 
-    expect(onExtractArchive).toHaveBeenCalledWith('a1', 'alternate-parts.tar.gz');
+    expect(onExtractArchive).toHaveBeenCalledWith('a1', archiveName);
   });
 
   it('fires onOpenText with the reconstructed relative path for a text file', () => {
