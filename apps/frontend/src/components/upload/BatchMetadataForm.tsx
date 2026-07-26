@@ -47,8 +47,13 @@ function createInitialForm(
   originalFilename: string,
   draftMetadata?: BatchUploadMetadata | null,
 ): FormState {
+  // An explicit metadata.json in the archive beats the scan's heuristics, but a
+  // saved draft beats both: it is the reviewer's own intent.
+  const fromFile = detected.metadataFile;
+
   const seenTags = new Set<string>();
-  const tags = (draftMetadata?.tags ?? detected.tagsGuessed).reduce<string[]>((result, rawTag) => {
+  const sourceTags = draftMetadata?.tags ?? fromFile?.tags ?? detected.tagsGuessed;
+  const tags = sourceTags.reduce<string[]>((result, rawTag) => {
     const tag = rawTag.trim();
     const key = tag.toLowerCase();
     if (!key || seenTags.has(key)) return result;
@@ -57,7 +62,7 @@ function createInitialForm(
     return result;
   }, []);
 
-  const metadata = { ...(draftMetadata?.metadata ?? {}) };
+  const metadata = { ...(draftMetadata?.metadata ?? fromFile?.metadata ?? {}) };
   const metadataTypes = Object.fromEntries(
     Object.entries(metadata).map(([field, value]) => [
       field,
@@ -67,13 +72,15 @@ function createInitialForm(
   ) as FormState['metadataTypes'];
 
   return {
-    modelName: draftMetadata?.modelName ?? archiveName(originalFilename),
-    description: draftMetadata?.description ?? '',
-    collectionId: draftMetadata?.newCollectionName
+    modelName:
+      draftMetadata?.modelName ?? fromFile?.modelName ?? archiveName(originalFilename),
+    description: draftMetadata?.description ?? fromFile?.description ?? '',
+    collectionId: (draftMetadata?.newCollectionName ?? fromFile?.newCollectionName)
       ? '__new__'
-      : draftMetadata?.collectionId ?? '',
-    newCollectionName: draftMetadata?.newCollectionName ?? '',
-    artist: draftMetadata?.artist ?? detected.artist ?? '',
+      : draftMetadata?.collectionId ?? fromFile?.collectionId ?? '',
+    newCollectionName:
+      draftMetadata?.newCollectionName ?? fromFile?.newCollectionName ?? '',
+    artist: draftMetadata?.artist ?? fromFile?.artist ?? detected.artist ?? '',
     tags,
     tagInput: '',
     markPreSupported: draftMetadata?.options?.markPreSupported ?? false,
@@ -216,12 +223,12 @@ export function BatchMetadataForm({
         label={
           <span>
             Artist
-            {detected.artist && (
+            {(detected.metadataFile?.artist || detected.artist) && (
               <span
                 className="ml-2 font-normal text-[11px]"
                 style={{ color: 'var(--ax-fg-subtle)' }}
               >
-                auto-detected
+                {detected.metadataFile?.artist ? 'from metadata.json' : 'auto-detected'}
               </span>
             )}
           </span>

@@ -278,4 +278,124 @@ describe('BatchMetadataForm', () => {
       }),
     ));
   });
+
+  it('prefills the form from a metadata.json the archive carried', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: 'Guessed Artist',
+            tagsGuessed: ['guessed'],
+            folderStructure: [],
+            metadataFile: {
+              modelName: 'Dragon Knight',
+              description: 'From the archive',
+              artist: 'Foo Studios',
+              tags: ['dragon'],
+            },
+          }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('Dragon Knight');
+    expect(screen.getByPlaceholderText('Description (optional)')).toHaveValue('From the archive');
+    expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('Foo Studios');
+    expect(screen.getByText('dragon')).toBeTruthy();
+    expect(screen.queryByText('guessed')).toBeNull();
+  });
+
+  it('lets a saved draft win over the archive metadata.json', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+            metadataFile: { modelName: 'From File', artist: 'File Artist' },
+          }}
+          draftMetadata={{ modelName: 'From Draft', artist: 'Draft Artist' }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('From Draft');
+    expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('Draft Artist');
+  });
+
+  it('keeps edits the user has already made when a metadata.json is present', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+            metadataFile: { modelName: 'Dragon Knight' },
+          }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Model name'), {
+      target: { value: 'My Own Name' },
+    });
+
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('My Own Name');
+  });
+
+  it('falls back to the archive filename when no metadata.json is present', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: 'Guessed Artist',
+            tagsGuessed: ['guessed'],
+            folderStructure: [],
+          }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByPlaceholderText('Model name')).toHaveValue('starter');
+    expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('Guessed Artist');
+    expect(screen.getByText('guessed')).toBeTruthy();
+  });
 });
