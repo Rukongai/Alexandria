@@ -136,11 +136,12 @@ A folder holding **both** its own `models/` and a descendant model folder is a h
 
 ### How a staged folder is uploaded
 
-Each model folder is compressed into one ZIP before upload. The ZIP preserves the model
-folder itself and its contents — including `models/`, `images/`, and `metadata.json` when
-present — rather than uploading only the model archive and appending images afterward.
-Container images inherited by a child model are included under that child's `images/`
-directory. Empty or missing `models/` directories move the folder to `failed/`.
+Each model folder is compressed into one ZIP before upload. The ZIP preserves its
+`models/`, `images/`, and `metadata.json` contents at the archive root, rather than
+uploading only the model archive and appending images afterward. This lets Alexandria read
+`metadata.json` during scanning and prefill the pending review session. Container images
+inherited by a child model are included under that child's `images/` directory. Empty or
+missing `models/` directories move the folder to `failed/`.
 
 ### metadata.json
 

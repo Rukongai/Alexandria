@@ -243,10 +243,10 @@ and tags once, and each child folder needs at most its own name.
 1. Resolve effective metadata by merging the inheritance chain.
 2. Require a non-empty `models/` directory; an empty or missing one moves the folder to
    `failed/`.
-3. Compress the entire model folder with `ZIP_DEFLATED`, preserving the model-folder
-   directory and all of its contents, including `models/`, `images/`, and
-   `metadata.json` when present. Inherited container images are included under the
-   model folder's `images/` directory.
+3. Compress the entire model folder with `ZIP_DEFLATED`, preserving its `models/`,
+   `images/`, and `metadata.json` contents at the archive root. This lets Alexandria
+   detect `metadata.json` and prefill the pending review session. Inherited container
+   images are included under the model folder's `images/` directory.
 4. Upload the ZIP → wait for `ready_for_review`.
 5. Commit with `batchMetadata` built from the effective metadata.
 6. Wait for `committed`.

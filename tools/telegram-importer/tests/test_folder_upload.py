@@ -154,10 +154,10 @@ def test_should_build_a_zip_of_the_complete_model_folder(tmp_path) -> None:
     assert archive_path.name == "Dragon.zip"
     with zipfile.ZipFile(archive_path) as archive:
         assert sorted(archive.namelist()) == [
-            "002501-dragon/images/render.jpg",
-            "002501-dragon/metadata.json",
-            "002501-dragon/models/dragon.7z",
-            "002501-dragon/models/parts/base.stl",
+            "images/render.jpg",
+            "metadata.json",
+            "models/dragon.7z",
+            "models/parts/base.stl",
         ]
 
 
@@ -176,9 +176,9 @@ def test_should_add_inherited_images_to_the_model_folder_archive(tmp_path) -> No
 
     with zipfile.ZipFile(archive_path) as archive:
         assert sorted(archive.namelist()) == [
-            "knight/images/group.jpg",
-            "knight/images/knight.jpg",
-            "knight/models/knight.7z",
+            "images/group.jpg",
+            "images/knight.jpg",
+            "models/knight.7z",
         ]
 
 
@@ -342,9 +342,9 @@ async def test_should_upload_a_folder_and_return_its_model_id(tmp_path) -> None:
         (
             "Dragon.zip",
             [
-                "002501-dragon/images/render.jpg",
-                "002501-dragon/metadata.json",
-                "002501-dragon/models/dragon.7z",
+                "images/render.jpg",
+                "metadata.json",
+                "models/dragon.7z",
             ],
         ),
     ]
@@ -373,9 +373,9 @@ async def test_should_include_container_images_in_every_descendant_folder_archiv
         (
             "knight.zip",
             [
-                "knight/images/group.jpg",
-                "knight/images/knight.jpg",
-                "knight/models/knight.zip",
+                "images/group.jpg",
+                "images/knight.jpg",
+                "models/knight.zip",
             ],
         ),
     ]
@@ -414,8 +414,8 @@ async def test_should_zip_split_archives_with_the_rest_of_the_folder(tmp_path) -
         (
             "dragon.zip",
             [
-                "002501-dragon/models/dragon.part1.rar",
-                "002501-dragon/models/dragon.part2.rar",
+                "models/dragon.part1.rar",
+                "models/dragon.part2.rar",
             ],
         ),
     ]

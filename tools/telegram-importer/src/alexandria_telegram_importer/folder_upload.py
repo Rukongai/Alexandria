@@ -151,10 +151,11 @@ def build_folder_archive(
 ) -> Path:
     """Create one ZIP of the complete staged model folder.
 
-    Alexandria receives the operator's curated folder as one archive, rather
-    than a models-only upload followed by separate image attachments. Inherited
-    container images are placed under the model folder's `images/` directory,
-    preserving the staged flow's existing image inheritance behavior.
+    Alexandria receives the operator's curated folder contents as one archive,
+    rather than a models-only upload followed by separate image attachments.
+    Keeping metadata.json at the archive root lets Alexandria prefill the
+    pending review session. Inherited container images are placed under the
+    model folder's `images/` directory, preserving existing image inheritance.
     """
     if not folder.models_dir.is_dir():
         raise ValueError(f"{folder.models_dir} is missing")
@@ -163,12 +164,12 @@ def build_folder_archive(
 
     archive_path = work_dir / f"{safe_filename(model_name, 'model')}.zip"
     members = {
-        str(path.relative_to(folder.path.parent)): path
+        str(path.relative_to(folder.path)): path
         for path in sorted(folder.path.rglob("*"))
         if path.is_file()
     }
     for image in images:
-        members[str(Path(folder.path.name) / IMAGES_DIRNAME / image.name)] = image
+        members[str(Path(IMAGES_DIRNAME) / image.name)] = image
 
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, path in sorted(members.items()):
