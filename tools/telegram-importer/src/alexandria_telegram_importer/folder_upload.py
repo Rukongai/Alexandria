@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import zipfile
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -172,7 +172,9 @@ def build_folder_archive(
     for image in images:
         members[str(Path(IMAGES_DIRNAME) / image.name)] = image
 
-    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(
+        archive_path, "w", compression=zipfile.ZIP_DEFLATED
+    ) as archive:
         for name, path in sorted(members.items()):
             archive.write(path, arcname=name)
     return archive_path
@@ -244,6 +246,26 @@ def _prune_empty_containers(directory: Path, root: Path) -> None:
         directory = directory.parent
 
 
+def delete_committed(folder: Path, root: Path) -> bool:
+    """Delete one durably recorded committed folder and prune empty containers."""
+    root = root.resolve()
+    lexical = folder.absolute()
+    if lexical.is_symlink():
+        raise ValueError(f"Refusing to delete symlinked committed folder {lexical}")
+    resolved = lexical.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"Committed folder escapes the staging root: {resolved}")
+    if not resolved.exists():
+        return False
+    if not resolved.is_dir():
+        raise ValueError(f"Committed folder is not a directory: {resolved}")
+    parent = resolved.parent
+    shutil.rmtree(resolved)
+    _prune_empty_containers(parent, root)
+    log.info("Deleted committed local folder %s", resolved)
+    return True
+
+
 def _uploaded_at() -> dict[str, str]:
     return {"uploadedAt": datetime.now(UTC).isoformat()}
 
@@ -267,13 +289,21 @@ class FolderUploader:
         work_root: Path,
         concurrency: int = 1,
         progress: ProgressReporter | None = None,
+        delete_completed: bool = False,
+        on_committed: Callable[[Path, dict[str, Any]], None] | None = None,
     ) -> None:
         if concurrency < 1:
             raise ValueError("Upload concurrency must be at least 1")
+        if delete_completed and on_committed is None:
+            raise ValueError(
+                "Deleting completed folders requires a durable on_committed callback"
+            )
         self.alexandria = alexandria
         self.work_root = work_root
         self.concurrency = concurrency
         self.progress: ProgressReporter = progress or NullProgress()
+        self.delete_completed = delete_completed
+        self.on_committed = on_committed
 
     def image_paths(self, folder: ModelFolder) -> tuple[Path, ...]:
         """Every image to append, with the model's own file winning a name clash."""
@@ -299,7 +329,9 @@ class FolderUploader:
             }
             if missing := selected - discoverable:
                 joined = ", ".join(str(path) for path in sorted(missing))
-                raise ValueError(f"Selected staging folders are not uploadable: {joined}")
+                raise ValueError(
+                    f"Selected staging folders are not uploadable: {joined}"
+                )
             found = [folder for folder in found if folder.path.resolve() in selected]
             ambiguous = [
                 (path, reason)
@@ -362,9 +394,18 @@ class FolderUploader:
                 {"error": str(error), **session_out, **_failed_at()},
             )
             return "failed"
-        dispose(
-            folder.path, root, UPLOADED_DIRNAME, {"modelId": model_id, **_uploaded_at()}
-        )
+        if self.delete_completed:
+            result = {"modelId": model_id, **session_out, **_uploaded_at()}
+            assert self.on_committed is not None
+            self.on_committed(folder.path, result)
+            delete_committed(folder.path, root)
+        else:
+            dispose(
+                folder.path,
+                root,
+                UPLOADED_DIRNAME,
+                {"modelId": model_id, **_uploaded_at()},
+            )
         log.info("Uploaded %s as Alexandria model %s", folder.path.name, model_id)
         return "completed"
 
@@ -407,7 +448,9 @@ class FolderUploader:
                             on_progress=transfer.advance,
                         ),
                     )
-                session_id = await self.alexandria.complete_upload(upload_ids, multipart=False)
+                session_id = await self.alexandria.complete_upload(
+                    upload_ids, multipart=False
+                )
             except Exception:
                 await self.alexandria.abort_uploads(upload_ids)
                 raise
@@ -419,7 +462,9 @@ class FolderUploader:
                 session_id, {"ready_for_review"}
             )
             if session["status"] == "error":
-                raise RuntimeError(session.get("error") or "Alexandria ingestion failed")
+                raise RuntimeError(
+                    session.get("error") or "Alexandria ingestion failed"
+                )
 
             handle.phase("committing")
             await self.alexandria.commit(
@@ -428,7 +473,9 @@ class FolderUploader:
                 description=effective.get("description"),
                 batch_metadata=payload,
             )
-            committed = await self.alexandria.wait_for_session(session_id, {"committed"})
+            committed = await self.alexandria.wait_for_session(
+                session_id, {"committed"}
+            )
             if committed["status"] == "error":
                 raise RuntimeError(committed.get("error") or "Alexandria commit failed")
             return committed["modelId"]
@@ -448,7 +495,9 @@ def describe_staging(root: Path) -> str:
             lines.append(f"  SKIP  {folder.path.relative_to(root)}: {error}")
             continue
         images = sum(
-            1 for directory in folder.image_dirs for item in directory.iterdir()
+            1
+            for directory in folder.image_dirs
+            for item in directory.iterdir()
             if item.is_file()
         )
         lines.append(

@@ -347,6 +347,7 @@ async def test_should_continue_with_the_next_codex_batch_after_upload(
     stage_calls: list[set[str]] = []
     uploads: list[tuple[Path, ...]] = []
     statuses: list[tuple[str, str]] = []
+    delete_modes: list[bool] = []
     logins: list[str] = []
     closes: list[str] = []
 
@@ -371,18 +372,52 @@ async def test_should_continue_with_the_next_codex_batch_after_upload(
 
     class FakeUploader:
         def __init__(self, **kwargs) -> None:
-            pass
+            delete_modes.append(kwargs["delete_completed"])
+            self.on_committed = kwargs["on_committed"]
 
         async def run(self, root, *, include_paths):
             uploads.append(tuple(include_paths))
+            for index, path in enumerate(include_paths, start=1):
+                self.on_committed(
+                    path,
+                    {"sessionId": f"session-{index}", "modelId": f"model-{index}"},
+                )
             return {"completed": len(include_paths)}
 
     class FakeTracker:
+        def __init__(self) -> None:
+            self.records = {
+                "first-key": item("first-key", "first"),
+                "second-key": item("second-key", "second"),
+            }
+
         def staged_by_status(self, channel_id, states):
             return ()
 
         def update_staged_status(self, bundle_key, *, status):
             statuses.append((bundle_key, status))
+            self.records[bundle_key] = replace(self.records[bundle_key], status=status)
+            return self.records[bundle_key]
+
+        def record_staged_committed_output(
+            self,
+            bundle_key,
+            *,
+            output_folder,
+            result,
+        ):
+            record = self.records[bundle_key]
+            report = dict(record.cleanup_report or {})
+            report["committedOutputs"] = {output_folder: result}
+            self.records[bundle_key] = replace(
+                record,
+                status="committed_cleanup_pending",
+                cleanup_report=report,
+            )
+            return self.records[bundle_key]
+
+        def get_staged(self, bundle_key):
+            return self.records[bundle_key]
 
     class FakeClient:
         async def close(self) -> None:
@@ -430,6 +465,7 @@ async def test_should_continue_with_the_next_codex_batch_after_upload(
     assert uploads == [((first_path.resolve()),), ((second_path.resolve()),)]
     assert logins == ["login"]
     assert closes == ["close"]
+    assert delete_modes == [True, True]
     assert statuses == [
         ("first-key", "uploading"),
         ("first-key", "uploaded"),
@@ -703,6 +739,159 @@ async def test_should_record_malformed_cleanup_and_continue_with_its_sibling(
     assert [bundle.bundle_key for bundle in result.ready_bundles] == ["good"]
     assert ("bad", "cleanup_failed") in transitions
     assert ("good", "ready") in transitions
+
+
+async def test_should_finish_pending_local_deletion_after_restart(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from alexandria_telegram_importer import cli
+    from alexandria_telegram_importer.tracker import ImportTracker
+
+    staging_dir = tmp_path / "staging"
+    folder = staging_dir / "first"
+    folder.mkdir(parents=True)
+    (folder / "archive.7z").write_bytes(b"committed")
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        tracker.record_staged(
+            bundle_key="first-key",
+            source_channel_id=-100123,
+            folder_name="first",
+            model_message_ids=(1,),
+        )
+        tracker.update_staged_cleanup(
+            "first-key",
+            status="ready",
+            output_folders=("first",),
+            report={"status": "ready"},
+        )
+        tracker.update_staged_status("first-key", status="uploading")
+        tracker.record_staged_committed_output(
+            "first-key",
+            output_folder="first",
+            result={"sessionId": "session-1", "modelId": "model-1"},
+        )
+
+        class FakeRunner:
+            def __init__(self, **kwargs) -> None:
+                self.reference_folder = kwargs["reference_folder"]
+
+            def preflight(self) -> None:
+                return None
+
+        async def no_more_bundles(**kwargs):
+            return cli.StagingResult((), (), 0)
+
+        monkeypatch.setattr(cli, "CodexCleanupRunner", FakeRunner)
+        monkeypatch.setattr(cli, "stage_bundles", no_more_bundles)
+        monkeypatch.setattr(cli, "_login", lambda args: _fail("must not upload"))
+        args = SimpleNamespace(
+            cleanup_skill=tmp_path / "SKILL.md",
+            cleanup_reference=tmp_path / "reference",
+            codex_command="codex",
+            cleanup_timeout=60,
+            cleanup_concurrency=1,
+            concurrency=1,
+            stage=1,
+            staging_dir=staging_dir,
+        )
+
+        exit_code = await cli.run_codex_staged_batches(
+            args=args,
+            telegram=SimpleNamespace(channel_id=-100123),
+            tracker=tracker,
+            refs=[],
+            progress=None,
+            work_root=tmp_path / "work",
+        )
+
+        assert exit_code == 0
+        assert not folder.exists()
+        assert tracker.get_staged("first-key").status == "uploaded"
+    finally:
+        tracker.close()
+
+
+async def test_should_retain_uncommitted_split_outputs_after_restart(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from alexandria_telegram_importer import cli
+    from alexandria_telegram_importer.tracker import ImportTracker
+
+    staging_dir = tmp_path / "staging"
+    committed_folder = staging_dir / "release" / "one"
+    remaining_folder = staging_dir / "release" / "two"
+    committed_folder.mkdir(parents=True)
+    remaining_folder.mkdir()
+    (committed_folder / "archive.7z").write_bytes(b"committed")
+    (remaining_folder / "archive.7z").write_bytes(b"not committed")
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        tracker.record_staged(
+            bundle_key="release-key",
+            source_channel_id=-100123,
+            folder_name="release",
+            model_message_ids=(1, 2),
+        )
+        tracker.update_staged_cleanup(
+            "release-key",
+            status="ready",
+            output_folders=("release/one", "release/two"),
+            report={"status": "ready"},
+        )
+        tracker.update_staged_status("release-key", status="uploading")
+        tracker.record_staged_committed_output(
+            "release-key",
+            output_folder="release/one",
+            result={"sessionId": "session-1", "modelId": "model-1"},
+        )
+
+        class FakeRunner:
+            def __init__(self, **kwargs) -> None:
+                self.reference_folder = kwargs["reference_folder"]
+
+            def preflight(self) -> None:
+                return None
+
+        async def no_more_bundles(**kwargs):
+            return cli.StagingResult((), (), 0)
+
+        monkeypatch.setattr(cli, "CodexCleanupRunner", FakeRunner)
+        monkeypatch.setattr(cli, "stage_bundles", no_more_bundles)
+        monkeypatch.setattr(cli, "_login", lambda args: _fail("must not upload"))
+        args = SimpleNamespace(
+            cleanup_skill=tmp_path / "SKILL.md",
+            cleanup_reference=tmp_path / "reference",
+            codex_command="codex",
+            cleanup_timeout=60,
+            cleanup_concurrency=1,
+            concurrency=1,
+            stage=2,
+            staging_dir=staging_dir,
+        )
+
+        exit_code = await cli.run_codex_staged_batches(
+            args=args,
+            telegram=SimpleNamespace(channel_id=-100123),
+            tracker=tracker,
+            refs=[],
+            progress=None,
+            work_root=tmp_path / "work",
+        )
+
+        staged = tracker.get_staged("release-key")
+        assert exit_code == 1
+        assert not committed_folder.exists()
+        assert remaining_folder.is_dir()
+        assert staged.status == "needs_review"
+        assert staged.cleanup_report["committedOutputs"]["release/one"] == {
+            "sessionId": "session-1",
+            "modelId": "model-1",
+        }
+    finally:
+        tracker.close()
 
 
 def _forbidden_telegram(**kwargs):
