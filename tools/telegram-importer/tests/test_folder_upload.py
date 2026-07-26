@@ -88,7 +88,11 @@ def test_should_build_the_inheritance_chain_from_root_to_leaf(tmp_path) -> None:
     [folder], _ = discover(tmp_path)
 
     # chain[0] is the staging root itself; the release folder follows it.
-    assert [level.get("artist") for level in folder.chain] == [None, "Foo Studios", None]
+    assert [level.get("artist") for level in folder.chain] == [
+        None,
+        "Foo Studios",
+        None,
+    ]
     assert folder.chain[-1]["modelName"] == "Knight"
     assert folder.metadata["artist"] == "Foo Studios"
     assert folder.metadata["tags"] == ["dragon"]
@@ -118,7 +122,9 @@ def test_should_name_a_model_from_its_folder_when_metadata_is_absent(tmp_path) -
 
 def test_should_prefer_an_explicit_model_name_over_the_folder_name(tmp_path) -> None:
     make_folder(
-        tmp_path / "002501-dragon", models=["a.zip"], metadata={"modelName": "Real Name"}
+        tmp_path / "002501-dragon",
+        models=["a.zip"],
+        metadata={"modelName": "Real Name"},
     )
 
     [folder], _ = discover(tmp_path)
@@ -426,7 +432,12 @@ async def test_should_move_a_folder_to_failed_when_upload_raises(tmp_path) -> No
     alexandria = FakeAlexandria()
     alexandria.fail_commit = True
 
-    uploader = FolderUploader(alexandria=alexandria, work_root=tmp_path / "work")
+    uploader = FolderUploader(
+        alexandria=alexandria,
+        work_root=tmp_path / "work",
+        delete_completed=True,
+        on_committed=lambda path, result: None,
+    )
     outcomes = await uploader.run(tmp_path)
 
     assert outcomes["failed"] == 1
@@ -437,6 +448,30 @@ async def test_should_move_a_folder_to_failed_when_upload_raises(tmp_path) -> No
         ),
     )
     assert "commit exploded" in payload["result"]["error"]
+
+
+async def test_should_delete_a_committed_folder_when_requested(tmp_path) -> None:
+    folder = make_folder(tmp_path / "002501-dragon", models=["dragon.7z"])
+    alexandria = FakeAlexandria()
+    committed: list[dict] = []
+
+    def record_commit(path, result) -> None:
+        assert path.is_dir()
+        committed.append(result)
+
+    outcomes = await FolderUploader(
+        alexandria=alexandria,
+        work_root=tmp_path / "work",
+        delete_completed=True,
+        on_committed=record_commit,
+    ).run(tmp_path)
+
+    assert outcomes == {"completed": 1}
+    assert not folder.exists()
+    assert not (tmp_path / "uploaded").exists()
+    assert alexandria.commits[0]["modelName"] == "dragon"
+    assert committed[0]["sessionId"] == "session-1"
+    assert committed[0]["modelId"] == "model-1"
 
 
 async def test_should_move_an_ambiguous_folder_to_failed_without_uploading(

@@ -143,7 +143,12 @@ against their persisted receipt and current files before upload resumes; an inte
 record becomes `needs_review` because replaying an indeterminate remote commit could create a
 duplicate. `downloaded`, `cleaning`, and `cleanup_failed` records resume cleanup before any new
 downloads. `needs_review` and `upload_failed` remain for operator intervention. Codex never receives
-Alexandria upload authority.
+Alexandria upload authority. After Alexandria confirms a model is committed, automated mode deletes
+that validated local output folder only after durably recording its session and model identity in a
+`committed_cleanup_pending` lifecycle state, then finalizes the bundle as `uploaded`. Startup finishes
+pending deletions without replaying the remote commit; a partially committed split retains its
+uncommitted outputs for review. Manual staged uploads continue moving completed folders beneath
+`uploaded/` for operator retention.
 
 Duplicate detection is local to the utility's state database and has two layers. Before download, a
 signature over the complete logical model's Telegram document/photo IDs and reported sizes
