@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { CollectionDetail, DetectedImportMetadata } from '@alexandria/shared';
+import type { CollectionDetail, DetectedImportMetadata, MetadataFieldDetail } from '@alexandria/shared';
 import { BatchMetadataForm } from './BatchMetadataForm';
 
 vi.mock('../../api/collections', () => ({
@@ -9,6 +9,7 @@ vi.mock('../../api/collections', () => ({
 }));
 
 vi.mock('../../api/metadata', () => ({
+  getFields: vi.fn(),
   getFieldValues: vi.fn(),
 }));
 
@@ -18,7 +19,7 @@ vi.mock('../../api/models', async (importOriginal) => {
 });
 
 import { getCollections } from '../../api/collections';
-import { getFieldValues } from '../../api/metadata';
+import { getFields, getFieldValues } from '../../api/metadata';
 import { commitImportSession } from '../../api/models';
 
 const collection: CollectionDetail = {
@@ -33,6 +34,18 @@ const collection: CollectionDetail = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
+const characterField: MetadataFieldDetail = {
+  id: '33333333-3333-4333-8333-333333333333',
+  name: 'Character',
+  slug: 'character-6erm',
+  type: 'text',
+  isDefault: false,
+  isFilterable: true,
+  isBrowsable: true,
+  config: null,
+  sortOrder: 7,
+};
+
 function collectionSelect(): HTMLSelectElement {
   const select = screen.getByRole('option', { name: '— None —' }).closest('select');
   if (!select) throw new Error('collection select not found');
@@ -42,6 +55,7 @@ function collectionSelect(): HTMLSelectElement {
 describe('BatchMetadataForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getFields).mockResolvedValue([]);
     vi.mocked(getFieldValues).mockResolvedValue([]);
     vi.mocked(commitImportSession).mockResolvedValue({ modelId: 'model-1', jobId: 'job-1' });
   });
@@ -318,6 +332,34 @@ describe('BatchMetadataForm', () => {
     expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('Foo Studios');
     expect(screen.getByText('dragon')).toBeTruthy();
     expect(screen.queryByText('guessed')).toBeNull();
+  });
+
+  it('uses configured field names for metadata from an archive', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+    vi.mocked(getFields).mockResolvedValue([characterField]);
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+            metadataFile: { metadata: { 'character-6erm': 'Rukia' } },
+          }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText('Character')).toHaveValue('Rukia'));
+    expect(screen.queryByLabelText('character 6erm')).toBeNull();
   });
 
   it('lets a saved draft win over the archive metadata.json', () => {

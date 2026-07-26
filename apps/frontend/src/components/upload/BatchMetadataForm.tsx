@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Loader2, FolderOpen, User } from 'lucide-react';
 import type { DetectedImportMetadata, BatchUploadMetadata } from '@alexandria/shared';
 import { getCollections } from '../../api/collections';
-import { getFieldValues } from '../../api/metadata';
+import { getFields, getFieldValues } from '../../api/metadata';
 import { useCommitSession } from '../../hooks/use-import-sessions';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -189,6 +189,12 @@ export function BatchMetadataForm({
     queryFn: () => getFieldValues('tags'),
     staleTime: 60_000,
   });
+  const { data: metadataFields = [] } = useQuery({
+    queryKey: ['metadata-fields'],
+    queryFn: getFields,
+    staleTime: 60_000,
+  });
+  const metadataFieldNames = new Map(metadataFields.map((field) => [field.slug, field.name]));
 
   const commitMutation = useCommitSession();
 
@@ -356,7 +362,7 @@ export function BatchMetadataForm({
             {Object.entries(form.metadata).map(([field, value]) => (
               <div key={field} className="grid grid-cols-[minmax(90px,0.35fr)_minmax(0,1fr)] items-center gap-2">
                 <Label htmlFor={`draft-metadata-${field}`} className="truncate text-[12px] capitalize">
-                  {field.replace(/[-_]+/g, ' ')}
+                  {metadataFieldNames.get(field) ?? field.replace(/[-_]+/g, ' ')}
                 </Label>
                 {form.metadataTypes[field] === 'boolean' ? (
                   <Checkbox
