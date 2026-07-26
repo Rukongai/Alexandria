@@ -522,6 +522,16 @@ interface FileTreeNode {
   children?: FileTreeNode[]; // present for directories only
 }
 
+interface ArchiveEntry {
+  path: string;              // safe archive-relative path using forward slashes
+  sizeBytes: number;         // zero for inferred directories
+  isDirectory: boolean;
+}
+
+interface ArchiveContents {
+  entries: ArchiveEntry[];
+}
+
 interface CompressModelFolderRequest {
   path: string; // relative path of the folder within the model; 1–1,000 characters
 }

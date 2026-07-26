@@ -41,6 +41,7 @@ import {
   commitImportSessionSchema,
   extractImportSessionArchiveSchema,
   importSessionIdParamsSchema,
+  archiveEntryQuerySchema,
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
 import { requireLibrary } from '../middleware/library.js';
@@ -55,7 +56,19 @@ import { storageService } from '../services/storage.service.js';
 import { uploadService } from '../services/upload.service.js';
 import { createModelArchive } from '../services/model-download.service.js';
 import { modelFolderArchiveService } from '../services/model-folder-archive.service.js';
+import { archiveBrowserService } from '../services/archive-browser.service.js';
 import { notFound, validationError } from '../utils/errors.js';
+
+function archiveEntryContentDisposition(filename: string): string {
+  const fallback = filename
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7e]/g, '_')
+    .replace(/["\\\r\n]/g, '_');
+  const utf8Filename = encodeURIComponent(filename).replace(/[!'()*]/g, (character) => (
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  ));
+  return `attachment; filename="${fallback || 'download'}"; filename*=UTF-8''${utf8Filename}`;
+}
 
 export async function modelRoutes(app: FastifyInstance): Promise<void> {
   // GET / — browse/search models with filters, sorting, pagination
@@ -582,6 +595,43 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const tree = presenterService.buildFileTree(files, folders);
 
       return reply.status(200).send({ data: tree, meta: null, errors: null });
+    },
+  );
+
+  // GET /:id/files/:fileId/archive — list safe entries in a stored archive
+  app.get(
+    '/:id/files/:fileId/archive',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const { id, fileId } = request.params as { id: string; fileId: string };
+      const contents = await archiveBrowserService.list(id, fileId, request.libraryId!);
+      return reply.status(200).send({ data: contents, meta: null, errors: null });
+    },
+  );
+
+  // GET /:id/files/:fileId/archive/download?path=... — download one listed archive entry
+  app.get(
+    '/:id/files/:fileId/archive/download',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const parsed = archiveEntryQuerySchema.safeParse(request.query);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw validationError(issue?.message ?? 'Validation failed', issue?.path.join('.') ?? 'path');
+      }
+      const { id, fileId } = request.params as { id: string; fileId: string };
+      const entry = await archiveBrowserService.download(
+        id,
+        fileId,
+        request.libraryId!,
+        parsed.data.path,
+      );
+      return reply
+        .header('Content-Type', 'application/octet-stream')
+        .header('Content-Length', entry.sizeBytes)
+        .header('Content-Disposition', archiveEntryContentDisposition(entry.filename))
+        .header('Cache-Control', 'private, no-store')
+        .send(entry.stream);
     },
   );
 

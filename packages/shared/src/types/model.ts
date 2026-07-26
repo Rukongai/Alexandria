@@ -102,6 +102,17 @@ export interface FileTreeNode {
   children?: FileTreeNode[];
 }
 
+/** One safe, display-ready entry discovered inside a stored archive. */
+export interface ArchiveEntry {
+  path: string;
+  sizeBytes: number;
+  isDirectory: boolean;
+}
+
+export interface ArchiveContents {
+  entries: ArchiveEntry[];
+}
+
 export interface CreateModelFolderRequest {
   path: string;
 }

@@ -167,6 +167,29 @@ describe('FileTree', () => {
     expect(onExtractArchive).toHaveBeenCalledWith('a1', archiveName);
   });
 
+  it('offers archive browsing without changing the extraction action', () => {
+    const onBrowseArchive = vi.fn();
+    const onExtractArchive = vi.fn();
+    render(
+      <FileTree
+        tree={[{
+          name: 'parts.7z',
+          type: 'file',
+          fileType: 'other',
+          id: 'a1',
+          isDuplicate: false,
+        }]}
+        modelId="m1"
+        onBrowseArchive={onBrowseArchive}
+        onExtractArchive={onExtractArchive}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse parts.7z' }));
+    expect(onBrowseArchive).toHaveBeenCalledWith('a1', 'parts.7z');
+    expect(onExtractArchive).not.toHaveBeenCalled();
+  });
+
   it('fires onOpenText with the reconstructed relative path for a text file', () => {
     const onOpenText = vi.fn();
     render(<FileTree tree={TREE} modelId="m1" onOpenText={onOpenText} />);

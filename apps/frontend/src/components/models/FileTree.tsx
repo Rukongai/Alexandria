@@ -71,6 +71,7 @@ interface FileNodeProps {
   onRenameFile?: (fileId: string, filename: string) => void;
   onMoveFile?: (fileId: string, parentPath: string) => Promise<void>;
   onDeleteFile?: (fileId: string, name: string) => void;
+  onBrowseArchive?: (fileId: string, name: string) => void;
   onExtractArchive?: (fileId: string, name: string) => void;
   onRenameFolder?: (path: string, name: string) => void;
   onMoveFolder?: (path: string, parentPath: string) => Promise<void>;
@@ -346,6 +347,7 @@ function FileNode({
   onRenameFile,
   onMoveFile,
   onDeleteFile,
+  onBrowseArchive,
   onExtractArchive,
   onRenameFolder,
   onMoveFolder,
@@ -476,6 +478,7 @@ function FileNode({
                 onRenameFile={onRenameFile}
                 onMoveFile={onMoveFile}
                 onDeleteFile={onDeleteFile}
+                onBrowseArchive={onBrowseArchive}
                 onExtractArchive={onExtractArchive}
                 onRenameFolder={onRenameFolder}
                 onMoveFolder={onMoveFolder}
@@ -497,6 +500,7 @@ function FileNode({
   const parentPath = joinPath(pathPrefix);
   const fileSegments = [...pathPrefix, node.name];
   const canPreviewText = !selectionMode && Boolean(onOpenText) && isTextPreviewFileName(node.name);
+  const canBrowseArchive = !selectionMode && Boolean(node.id) && Boolean(onBrowseArchive) && isArchiveFileName(node.name);
   const canExtractArchive = !selectionMode && Boolean(node.id) && isArchiveFileName(node.name);
   const isImage = node.fileType === 'image' && Boolean(node.id);
   const isSelectedImage = isImage && node.id === selectedImageFileId;
@@ -602,6 +606,22 @@ function FileNode({
           Preview
         </button>
       )}
+      {canBrowseArchive && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onBrowseArchive?.(node.id!, node.name);
+          }}
+          disabled={disabled}
+          className="flex flex-shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-primary opacity-0 transition-all hover:bg-primary/10 focus:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+          aria-label={`Browse ${node.name}`}
+          title={`Browse ${node.name}`}
+        >
+          <Archive className="h-3.5 w-3.5" />
+          Browse
+        </button>
+      )}
       {canExtractArchive && (
         <button
           type="button"
@@ -638,6 +658,12 @@ function FileNode({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-36">
+            {canBrowseArchive && (
+              <DropdownMenuItem onClick={() => onBrowseArchive?.(node.id!, node.name)}>
+                <Archive className="mr-2 h-3.5 w-3.5" />
+                Browse
+              </DropdownMenuItem>
+            )}
             {canExtractArchive && (
               <DropdownMenuItem onClick={() => onExtractArchive?.(node.id!, node.name)}>
                 <PackageOpen className="mr-2 h-3.5 w-3.5" />
@@ -740,6 +766,7 @@ interface FileTreeProps {
   onRenameFile?: (fileId: string, filename: string) => void;
   onMoveFile?: (fileId: string, parentPath: string) => Promise<void>;
   onDeleteFile?: (fileId: string, name: string) => void;
+  onBrowseArchive?: (fileId: string, name: string) => void;
   onExtractArchive?: (fileId: string, name: string) => void;
   onMoveFiles?: (fileIds: string[], parentPath: string) => Promise<void>;
   onDeleteFiles?: (fileIds: string[]) => void;
@@ -764,6 +791,7 @@ export function FileTree({
   onRenameFile,
   onMoveFile,
   onDeleteFile,
+  onBrowseArchive,
   onExtractArchive,
   onMoveFiles,
   onDeleteFiles,
@@ -1086,6 +1114,7 @@ export function FileTree({
               onRenameFile={onRenameFile}
               onMoveFile={onMoveFile}
               onDeleteFile={onDeleteFile}
+              onBrowseArchive={onBrowseArchive}
               onExtractArchive={onExtractArchive}
               onRenameFolder={onRenameFolder}
               onMoveFolder={onMoveFolder}

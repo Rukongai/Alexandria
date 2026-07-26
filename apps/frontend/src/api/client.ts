@@ -70,8 +70,39 @@ async function request<T>(
   return body;
 }
 
-export async function get<T>(path: string): Promise<ApiResponse<T>> {
-  return request<T>(path, { method: 'GET' });
+export async function get<T>(path: string, signal?: AbortSignal): Promise<ApiResponse<T>> {
+  return request<T>(path, { method: 'GET', signal });
+}
+
+/** Fetch a binary response while preserving the active library scope. */
+export async function getBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  if (activeLibraryId) headers[LIBRARY_HEADER] = activeLibraryId;
+
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: 'GET',
+    credentials: 'include',
+    headers,
+    signal,
+  });
+
+  if (!response.ok) {
+    let body: ApiResponse<unknown> | null = null;
+    try {
+      body = await response.json() as ApiResponse<unknown>;
+    } catch {
+      // Keep the generic status error when a proxy did not return the API envelope.
+    }
+    const firstError = body?.errors?.[0];
+    throw new ApiRequestError(
+      response.status,
+      firstError?.code ?? 'UNKNOWN_ERROR',
+      firstError?.message ?? `Request failed with status ${response.status}`,
+      firstError?.field ?? null,
+    );
+  }
+
+  return response.blob();
 }
 
 export async function post<T>(
