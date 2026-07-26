@@ -24,6 +24,7 @@ const BUILTIN_FIELD_OPTIONS: { field: BuiltinRuleField; label: string }[] = [
   { field: 'description', label: 'Description' },
   { field: 'tag', label: 'Tag' },
   { field: 'status', label: 'Status' },
+  { field: 'hasDuplicates', label: 'Has duplicates' },
   { field: 'fileType', label: 'File type' },
   { field: 'manualPreview', label: 'Manually set preview' },
 ];
@@ -176,6 +177,9 @@ function ValueInput({
   }
   if (field.source === 'builtin' && field.field === 'fileType') {
     return <EnumSelect options={FILE_TYPE_OPTIONS} value={value} onChange={onChange} />;
+  }
+  if (field.source === 'builtin' && field.field === 'hasDuplicates') {
+    return <EnumSelect options={['true', 'false']} value={value} onChange={onChange} />;
   }
   // Metadata enum / boolean
   if (def?.type === 'boolean') {

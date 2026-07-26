@@ -95,6 +95,16 @@ function buildBuiltinCondition(leaf: RuleCondition): SQL {
       return illegal(leaf);
     }
 
+    case 'hasDuplicates': {
+      const value = requireValue(leaf);
+      if (value !== 'true' && value !== 'false') {
+        throw validationError("Has duplicates must be either 'true' or 'false'");
+      }
+      if (op === 'is') return sql`${models.isDuplicate} = ${value === 'true'}`;
+      if (op === 'isNot') return sql`${models.isDuplicate} <> ${value === 'true'}`;
+      return illegal(leaf);
+    }
+
     case 'manualPreview': {
       if (op === 'exists') return sql`${models.previewImageFileId} IS NOT NULL`;
       if (op === 'notExists') return sql`${models.previewImageFileId} IS NULL`;

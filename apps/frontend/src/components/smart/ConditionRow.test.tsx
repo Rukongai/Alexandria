@@ -4,6 +4,7 @@ import type { DraftCondition } from '../../hooks/use-smart-collection-draft';
 import { ConditionRow } from './ConditionRow';
 
 const manualPreviewField = 'manualPreview';
+const hasDuplicatesField = 'hasDuplicates';
 
 function makeNode(overrides: Partial<DraftCondition> = {}): DraftCondition {
   return {
@@ -62,5 +63,24 @@ describe('ConditionRow', () => {
     expect(operatorPicker.querySelectorAll('option')).toHaveLength(2);
     expect(screen.getAllByRole('combobox')).toHaveLength(2);
     expect(screen.queryByRole('textbox', { name: 'Value' })).not.toBeInTheDocument();
+  });
+
+  it('should offer a boolean value for the has duplicates rule', () => {
+    render(
+      <ConditionRow
+        node={makeNode({
+          field: { source: 'builtin', field: hasDuplicatesField },
+          operator: 'is',
+          value: 'true',
+        })}
+        fields={[]}
+        onChange={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('combobox', { name: 'Field' })).toHaveDisplayValue('Has duplicates');
+    expect(screen.getByRole('combobox', { name: 'Value' })).toHaveDisplayValue('true');
+    expect(screen.getByRole('combobox', { name: 'Value' })).toHaveTextContent('false');
   });
 });
