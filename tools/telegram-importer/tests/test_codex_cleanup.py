@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from alexandria_telegram_importer.codex_cleanup import (
+    CLEANUP_OUTPUT_SCHEMA,
     CleanupReceipt,
     CodexCleanupRunner,
     sanitized_codex_environment,
@@ -79,6 +80,35 @@ def test_should_remove_importer_credentials_from_the_codex_environment() -> None
         "PATH": "/bin",
         "CODEX_HOME": "/codex",
     }
+
+
+def test_should_use_the_codex_supported_array_schema_subset() -> None:
+    assert CLEANUP_OUTPUT_SCHEMA["properties"]["outputFolders"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+
+
+def test_should_reject_duplicate_output_folders_after_parsing(tmp_path) -> None:
+    input_folder = tmp_path / "input"
+    input_folder.mkdir()
+    with pytest.raises(Exception, match="duplicate output folder"):
+        CleanupReceipt.from_payload(
+            {
+                "status": "ready",
+                "inputFolder": str(input_folder),
+                "outputFolders": [str(input_folder), str(input_folder)],
+                "summary": "prepared",
+                "warnings": [],
+                "checks": {
+                    "archivesTested": True,
+                    "metadataValid": True,
+                    "imagesFlat": True,
+                    "splitComplete": True,
+                },
+            },
+            input_folder=input_folder,
+        )
 
 
 def test_should_validate_one_ready_model_folder(tmp_path) -> None:
