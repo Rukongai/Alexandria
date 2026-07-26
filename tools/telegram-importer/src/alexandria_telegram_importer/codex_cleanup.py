@@ -232,6 +232,7 @@ class CodexCleanupRunner:
         skill_path: Path,
         reference_folder: Path,
         command: str = "codex",
+        model: str | None = None,
         timeout_seconds: int = DEFAULT_CLEANUP_TIMEOUT,
         environment: Mapping[str, str] | None = None,
     ) -> None:
@@ -240,6 +241,7 @@ class CodexCleanupRunner:
         self.skill_path = skill_path.resolve()
         self.reference_folder = reference_folder.resolve()
         self.command = command
+        self.model = model
         self.timeout_seconds = timeout_seconds
         self.environment = sanitized_codex_environment(environment)
 
@@ -283,7 +285,7 @@ class CodexCleanupRunner:
         receipt_path.unlink(missing_ok=True)
 
         prompt = self._prompt(input_folder)
-        command = (
+        command = [
             self.command,
             "exec",
             "--ephemeral",
@@ -298,8 +300,10 @@ class CodexCleanupRunner:
             str(schema_path),
             "--output-last-message",
             str(receipt_path),
-            prompt,
-        )
+        ]
+        if self.model:
+            command.extend(("--model", self.model))
+        command.append(prompt)
         log.info("Handing staged bundle %s to Codex", input_folder.name)
         try:
             process = await asyncio.create_subprocess_exec(
