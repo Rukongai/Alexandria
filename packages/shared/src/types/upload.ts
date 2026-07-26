@@ -95,6 +95,22 @@ export interface DetectedArchiveFile {
 }
 
 /**
+ * A `metadata.json` found at the root of an uploaded archive.
+ *
+ * Prefill only — never applied automatically at commit. The client always
+ * sends the metadata it intends, so detecting this file cannot change the
+ * outcome of any upload.
+ *
+ * `collectionId` is deliberately excluded: a collection UUID is meaningful
+ * only in the library it came from, so prefilling one would submit a
+ * destination the picker never displayed. `newCollectionName` is portable.
+ */
+export type DetectedMetadataFile = Pick<
+  BatchUploadMetadata,
+  'modelName' | 'description' | 'artist' | 'tags' | 'metadata' | 'newCollectionName'
+>;
+
+/**
  * Best-effort metadata detected during the scan phase. All fields are
  * heuristic and fully editable by the user before commit.
  */
@@ -108,6 +124,8 @@ export interface DetectedImportMetadata {
   folderStructure: DetectedFolderNode[];
   previewImages?: DetectedPreviewImage[];
   archives?: DetectedArchiveFile[];
+  /** Parsed root-level metadata.json, when the archive carried one. */
+  metadataFile?: DetectedMetadataFile;
 }
 
 /**

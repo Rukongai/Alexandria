@@ -38,6 +38,7 @@ import {
 import { createImportStrategy } from './import-strategy.service.js';
 import { parsePattern } from '../utils/pattern-parser.js';
 import { detectArchiveExtension, stripArchiveExtension } from '../utils/archive.js';
+import { readMetadataFile } from '../utils/metadata-file.js';
 import { generateSlug } from '../utils/slug.js';
 import { createLogger } from '../utils/logger.js';
 import { AppError, storageError, validationError } from '../utils/errors.js';
@@ -223,7 +224,12 @@ export class IngestionService {
           multipart.mode,
         )
         : await fileProcessingService.processArchive(tempFilePath, extractDir);
-      const detected = await this.detectImportMetadata(manifest, originalFilename, libraryId);
+      const detected = await this.detectImportMetadata(
+        manifest,
+        originalFilename,
+        libraryId,
+        extractDir,
+      );
       if (multipart) {
         detected.modelCount = 1;
       }
@@ -311,6 +317,7 @@ export class IngestionService {
         nextManifest,
         session.originalFilename,
         libraryId,
+        stagingRoot,
       );
       await importSessionService.update(sessionId, { manifest: nextManifest, detected });
       const updated = await importSessionService.getOwnedRow(sessionId, userId);
@@ -379,6 +386,7 @@ export class IngestionService {
         nextManifest,
         session.originalFilename,
         libraryId,
+        stagingRoot,
       );
       await importSessionService.update(sessionId, { manifest: nextManifest, detected });
       const updated = await importSessionService.getOwnedRow(sessionId, userId);
@@ -847,6 +855,7 @@ export class IngestionService {
     manifest: FileManifest,
     originalFilename: string,
     libraryId: string,
+    rootDir: string,
   ): Promise<DetectedImportMetadata> {
     const entries = manifest.entries;
     const folderStructure = this.buildFolderStructure(entries);
@@ -861,9 +870,10 @@ export class IngestionService {
     }
     const modelCount = Math.max(1, topLevelModelDirs.size + (looseModelFiles > 0 ? 1 : 0));
 
-    const [artist, tagsGuessed] = await Promise.all([
+    const [artist, tagsGuessed, metadataFile] = await Promise.all([
       this.guessArtist(entries, originalFilename, libraryId),
       this.guessTags(entries, libraryId),
+      readMetadataFile(rootDir),
     ]);
 
     return {
@@ -888,6 +898,9 @@ export class IngestionService {
           relativePath: entry.relativePath,
           sizeBytes: entry.sizeBytes,
         })),
+      // Prefill only. Never applied at commit — the client always sends the
+      // metadata it intends, so this cannot change an upload's outcome.
+      ...(metadataFile ? { metadataFile } : {}),
     };
   }
 

@@ -785,7 +785,18 @@ interface DetectedImportMetadata {
   artist: string | null;        // extracted from folder structure or filename
   tagsGuessed: string[];        // guessed from directory names; stopwords filtered
   folderStructure: DetectedFolderNode[];
+  metadataFile?: DetectedMetadataFile; // present only when the archive root carried a metadata.json
 }
+
+// A metadata.json found at the ROOT of an uploaded archive. A subset of
+// BatchUploadMetadata, so it needs no translation to be committed.
+// collectionId is deliberately excluded — a collection UUID is meaningful only in
+// the library it came from, so prefilling one would submit a destination the review
+// form's picker never displayed. newCollectionName is the portable form.
+type DetectedMetadataFile = Pick<
+  BatchUploadMetadata,
+  'modelName' | 'description' | 'artist' | 'tags' | 'metadata' | 'newCollectionName'
+>;
 
 // The DTO returned by GET /models/import-sessions and GET /models/import-sessions/:id
 interface ImportSession {
@@ -808,6 +819,24 @@ type ImportSessionStatus =
   | 'committing'
   | 'committed'
   | 'error';
+```
+
+**`metadataFile` is prefill only and is never applied automatically at commit.** The client
+always sends the metadata it intends in `batchMetadata`; detection only populates the review
+form so the value is visible before it is applied. This guarantees the detection cannot change
+the outcome of an upload that would otherwise have succeeded.
+
+Detection is best-effort and only consults the archive **root**. A `metadata.json` that is
+absent, unparseable, not a JSON object, a symlink, or larger than 64 KB is skipped without
+failing the scan, and a `metadata.json` nested inside the archive is ignored — it belongs to whatever the
+archive packages, not to the upload. Individual fields that fail validation are dropped rather
+than rejecting the whole file, and unknown keys (the Telegram importer writes `schemaVersion`,
+`source`, and `result`) are stripped.
+
+In the review form, an explicit `metadataFile` value takes precedence over the scan's `artist`
+and `tagsGuessed` heuristics; a saved `draftMetadata` takes precedence over both.
+
+```ts
 
 type ImportCommitPhase =
   | 'queued'

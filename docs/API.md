@@ -1012,7 +1012,12 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
       "totalSizeBytes": 8388608,
       "artist": "Maker Name",
       "tagsGuessed": ["fantasy", "bust"],
-      "folderStructure": [...]
+      "folderStructure": [...],
+      "metadataFile": {
+        "modelName": "Dragon Bust",
+        "artist": "Maker Name",
+        "tags": ["fantasy", "bust"]
+      }
     },
     "draftMetadata": {
       "modelName": "Dragon Bust",
@@ -1037,6 +1042,14 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
 ```
 
 `data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on scan success, `ready_for_review` → `committing` → `committed` after commit, or an active phase → `error` on failure. `draftMetadata` and `draftFileLayout` expose the current persisted review drafts and are still only staged state. Migration `0016_add_import_session_draft_file_layout.sql` keeps the layout separate from metadata, so a later explicit metadata form submission does not discard an accepted organization plan. The upload review form refreshes from a changed server draft, including an applied assistant proposal, but ordinary detected-metadata polling does not overwrite unsaved local form edits. Polling this endpoint after commit returns the same `commitProgress` contract as the list endpoint.
+
+`detected.metadataFile` is present only when the uploaded archive carried a `metadata.json` at its **root**. Its shape is a subset of the `batchMetadata` accepted by the commit endpoint — `modelName`, `description`, `artist`, `tags`, `metadata`, `newCollectionName`. `collectionId` is deliberately excluded: a collection UUID is meaningful only in the library it came from, and the review form's picker cannot render an option it does not have, so prefilling one would submit a destination the user was never shown. `newCollectionName` is the portable form.
+
+It is **prefill only and is never applied automatically at commit.** The client always sends the metadata it intends in `batchMetadata`; detection only populates the review form so the value is visible before it is applied. A commit that omits `batchMetadata` falls back to the persisted `draftMetadata` — it never falls back to `detected.metadataFile`. That distinction is the whole invariant: if the review form ever gains draft autosave, every prefill source becomes commit-reachable and this guarantee has to be re-established.
+
+Detection is best-effort and never fails a scan. A `metadata.json` that is absent, unparseable, not a JSON object, a symlink, or larger than 64 KB is skipped, and one nested inside the archive rather than at its root is ignored. Fields that fail their own validation are dropped rather than rejecting the whole file, and unknown keys are stripped — the Telegram importer writes `schemaVersion`, `source`, and `result` alongside the commit fields, and all three are ignored here. A file that leaves nothing usable yields no `metadataFile` at all rather than an empty object.
+
+`metadataFile` is read once, when the session's detection runs. The review form deliberately does not refresh `detected` while polling, so a `metadata.json` appended to an existing session after its scan is detected but does not repopulate an open form.
 
 While `status` is `committing`, `commitProgress` has this shape:
 
