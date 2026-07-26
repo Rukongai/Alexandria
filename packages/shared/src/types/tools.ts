@@ -50,3 +50,71 @@ export interface IgnoreDuplicatesResult {
   ignoredFileGroupCount: number;
   ignoredModelGroupCount: number;
 }
+
+/** One physical object removed while consolidating an exact duplicate model. */
+export interface ConsolidatedDuplicateFile {
+  id: string;
+  filename: string;
+  relativePath: string;
+  sizeBytes: number;
+  hash: string;
+}
+
+/** A generated rendition removed with one of the source files. */
+export interface ConsolidatedDuplicateThumbnail {
+  id: string;
+  sourceFileId: string;
+  sourceFilename: string;
+  width: number;
+  height: number;
+  format: string;
+}
+
+/** A source metadata value copied because the target did not have that field. */
+export interface ConsolidatedDuplicateMetadata {
+  fieldDefinitionId: string;
+  fieldName: string;
+  fieldSlug: string;
+  value: string;
+}
+
+export interface ConsolidatedDuplicateCollection {
+  id: string;
+  name: string;
+}
+
+export interface ConsolidatedDuplicateTag {
+  id: string;
+  name: string;
+}
+
+export interface ConsolidatedDuplicateModel {
+  id: string;
+  name: string;
+}
+
+/**
+ * The complete, per-model effect of consolidating one exact duplicate into a
+ * retained model. The preview and confirmed result intentionally have the
+ * same shape so the confirmation dialog can display every action up front.
+ */
+export interface ConsolidateDuplicateModelsResult {
+  sourceModel: ConsolidatedDuplicateModel;
+  targetModel: ConsolidatedDuplicateModel;
+  removedFiles: ConsolidatedDuplicateFile[];
+  removedThumbnails: ConsolidatedDuplicateThumbnail[];
+  copiedMetadata: ConsolidatedDuplicateMetadata[];
+  addedCollections: ConsolidatedDuplicateCollection[];
+  addedTags: ConsolidatedDuplicateTag[];
+  /** Compatibility summary for copiedMetadata.length. */
+  copiedMetadataFieldCount: number;
+  /** Compatibility summary for addedCollections.length. */
+  addedCollectionCount: number;
+  /** Compatibility summary for addedTags.length. */
+  addedTagCount: number;
+  deletedFileCount: number;
+  reclaimableBytes: number;
+  deletedSourceModelId: string;
+}
+
+export type ConsolidateDuplicateModelsPreview = ConsolidateDuplicateModelsResult;

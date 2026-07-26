@@ -591,11 +591,56 @@ interface IgnoreDuplicatesResult {
   ignoredFileGroupCount: number;
   ignoredModelGroupCount: number;
 }
+
+interface ConsolidatedDuplicateFile {
+  id: string;
+  filename: string;
+  relativePath: string;
+  sizeBytes: number;
+  hash: string;
+}
+
+interface ConsolidatedDuplicateThumbnail {
+  id: string;
+  sourceFileId: string;
+  sourceFilename: string;
+  width: number;
+  height: number;
+  format: string;
+}
+
+interface ConsolidatedDuplicateMetadata {
+  fieldDefinitionId: string;
+  fieldName: string;
+  fieldSlug: string;
+  value: string;
+}
+
+interface ConsolidatedDuplicateCollection { id: string; name: string; }
+interface ConsolidatedDuplicateTag { id: string; name: string; }
+
+interface ConsolidateDuplicateModelsResult {
+  sourceModel: { id: string; name: string };
+  targetModel: { id: string; name: string };
+  removedFiles: ConsolidatedDuplicateFile[];
+  removedThumbnails: ConsolidatedDuplicateThumbnail[];
+  copiedMetadata: ConsolidatedDuplicateMetadata[];
+  addedCollections: ConsolidatedDuplicateCollection[];
+  addedTags: ConsolidatedDuplicateTag[];
+  copiedMetadataFieldCount: number;
+  addedCollectionCount: number;
+  addedTagCount: number;
+  deletedFileCount: number;
+  reclaimableBytes: number;
+  deletedSourceModelId: string;
+}
 ```
 
 PostgreSQL aggregates each `ready`, non-empty model's file hashes into one model row and returns file detail only for hashes that occur more than once in the same scope. Individual file identity is exact SHA-256 equality. Whole-model identity uses the complete sorted multiset of per-file SHA-256 hashes. File order, filenames, and relative paths are ignored, but hash multiplicity is preserved. Models that are not `ready` or contain no files are excluded. File hashes and whole-model fingerprints stored as ignored for the active library are excluded from the result.
 
 Files within a `DuplicateFileGroup` are ordered by file creation time and file UUID, with owning model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Models within a `DuplicateGroup` are ordered by creation time and UUID; whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. `fileReclaimableBytes` is independent from `reclaimableBytes` and can describe some of the same stored data, so the two estimates must not be added together. `DuplicateScanResult` describes a report only; scanning does not delete, merge, or otherwise modify a model or file. `POST /tools/duplicates/mark` marks the complete current report, while `POST /tools/duplicates/file-groups/:hash/mark` marks one current file group and preserves other current marks; both return the total marked file and model counts in `MarkDuplicatesResult`. `POST /tools/duplicates/file-groups/:hash/ignore` returns `{ ignoredFileGroupCount: 1, ignoredModelGroupCount: 0 }` after storing that file group's hash as a library-scoped ignore key, clearing its file marks, and recalculating derived model marks. There is no bulk ignore endpoint. Both per-file-group actions return `NOT_FOUND` when the hash is not a current, non-ignored duplicate file group. Reconciliation after a file-set mutation preserves marked files only while they remain in a current, non-ignored duplicate group; it clears stale marks without marking unrelated groups.
+
+`ConsolidateDuplicateModelsPreview` and `ConsolidateDuplicateModelsResult` share the latter shape. They are strictly per-model: source and target must be distinct, owned, ready models in the active library with equal non-empty sorted hash multisets. Preview is read-only. Confirmed consolidation retains every target file, deletes every source file record and its managed storage objects, deletes the source model, copies only source metadata fields absent from the target, and unions source collection and tag memberships onto the target. `removedThumbnails`, `copiedMetadata`, `addedCollections`, and `addedTags` enumerate the exact named actions for the confirmation dialog; the count fields are matching compatibility summaries. Managed storage paths are deliberately never returned. The returned action summary is the complete confirmation-dialog contract; there is no global or bulk consolidation request.
 
 ### Metadata Response Types
 

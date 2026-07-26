@@ -5,3 +5,13 @@ export const duplicateFileGroupParamsSchema = z.object({
 });
 
 export type DuplicateFileGroupParams = z.infer<typeof duplicateFileGroupParamsSchema>;
+
+export const consolidateDuplicateModelsSchema = z.object({
+  sourceModelId: z.string().uuid(),
+  targetModelId: z.string().uuid(),
+}).refine((value) => value.sourceModelId !== value.targetModelId, {
+  message: 'Source and target models must be different',
+  path: ['sourceModelId'],
+});
+
+export type ConsolidateDuplicateModelsRequest = z.infer<typeof consolidateDuplicateModelsSchema>;

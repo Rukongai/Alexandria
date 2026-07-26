@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   markDuplicates: vi.fn(),
   markDuplicateFileGroup: vi.fn(),
   ignoreDuplicateFileGroup: vi.fn(),
+  previewDuplicateModelConsolidation: vi.fn(),
+  consolidateDuplicateModel: vi.fn(),
   buildDuplicateScanResult: vi.fn(),
 }));
 
@@ -32,6 +34,12 @@ vi.mock('../services/duplicate-scanner.service.js', () => ({
 }));
 vi.mock('../services/presenter.service.js', () => ({
   presenterService: { buildDuplicateScanResult: mocks.buildDuplicateScanResult },
+}));
+vi.mock('../services/model.service.js', () => ({
+  modelService: {
+    previewDuplicateModelConsolidation: mocks.previewDuplicateModelConsolidation,
+    consolidateDuplicateModel: mocks.consolidateDuplicateModel,
+  },
 }));
 
 import { toolsRoutes } from './tools.js';
@@ -63,6 +71,8 @@ describe('Tools routes', () => {
       ignoredFileGroupCount: 1,
       ignoredModelGroupCount: 0,
     });
+    mocks.previewDuplicateModelConsolidation.mockResolvedValue({ deletedFileCount: 2 });
+    mocks.consolidateDuplicateModel.mockResolvedValue({ deletedFileCount: 2 });
     app = Fastify();
     app.setErrorHandler(errorHandler);
     await app.register(toolsRoutes, { prefix: '/tools' });
@@ -155,6 +165,60 @@ describe('Tools routes', () => {
       meta: null,
       errors: null,
     });
+  });
+
+  it('previews one exact-model consolidation without changing the library', async () => {
+    const sourceModelId = '33333333-3333-4333-8333-333333333333';
+    const targetModelId = '44444444-4444-4444-8444-444444444444';
+    const response = await app.inject({
+      method: 'POST',
+      url: '/tools/duplicates/consolidate/preview',
+      payload: { sourceModelId, targetModelId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.previewDuplicateModelConsolidation).toHaveBeenCalledWith(
+      sourceModelId,
+      targetModelId,
+      USER_ID,
+      LIBRARY_ID,
+    );
+    expect(response.json()).toEqual({ data: { deletedFileCount: 2 }, meta: null, errors: null });
+  });
+
+  it('consolidates one confirmed exact-model pair', async () => {
+    const sourceModelId = '33333333-3333-4333-8333-333333333333';
+    const targetModelId = '44444444-4444-4444-8444-444444444444';
+    const response = await app.inject({
+      method: 'POST',
+      url: '/tools/duplicates/consolidate',
+      payload: { sourceModelId, targetModelId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mocks.consolidateDuplicateModel).toHaveBeenCalledWith(
+      sourceModelId,
+      targetModelId,
+      USER_ID,
+      LIBRARY_ID,
+    );
+    expect(response.json()).toEqual({ data: { deletedFileCount: 2 }, meta: null, errors: null });
+  });
+
+  it.each(['/tools/duplicates/consolidate/preview', '/tools/duplicates/consolidate'])
+  ('rejects self-consolidation at the route boundary: %s', async (url) => {
+    const response = await app.inject({
+      method: 'POST',
+      url,
+      payload: {
+        sourceModelId: '33333333-3333-4333-8333-333333333333',
+        targetModelId: '33333333-3333-4333-8333-333333333333',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mocks.previewDuplicateModelConsolidation).not.toHaveBeenCalled();
+    expect(mocks.consolidateDuplicateModel).not.toHaveBeenCalled();
   });
 
   it.each(['short', 'A'.repeat(64), `${'a'.repeat(63)}g`])(

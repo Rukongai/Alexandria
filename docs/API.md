@@ -1555,7 +1555,7 @@ Values are validated against the resolved field definition before storage. Numbe
 
 ## Tools
 
-Tools are library maintenance operations exposed from the library-scoped Tools page at `/lib/:id/tools`. Duplicate review supports marking the complete report or marking and ignoring one duplicate file set at a time. There is no bulk ignore endpoint.
+Tools are library maintenance operations exposed from the library-scoped Tools page at `/lib/:id/tools`. Duplicate review supports marking the complete report or marking and ignoring one duplicate file set at a time. Exact whole-model duplicates can be consolidated one source model at a time after reviewing a server-generated preview; there is no bulk consolidation or bulk ignore endpoint.
 
 ### GET /tools/duplicates
 
@@ -1672,6 +1672,29 @@ Only `ready` models with at least one file are scanned. PostgreSQL aggregates ea
 Each member of `fileGroups` is a `DuplicateFileGroup`, whose `files` are `DuplicateFile` values. `scannedFileCount` counts all files read from eligible models. Within a file group, candidates are ordered by file creation time and file UUID, with owning model creation time and model UUID as later tie-breakers. `sizeBytes` is the oldest candidate's stored size, while `reclaimableBytes` sums every later candidate's size. `redundantFileCount` and `fileReclaimableBytes` aggregate those later candidates across all file groups. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID.
 
 The example's `Dragon Bust Variant` has one file identical to both whole-model copies but different remaining content, so it appears in a file group without joining the whole-model group. File-level savings are independent from and may overlap whole-model savings; do not add `fileReclaimableBytes` to `reclaimableBytes`. All byte values are estimates only—the decision and any deletion remain manual.
+
+### POST /tools/duplicates/consolidate/preview
+
+Preview exactly one model consolidation for the confirmation modal. This endpoint is read-only.
+
+### POST /tools/duplicates/consolidate
+
+Confirm exactly one model consolidation. There is no global or multi-model action.
+
+**Auth required:** Yes. Both routes apply `requireAuth` followed by `requireLibrary`.
+
+**Request body (both routes):**
+
+```json
+{
+  "sourceModelId": "22222222-2222-4222-8222-222222222222",
+  "targetModelId": "11111111-1111-4111-8111-111111111111"
+}
+```
+
+The source and target must be distinct owned `ready` models in the active library, each with at least one file, whose complete sorted SHA-256 hash multisets are exactly equal. The confirmed route locks both models and their current file/metadata/tag/collection relationships in a serializable transaction, then repeats that check, so a stale modal can never discard a changed or non-identical source or silently lose a concurrent relationship update. A failed validation returns `400 VALIDATION_ERROR`; an unowned or missing model returns `404 NOT_FOUND`.
+
+The result of both routes is `ConsolidateDuplicateModelsResult`. It lists every source file and thumbnail that will be/was removed, reclaimed source-file bytes, and the exact named metadata, collection, and tag actions (`copiedMetadata`, `addedCollections`, and `addedTags`); matching count fields remain as summaries. Managed storage paths are not exposed. Confirmation retains the target's files, copies only metadata absent from the target, unions source collections and tags onto it, deletes the source model and its duplicate files, then performs managed-storage cleanup best-effort. The preview and execution payload shapes are intentionally identical.
 
 ### POST /tools/duplicates/mark
 

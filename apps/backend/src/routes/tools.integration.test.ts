@@ -13,10 +13,17 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { buildApp } from '../app.js';
 import { db } from '../db/index.js';
 import {
+  collectionModels,
+  collections,
   duplicateFileIgnores,
   libraries,
+  metadataFieldDefinitions,
   modelFiles,
+  modelMetadata,
+  modelTags,
   models,
+  tags,
+  thumbnails,
   users,
 } from '../db/schema/index.js';
 
@@ -46,6 +53,7 @@ async function cleanupFixtures(): Promise<void> {
 
   // Model-file rows cascade from models. Remove the remaining rows in FK order.
   await db.delete(models).where(inArray(models.userId, userIds));
+  await db.delete(collections).where(inArray(collections.userId, userIds));
   await db.delete(libraries).where(inArray(libraries.userId, userIds));
   await db.delete(users).where(inArray(users.id, userIds));
 }
@@ -647,5 +655,135 @@ describe('duplicate review actions integration', () => {
       .where(eq(models.libraryId, ownerSecondLibraryId));
     expect(survivingModels.find((model) => model.id === secondLibraryModelIds[1])?.isDuplicate)
       .toBe(false);
+  });
+});
+
+describe('duplicate model consolidation integration', () => {
+  it('previews and then removes only the confirmed exact duplicate source model', async () => {
+    const [sourceFile] = await db.select({ id: modelFiles.id }).from(modelFiles)
+      .where(eq(modelFiles.modelId, defaultModelIds[1])).limit(1);
+    const [metadataField] = await db.select({ id: metadataFieldDefinitions.id })
+      .from(metadataFieldDefinitions).limit(1);
+    const [collection] = await db.insert(collections).values({
+      name: 'Consolidation Source Collection',
+      slug: `consolidation-source-${Date.now()}-${process.pid}`,
+      userId: (await db.select({ userId: models.userId }).from(models)
+        .where(eq(models.id, defaultModelIds[1])).limit(1))[0]!.userId,
+      libraryId: ownerDefaultLibraryId,
+    }).returning({ id: collections.id, name: collections.name });
+    const [tag] = await db.insert(tags).values({
+      name: `consolidation-tag-${Date.now()}-${process.pid}`,
+      slug: `consolidation-tag-${Date.now()}-${process.pid}`,
+    }).returning({ id: tags.id, name: tags.name });
+    await db.insert(modelMetadata).values({
+      modelId: defaultModelIds[1],
+      fieldDefinitionId: metadataField!.id,
+      value: 'copied metadata value',
+    });
+    await db.insert(collectionModels).values({
+      collectionId: collection.id,
+      modelId: defaultModelIds[1],
+    });
+    await db.insert(modelTags).values({ modelId: defaultModelIds[1], tagId: tag.id });
+    const [thumbnail] = await db.insert(thumbnails).values({
+      sourceFileId: sourceFile!.id,
+      storagePath: `thumbnails/${defaultModelIds[1]}/source.webp`,
+      width: 800,
+      height: 600,
+      format: 'webp',
+    }).returning({ id: thumbnails.id });
+
+    const preview = await app.inject({
+      method: 'POST',
+      url: '/tools/duplicates/consolidate/preview',
+      headers: { cookie: sessionCookie },
+      payload: { sourceModelId: defaultModelIds[1], targetModelId: defaultModelIds[0] },
+    });
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().data).toMatchObject({
+      sourceModel: { id: defaultModelIds[1], name: 'Default Pair 2' },
+      targetModel: { id: defaultModelIds[0], name: 'Default Pair 1' },
+      deletedFileCount: 2,
+      reclaimableBytes: 101,
+      deletedSourceModelId: defaultModelIds[1],
+    });
+    expect(preview.json().data.removedFiles).toHaveLength(2);
+    expect(preview.json().data.removedFiles.every((file: Record<string, unknown>) =>
+      !('storagePath' in file))).toBe(true);
+    expect(preview.json().data).toMatchObject({
+      removedThumbnails: [{
+        id: thumbnail.id,
+        sourceFileId: sourceFile!.id,
+        sourceFilename: 'part-1-2.stl',
+        width: 800,
+        height: 600,
+        format: 'webp',
+      }],
+      copiedMetadata: [{ fieldDefinitionId: metadataField!.id, value: 'copied metadata value' }],
+      addedCollections: [{ id: collection.id, name: collection.name }],
+      addedTags: [{ id: tag.id, name: tag.name }],
+      copiedMetadataFieldCount: 1,
+      addedCollectionCount: 1,
+      addedTagCount: 1,
+    });
+
+    const consolidation = await app.inject({
+      method: 'POST',
+      url: '/tools/duplicates/consolidate',
+      headers: { cookie: sessionCookie },
+      payload: { sourceModelId: defaultModelIds[1], targetModelId: defaultModelIds[0] },
+    });
+
+    expect(consolidation.statusCode).toBe(200);
+    expect(consolidation.json().data).toMatchObject(preview.json().data);
+
+    const [removedSource] = await db.select({ id: models.id }).from(models)
+      .where(eq(models.id, defaultModelIds[1]));
+    expect(removedSource).toBeUndefined();
+    const targetFiles = await db.select({ id: modelFiles.id, isDuplicate: modelFiles.isDuplicate }).from(modelFiles)
+      .where(eq(modelFiles.modelId, defaultModelIds[0]));
+    expect(targetFiles).toHaveLength(2);
+    expect(targetFiles.every((file) => file.isDuplicate === false)).toBe(true);
+    const sourceFiles = await db.select({ id: modelFiles.id }).from(modelFiles)
+      .where(eq(modelFiles.modelId, defaultModelIds[1]));
+    expect(sourceFiles).toHaveLength(0);
+    const targetRelationships = await Promise.all([
+      db.select().from(modelMetadata).where(and(
+        eq(modelMetadata.modelId, defaultModelIds[0]),
+        eq(modelMetadata.fieldDefinitionId, metadataField!.id),
+      )),
+      db.select().from(collectionModels).where(and(
+        eq(collectionModels.collectionId, collection.id),
+        eq(collectionModels.modelId, defaultModelIds[0]),
+      )),
+      db.select().from(modelTags).where(and(
+        eq(modelTags.modelId, defaultModelIds[0]),
+        eq(modelTags.tagId, tag.id),
+      )),
+      db.select().from(thumbnails).where(eq(thumbnails.id, thumbnail.id)),
+    ]);
+    expect(targetRelationships[0]).toHaveLength(1);
+    expect(targetRelationships[1]).toHaveLength(1);
+    expect(targetRelationships[2]).toHaveLength(1);
+    expect(targetRelationships[3]).toHaveLength(0);
+    const [targetModel] = await db.select({ isDuplicate: models.isDuplicate }).from(models)
+      .where(eq(models.id, defaultModelIds[0]));
+    expect(targetModel!.isDuplicate).toBe(false);
+  });
+
+  it('rejects a source model that merely shares one duplicate file', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/tools/duplicates/consolidate/preview',
+      headers: { cookie: sessionCookie },
+      payload: { sourceModelId: partialDuplicateModelId, targetModelId: defaultModelIds[0] },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().errors[0]).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: 'Models no longer have identical files',
+    });
   });
 });

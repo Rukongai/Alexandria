@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
   CheckCircle2,
+  Combine,
   Copy,
   EyeOff,
   FileSearch,
@@ -21,6 +22,7 @@ import {
 } from '../api/tools';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { ConsolidateDuplicateDialog } from '../components/tools/ConsolidateDuplicateDialog';
 import { useLibraryPath } from '../hooks/use-libraries';
 import { formatDate, formatFileSize } from '../lib/format';
 
@@ -33,6 +35,7 @@ export function ToolsPage() {
   const libPath = useLibraryPath();
   const queryClient = useQueryClient();
   const [actionFeedback, setActionFeedback] = useState('');
+  const [consolidationSource, setConsolidationSource] = useState<DuplicateModel | null>(null);
   const scan = useQuery({
     queryKey: ['tools', 'duplicate-scan'],
     queryFn: scanDuplicates,
@@ -209,30 +212,53 @@ export function ToolsPage() {
               </p>
             </div>
           ) : scan.data ? (
-            <DuplicateResults
-              result={scan.data}
-              onMarkAll={() => {
-                resetActions();
-                markMutation.mutate();
-              }}
-              onMarkFileGroup={(target) => {
-                resetActions();
-                markFileGroupMutation.mutate(target);
-              }}
-              onIgnoreFileGroup={(target) => {
-                resetActions();
-                ignoreFileGroupMutation.mutate(target);
-              }}
-              markingAll={markMutation.isPending}
-              activeFileGroupAction={
-                markFileGroupMutation.isPending
-                  ? { hash: markFileGroupMutation.variables.hash, action: 'mark' }
-                  : ignoreFileGroupMutation.isPending
-                    ? { hash: ignoreFileGroupMutation.variables.hash, action: 'ignore' }
-                    : null
-              }
-              actionsDisabled={actionPending || scan.isFetching}
-            />
+            <>
+              <DuplicateResults
+                result={scan.data}
+                onMarkAll={() => {
+                  resetActions();
+                  markMutation.mutate();
+                }}
+                onMarkFileGroup={(target) => {
+                  resetActions();
+                  markFileGroupMutation.mutate(target);
+                }}
+                onIgnoreFileGroup={(target) => {
+                  resetActions();
+                  ignoreFileGroupMutation.mutate(target);
+                }}
+                onConsolidateModel={setConsolidationSource}
+                markingAll={markMutation.isPending}
+                activeFileGroupAction={
+                  markFileGroupMutation.isPending
+                    ? { hash: markFileGroupMutation.variables.hash, action: 'mark' }
+                    : ignoreFileGroupMutation.isPending
+                      ? { hash: ignoreFileGroupMutation.variables.hash, action: 'ignore' }
+                      : null
+                }
+                actionsDisabled={actionPending || scan.isFetching}
+              />
+              <ConsolidateDuplicateDialog
+                source={consolidationSource}
+                candidates={
+                  consolidationSource
+                    ? scan.data.groups.find((group) =>
+                        group.models.some((model) => model.id === consolidationSource.id),
+                      )?.models ?? []
+                    : []
+                }
+                open={consolidationSource !== null}
+                onOpenChange={(open) => {
+                  if (!open) setConsolidationSource(null);
+                }}
+                onComplete={(result) => {
+                  setActionFeedback(
+                    `Consolidated ${result.sourceModel.name} into ${result.targetModel.name}. Removed ${countPhrase(result.deletedFileCount, 'duplicate file')}.`,
+                  );
+                  void refreshDuplicateData();
+                }}
+              />
+            </>
           ) : (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Copy className="h-8 w-8 text-muted-foreground/60" />
@@ -268,6 +294,7 @@ function DuplicateResults({
   onMarkAll,
   onMarkFileGroup,
   onIgnoreFileGroup,
+  onConsolidateModel,
   markingAll,
   activeFileGroupAction,
   actionsDisabled,
@@ -276,6 +303,7 @@ function DuplicateResults({
   onMarkAll: () => void;
   onMarkFileGroup: (target: FileGroupActionTarget) => void;
   onIgnoreFileGroup: (target: FileGroupActionTarget) => void;
+  onConsolidateModel: (model: DuplicateModel) => void;
   markingAll: boolean;
   activeFileGroupAction: { hash: string; action: 'mark' | 'ignore' } | null;
   actionsDisabled: boolean;
@@ -443,8 +471,8 @@ function DuplicateResults({
               Whole-model duplicates
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Ready models whose complete file sets match exactly. These matches are shown for
-              reference and do not have separate review actions.
+              Ready models whose complete file sets match exactly. Consolidate one model at a time
+              to remove its duplicate files while preserving the selected model.
             </p>
           </div>
 
@@ -458,8 +486,8 @@ function DuplicateResults({
           <div className="flex flex-col gap-4">
             {result.groups.map((group, index) => (
               <div key={group.fingerprint} className="overflow-hidden rounded-lg border">
-                <div className="flex flex-col gap-1 border-b bg-muted/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
+                  <div className="flex flex-col gap-3 border-b bg-muted/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
                     <h3 className="text-sm font-semibold text-foreground">
                       Duplicate model set {index + 1}
                     </h3>
@@ -467,11 +495,11 @@ function DuplicateResults({
                       {group.fileCount} {group.fileCount === 1 ? 'file' : 'files'} per model ·{' '}
                       {formatFileSize(group.totalSizeBytes)} each
                     </p>
-                  </div>
-                  <Badge variant="outline">
-                    {group.models.length} identical models ·{' '}
-                    {formatFileSize(group.reclaimableBytes)} reclaimable
-                  </Badge>
+                    </div>
+                    <Badge variant="outline">
+                      {group.models.length} identical models ·{' '}
+                      {formatFileSize(group.reclaimableBytes)} reclaimable
+                    </Badge>
                 </div>
                 <div className="divide-y">
                   {group.models.map((model, modelIndex) => (
@@ -479,6 +507,8 @@ function DuplicateResults({
                       key={model.id}
                       model={model}
                       suggestedKeep={modelIndex === 0}
+                      onConsolidate={modelIndex === 0 ? undefined : () => onConsolidateModel(model)}
+                      disabled={actionsDisabled}
                     />
                   ))}
                 </div>
@@ -543,7 +573,17 @@ function DuplicateFileRow({
   );
 }
 
-function DuplicateModelRow({ model, suggestedKeep }: { model: DuplicateModel; suggestedKeep: boolean }) {
+function DuplicateModelRow({
+  model,
+  suggestedKeep,
+  onConsolidate,
+  disabled,
+}: {
+  model: DuplicateModel;
+  suggestedKeep: boolean;
+  onConsolidate?: () => void;
+  disabled: boolean;
+}) {
   const libPath = useLibraryPath();
 
   return (
@@ -562,9 +602,17 @@ function DuplicateModelRow({ model, suggestedKeep }: { model: DuplicateModel; su
           {model.originalFilename ?? 'No original filename'}
         </p>
       </div>
-      <span className="whitespace-nowrap text-xs text-muted-foreground">
-        Added {formatDate(model.createdAt)}
-      </span>
+      <div className="flex shrink-0 items-center gap-3 sm:flex-col sm:items-end">
+        <span className="whitespace-nowrap text-xs text-muted-foreground">
+          Added {formatDate(model.createdAt)}
+        </span>
+        {onConsolidate && (
+          <Button size="sm" variant="outline" onClick={onConsolidate} disabled={disabled}>
+            <Combine className="mr-2 h-4 w-4" />
+            Consolidate
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
