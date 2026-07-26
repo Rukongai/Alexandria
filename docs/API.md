@@ -1006,7 +1006,12 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
       "totalSizeBytes": 8388608,
       "artist": "Maker Name",
       "tagsGuessed": ["fantasy", "bust"],
-      "folderStructure": [...]
+      "folderStructure": [...],
+      "metadataFile": {
+        "modelName": "Dragon Bust",
+        "artist": "Maker Name",
+        "tags": ["fantasy", "bust"]
+      }
     },
     "draftMetadata": {
       "modelName": "Dragon Bust",
@@ -1024,6 +1029,12 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
 ```
 
 `data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on scan success, `ready_for_review` → `committing` → `committed` after commit, or an active phase → `error` on failure. `draftMetadata` exposes the current persisted review draft and is still only staged state. The upload review form refreshes from a changed server draft, including an applied assistant proposal, but ordinary detected-metadata polling does not overwrite unsaved local form edits. Polling this endpoint after commit returns the same `commitProgress` contract as the list endpoint.
+
+`detected.metadataFile` is present only when the uploaded archive carried a `metadata.json` at its **root**. Its shape is a subset of the `batchMetadata` accepted by the commit endpoint — `modelName`, `description`, `artist`, `tags`, `metadata`, `collectionId`, `newCollectionName` — so it needs no translation to be committed.
+
+It is **prefill only and is never applied automatically at commit.** The client always sends the metadata it intends in `batchMetadata`; detection only populates the review form so the value is visible before it is applied. A commit that sends no `batchMetadata` still applies nothing.
+
+Detection is best-effort and never fails a scan. A `metadata.json` that is absent, unparseable, not a JSON object, or larger than 64 KB is skipped, and one nested inside the archive rather than at its root is ignored. Fields that fail their own validation are dropped rather than rejecting the whole file, and unknown keys are stripped — the Telegram importer writes `schemaVersion`, `source`, and `result` alongside the commit fields, and all three are ignored here.
 
 While `status` is `committing`, `commitProgress` has this shape:
 
