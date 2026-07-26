@@ -166,10 +166,12 @@ def _is_split_member(filename: str) -> bool:
 
 
 def _split_order(entries: list[Path]) -> tuple[Path, ...] | None:
-    """Order entries as one split set, or None when they are not one.
+    """Return the entries when they form one complete split set, else None.
 
     Reuses grouping's part detection and validation so the importer and the
-    staged flow agree on what a complete set is.
+    staged flow agree on what a complete set is. Order is not meaningful:
+    FileProcessingService.processSplitArchive reassembles by filename, not by
+    upload order, so the entries are returned as given.
     """
     if len(entries) < 2 or not all(entry.is_file() for entry in entries):
         return None
@@ -187,8 +189,7 @@ def _split_order(entries: list[Path]) -> tuple[Path, ...] | None:
     except ValueError as error:
         log.info("Not treating %s as a split set: %s", entries[0].parent, error)
         return None
-    order = {part.filename: index for index, part in enumerate(units[0].parts)}
-    return tuple(sorted(entries, key=lambda entry: order[entry.name]))
+    return tuple(entries)
 
 
 def plan_models_dir(models_dir: Path) -> ModelsPlan:
@@ -387,14 +388,18 @@ class FolderUploader:
 
     async def _upload_and_dispose(self, folder: ModelFolder, root: Path) -> str:
         log.info("Uploading %s", folder.path.name)
+        session_out: dict[str, str] = {}
         try:
             with guarded_model(self.progress, folder.path.name, parts=1) as handle:
-                model_id = await self.upload(folder, handle)
+                model_id = await self.upload(folder, handle, session_out)
         # One bad folder must not stop the rest of the staging directory.
         except Exception as error:  # noqa: BLE001
             log.error("Failed to upload %s: %s", folder.path.name, error)
             dispose(
-                folder.path, root, FAILED_DIRNAME, {"error": str(error), **_failed_at()}
+                folder.path,
+                root,
+                FAILED_DIRNAME,
+                {"error": str(error), **session_out, **_failed_at()},
             )
             return "failed"
         dispose(
@@ -404,7 +409,10 @@ class FolderUploader:
         return "completed"
 
     async def upload(
-        self, folder: ModelFolder, handle: ModelProgress | None = None
+        self,
+        folder: ModelFolder,
+        handle: ModelProgress | None = None,
+        session_out: dict[str, str] | None = None,
     ) -> str:
         handle = handle or NullModelProgress()
         effective = folder.metadata
@@ -420,8 +428,10 @@ class FolderUploader:
             plan = plan_models_dir(folder.models_dir)
             if plan.kind == "zip":
                 handle.phase("packaging")
-            paths, multipart = build_upload_paths(
-                plan, Path(temp), payload["modelName"]
+            # Zipping an arbitrary tree can take minutes; off-thread so it does
+            # not stall sibling transfers and their progress at --concurrency > 1.
+            paths, multipart = await asyncio.to_thread(
+                build_upload_paths, plan, Path(temp), payload["modelName"]
             )
 
             upload_ids: list[str] = []
@@ -443,6 +453,8 @@ class FolderUploader:
                 await self.alexandria.abort_uploads(upload_ids)
                 raise
 
+            if session_out is not None:
+                session_out["sessionId"] = session_id
             handle.phase("scanning")
             session = await self.alexandria.wait_for_session(
                 session_id, {"ready_for_review"}
@@ -482,7 +494,36 @@ class FolderUploader:
         handle.attachments(done, len(pending))
         for offset in range(0, len(pending), ATTACHMENT_BATCH_SIZE):
             batch = pending[offset : offset + ATTACHMENT_BATCH_SIZE]
-            for path in batch:
-                await self.alexandria.append_files(session_id, (path,), (path.name,))
-                done += 1
-                handle.attachments(done, len(pending))
+            await self.alexandria.append_files(
+                session_id, batch, tuple(path.name for path in batch)
+            )
+            done += len(batch)
+            handle.attachments(done, len(pending))
+
+
+def describe_staging(root: Path) -> str:
+    """Dry-run report for the upload phase: what would be uploaded, and how."""
+    found, ambiguous = discover(root)
+    lines: list[str] = []
+    for folder in found:
+        try:
+            kind = plan_models_dir(folder.models_dir).kind
+        except ValueError as error:
+            lines.append(f"  SKIP  {folder.path.relative_to(root)}: {error}")
+            continue
+        images = sum(
+            1 for directory in folder.image_dirs for item in directory.iterdir()
+            if item.is_file()
+        )
+        lines.append(
+            f"  {kind:<6} {folder.path.relative_to(root)} "
+            f"-> {folder.model_name!r} ({images} image(s))"
+        )
+    for path, reason in ambiguous:
+        lines.append(f"  FAIL   {path.relative_to(root)}: {reason}")
+    if not lines:
+        return f"No model folders found in {root}."
+    header = f"{len(found)} model folder(s) would be uploaded from {root}"
+    if ambiguous:
+        header += f"; {len(ambiguous)} would be moved to {FAILED_DIRNAME}/"
+    return header + ":\n" + "\n".join(lines)

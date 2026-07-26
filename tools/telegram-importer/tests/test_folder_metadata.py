@@ -124,3 +124,9 @@ def test_should_report_an_error_for_an_unparseable_metadata_file(tmp_path) -> No
 
     (tmp_path / "metadata.json").write_text('{"a": 1}', encoding="utf-8")
     assert metadata_error(tmp_path) is None
+
+
+def test_should_only_strip_the_six_digit_staging_prefix() -> None:
+    assert model_name_from_folder("002501-dragon-knight") == "dragon knight"
+    assert model_name_from_folder("2001-a-space-odyssey") == "2001 a space odyssey"
+    assert model_name_from_folder("12345678-thing") == "12345678 thing"

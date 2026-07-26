@@ -206,3 +206,84 @@ async def test_should_upload_without_touching_telegram(monkeypatch, tmp_path) ->
 
 async def _ready(value):
     return value
+
+
+async def test_should_not_upload_anything_on_a_dry_run(monkeypatch, tmp_path) -> None:
+    from alexandria_telegram_importer import cli
+
+    uploaded: list[str] = []
+
+    class FakeUploader:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def run(self, root):
+            uploaded.append("ran")
+            return {"completed": 1}
+
+    (tmp_path / "002501-dragon" / "models").mkdir(parents=True)
+    (tmp_path / "002501-dragon" / "models" / "a.7z").write_bytes(b"a")
+
+    monkeypatch.setattr(cli, "FolderUploader", FakeUploader)
+    monkeypatch.setattr(
+        cli, "_login", lambda args: _fail("must not log in during a dry run")
+    )
+
+    args = parser().parse_args(
+        ["--upload-only", "--dry-run", "--staging-dir", str(tmp_path)],
+    )
+
+    assert await cli.run(args) == 0
+    assert uploaded == []
+    assert (tmp_path / "002501-dragon").is_dir()
+
+
+async def test_should_not_require_telegram_credentials_for_upload_only(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+
+    class FakeUploader:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def run(self, root):
+            return {"completed": 1}
+
+    class FakeClient:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.delenv("TELEGRAM_API_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_API_HASH", raising=False)
+    monkeypatch.delenv("API_ID", raising=False)
+    monkeypatch.delenv("API_HASH", raising=False)
+    monkeypatch.setattr(cli, "TelegramSource", _forbidden_telegram)
+    monkeypatch.setattr(cli, "FolderUploader", FakeUploader)
+    monkeypatch.setattr(cli, "_login", lambda args: _ready(FakeClient()))
+
+    args = parser().parse_args(["--upload-only", "--staging-dir", str(tmp_path)])
+
+    assert await cli.run(args) == 0
+
+
+async def test_should_report_a_staging_directory_that_does_not_exist(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+
+    monkeypatch.setattr(cli, "TelegramSource", _forbidden_telegram)
+    args = parser().parse_args(
+        ["--upload-only", "--staging-dir", str(tmp_path / "typo")],
+    )
+
+    with pytest.raises(SystemExit, match="does not exist"):
+        await cli.run(args)
+
+
+def _forbidden_telegram(**kwargs):
+    raise AssertionError("TelegramSource must not be constructed for --upload-only")
+
+
+async def _fail(message: str):
+    raise AssertionError(message)

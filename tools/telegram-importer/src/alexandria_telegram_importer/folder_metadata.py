@@ -27,7 +27,9 @@ COMMIT_FIELDS = (
 _INHERITED_SCALARS = ("description", "collectionId", "newCollectionName", "artist")
 _INHERITED_MAPPINGS = ("metadata", "options")
 
-_FOLDER_PREFIX_RE = re.compile(r"^\d{4,}-")
+# Matches only the six-digit prefix bundle_folder_name writes, so a real
+# name like "2001-a-space-odyssey" keeps its leading number.
+_FOLDER_PREFIX_RE = re.compile(r"^\d{6}-")
 
 
 def _load(folder: Path) -> tuple[dict[str, Any] | None, str | None]:

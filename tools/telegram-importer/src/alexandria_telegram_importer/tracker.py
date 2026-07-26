@@ -320,7 +320,8 @@ class ImportTracker:
                 ),
             )
         staged = self.get_staged(bundle_key)
-        assert staged is not None
+        if staged is None:
+            raise KeyError(bundle_key)
         return staged
 
     def get_staged(self, bundle_key: str) -> StagedBundle | None:

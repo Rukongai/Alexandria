@@ -601,3 +601,40 @@ def test_should_not_walk_a_nested_directory_named_failed_or_uploaded(tmp_path) -
     found, _ = discover(tmp_path)
 
     assert [folder.path.name for folder in found] == ["knight"]
+
+
+async def test_should_append_images_in_one_batched_request(tmp_path) -> None:
+    make_folder(
+        tmp_path / "002501-dragon",
+        models=["a.7z"],
+        images=["one.jpg", "two.jpg", "three.jpg"],
+    )
+    alexandria = FakeAlexandria()
+    calls: list[int] = []
+    original = alexandria.append_files
+
+    async def counting(session_id, paths, upload_names):
+        calls.append(len(paths))
+        return await original(session_id, paths, upload_names)
+
+    alexandria.append_files = counting
+    [folder], _ = discover(tmp_path)
+
+    await FolderUploader(alexandria=alexandria, work_root=tmp_path / "w").upload(folder)
+
+    assert calls == [3]
+    assert sorted(alexandria.appended) == ["one.jpg", "three.jpg", "two.jpg"]
+
+
+def test_should_describe_what_a_dry_run_would_upload(tmp_path) -> None:
+    from alexandria_telegram_importer.folder_upload import describe_staging
+
+    make_folder(tmp_path / "002501-dragon", models=["dragon.7z"], images=["a.jpg"])
+    release = make_folder(tmp_path / "002502-broken", models=["x.zip"])
+    make_folder(release / "child", models=["y.zip"])
+
+    report = describe_staging(tmp_path)
+
+    assert "as_is  002501-dragon -> 'dragon' (1 image(s))" in report
+    assert "FAIL   002502-broken" in report
+    assert "1 model folder(s) would be uploaded" in report
