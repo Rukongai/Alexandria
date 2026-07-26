@@ -3,9 +3,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  consolidateDuplicateModels,
   ignoreDuplicateFileGroup,
   markDuplicateFileGroup,
   markDuplicates,
+  previewDuplicateModelConsolidation,
   scanDuplicates,
 } from '../api/tools';
 import { ToolsPage } from './ToolsPage';
@@ -15,12 +17,16 @@ vi.mock('../api/tools', () => ({
   markDuplicates: vi.fn(),
   markDuplicateFileGroup: vi.fn(),
   ignoreDuplicateFileGroup: vi.fn(),
+  previewDuplicateModelConsolidation: vi.fn(),
+  consolidateDuplicateModels: vi.fn(),
 }));
 
 const mockScanDuplicates = vi.mocked(scanDuplicates);
 const mockMarkDuplicates = vi.mocked(markDuplicates);
 const mockMarkDuplicateFileGroup = vi.mocked(markDuplicateFileGroup);
 const mockIgnoreDuplicateFileGroup = vi.mocked(ignoreDuplicateFileGroup);
+const mockPreviewDuplicateModelConsolidation = vi.mocked(previewDuplicateModelConsolidation);
+const mockConsolidateDuplicateModels = vi.mocked(consolidateDuplicateModels);
 
 const duplicateScanResult = {
   scannedModelCount: 2,
@@ -89,6 +95,42 @@ describe('ToolsPage', () => {
     mockIgnoreDuplicateFileGroup.mockResolvedValue({
       ignoredFileGroupCount: 0,
       ignoredModelGroupCount: 0,
+    });
+    mockPreviewDuplicateModelConsolidation.mockResolvedValue({
+      sourceModel: { id: 'model-2', name: 'Dragon copy' },
+      targetModel: { id: 'model-1', name: 'Dragon original' },
+      removedFiles: [{
+        id: 'file-2',
+        filename: 'body-copy.stl',
+        relativePath: 'parts/body-copy.stl',
+        sizeBytes: 1024,
+        hash: 'a'.repeat(64),
+      }],
+      removedThumbnails: [],
+      copiedMetadata: [],
+      addedCollections: [],
+      addedTags: [],
+      copiedMetadataFieldCount: 1,
+      addedCollectionCount: 1,
+      addedTagCount: 2,
+      deletedFileCount: 1,
+      reclaimableBytes: 1024,
+      deletedSourceModelId: 'model-2',
+    });
+    mockConsolidateDuplicateModels.mockResolvedValue({
+      sourceModel: { id: 'model-2', name: 'Dragon copy' },
+      targetModel: { id: 'model-1', name: 'Dragon original' },
+      removedFiles: [],
+      removedThumbnails: [],
+      copiedMetadata: [],
+      addedCollections: [],
+      addedTags: [],
+      copiedMetadataFieldCount: 1,
+      addedCollectionCount: 1,
+      addedTagCount: 2,
+      deletedFileCount: 1,
+      reclaimableBytes: 1024,
+      deletedSourceModelId: 'model-2',
     });
   });
 
@@ -175,12 +217,51 @@ describe('ToolsPage', () => {
     expect(screen.getByRole('button', { name: /mark duplicates in file set 1/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /ignore duplicates in file set 1/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^ignore duplicates$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Consolidate' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /consolidate all/i })).toBeNull();
 
     const fileHeading = screen.getByRole('heading', { name: 'Duplicate files' });
     const modelHeading = screen.getByRole('heading', { name: 'Whole-model duplicates' });
     expect(
       fileHeading.compareDocumentPosition(modelHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it('previews every file action and requires confirmation before consolidating one model', async () => {
+    mockScanDuplicates.mockResolvedValue({
+      ...duplicateScanResult,
+      groups: [{
+        fingerprint: 'same-files',
+        fileCount: 1,
+        totalSizeBytes: 100,
+        reclaimableBytes: 100,
+        models: [
+          { id: 'model-1', name: 'First model', originalFilename: 'first.zip', createdAt: '2025-01-01T00:00:00.000Z' },
+          { id: 'model-2', name: 'Second model', originalFilename: 'second.zip', createdAt: '2025-02-01T00:00:00.000Z' },
+        ],
+      }],
+    });
+
+    render(<ToolsPage />, { wrapper: makeWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: /scan library/i }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Consolidate' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Consolidate' }));
+
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(mockConsolidateDuplicateModels).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review changes' }));
+
+    await waitFor(() => {
+      expect(mockPreviewDuplicateModelConsolidation).toHaveBeenCalledWith('model-2', 'model-1');
+    });
+    expect(screen.getByText('Files to remove')).toBeTruthy();
+    expect(screen.getByText('parts/body-copy.stl')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /consolidate and remove duplicate/i }));
+    await waitFor(() => {
+      expect(mockConsolidateDuplicateModels).toHaveBeenCalledWith('model-2', 'model-1');
+    });
   });
 
   it('announces scan progress and completion', async () => {

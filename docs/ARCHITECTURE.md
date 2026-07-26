@@ -199,7 +199,7 @@ Routes that apply `requireLibrary` (as of P5):
 - `POST /models/upload`, `POST /models/upload/:uploadId/complete`, `POST /models/upload/multipart/complete`, `POST /models/import`
 - `GET /models/import-sessions`, `POST /models/import-sessions/:id/commit`
 - `GET /search`
-- `GET /tools/duplicates`, `POST /tools/duplicates/mark`, `POST /tools/duplicates/file-groups/:hash/mark`, `POST /tools/duplicates/file-groups/:hash/ignore`
+- `GET /tools/duplicates`, `POST /tools/duplicates/mark`, `POST /tools/duplicates/file-groups/:hash/mark`, `POST /tools/duplicates/file-groups/:hash/ignore`, `POST /tools/duplicates/consolidate/preview`, `POST /tools/duplicates/consolidate`
 - All `/smart-collections` routes
 - All `/bulk/*` routes
 - `POST /ai/chat`, `POST /ai/proposals/:id/apply`
@@ -374,6 +374,8 @@ File candidates are ordered by file creation time and file UUID, with owning-mod
 **Does not own:** Metadata CRUD (delegates to MetadataService), collection membership, ingestion pipeline, search, storage implementation, or thumbnail generation. Structural operations may copy existing metadata relationships as part of their transaction. Structural file operations use StorageService's backend-independent copy/delete interface.
 
 **Selected-file deletion behavior:** `deleteModelFiles` accepts 1–500 unique file IDs from an owned model in the active library. It locks the model to serialize file-membership aggregate updates, verifies the complete selection, captures file and thumbnail storage paths, deletes the file rows, recalculates model statistics, and reconciles duplicate-review flags in one transaction. A missing file aborts without deleting any of the selection, while a concurrent selection change produces a conflict and rolls back the transaction. After commit, batched deletion of the captured storage objects is best-effort, logs individual failures, and cannot change the successful database result.
+
+**Duplicate consolidation behavior:** ModelService previews and confirms one source/target pair from the duplicate Tools pane. Both models are revalidated as owned, active-library, ready, non-empty, and exact equal sorted hash multisets; confirmation locks both rows before repeating that validation. It retains the target's file rows and deletes the source model, cascading source file records, folders, thumbnails, and relationships. Before deletion, source metadata fills only target-missing fields and source collection/tag memberships are unioned onto the target. Source file and thumbnail objects are deleted in a best-effort batch after commit. The preview and confirmed result expose every removed source file, thumbnail cleanup path, and relationship count, and no operation accepts multiple source models or applies globally.
 
 **Split behavior:** The split endpoint accepts exactly one selection from an owned, ready model in the active library. `splitModelFolder` accepts a folder containing at least one file. Its files become the root contents of a new ready, `manual` model; descendant paths are rebased by removing the selected folder prefix, while persisted nested folders, including empty descendants, are preserved. `splitModelFiles` accepts 1–500 unique file IDs from the source model, moves all selected files into the same new model, and preserves each file's relative path. Existing ModelFile IDs and thumbnail records remain attached to their files. If the source model's selected preview is among the moved files, its preview selection and crop values transfer to the new model and are cleared on the source. Both models' file count and total size are recalculated. The new model receives the requested name and only the populated metadata values selected by field slug. The special `tags` slug copies tag memberships. Copied metadata remains on the source model; collection memberships, description, and other source provenance are never copied.
 
@@ -776,6 +778,8 @@ All provider routes apply `requireAuth` and enforce provider ownership in `AiPro
 | POST | /tools/duplicates/mark | Mark every file in the current non-ignored scan | DuplicateScannerService | Yes |
 | POST | /tools/duplicates/file-groups/:hash/mark | Mark one current duplicate file set | DuplicateScannerService | Yes |
 | POST | /tools/duplicates/file-groups/:hash/ignore | Ignore one current duplicate file set and clear its flags | DuplicateScannerService | Yes |
+| POST | /tools/duplicates/consolidate/preview | Preview one exact-duplicate model consolidation | ModelService | Yes |
+| POST | /tools/duplicates/consolidate | Confirm one exact-duplicate model consolidation | ModelService → StorageService | Yes |
 
 **Bulk Operations**
 | Method | Route | Purpose | Service Chain | Library-scoped |

@@ -10,6 +10,8 @@ import type {
   SplitModelFolderResponse,
   UpdateModelFileRequest,
   UpdateModelFolderRequest,
+  ConsolidateDuplicateModelsPreview,
+  ConsolidateDuplicateModelsResult,
 } from '@alexandria/shared';
 import { MAX_MODEL_FILE_SELECTION_COUNT } from '@alexandria/shared';
 import { db } from '../db/index.js';
@@ -22,6 +24,9 @@ import {
   collectionModels,
   modelMetadata,
   modelTags,
+  metadataFieldDefinitions,
+  collections,
+  tags,
 } from '../db/schema/index.js';
 import { conflict, notFound, validationError } from '../utils/errors.js';
 import type { Model } from '../db/schema/model.js';
@@ -33,6 +38,11 @@ import { duplicateScannerService } from './duplicate-scanner.service.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('ModelService');
+
+interface DuplicateConsolidationBuild {
+  result: ConsolidateDuplicateModelsResult;
+  storagePaths: string[];
+}
 
 export interface CreateModelData {
   id?: string;
@@ -1466,6 +1476,273 @@ export class ModelService {
       mergedModelIds: uniqueSourceIds,
       movedFileCount,
     };
+  }
+
+  /**
+   * Describe the effect of retaining targetModelId and removing sourceModelId.
+   * Consolidation is deliberately stricter than the ordinary model merge: the
+   * complete sorted hash multisets must be identical, so no unique source file
+   * can be discarded.
+   */
+  async previewDuplicateModelConsolidation(
+    sourceModelId: string,
+    targetModelId: string,
+    userId: string,
+    libraryId: string,
+  ): Promise<ConsolidateDuplicateModelsPreview> {
+    const rows = await this.requireOwnedModels(
+      [sourceModelId, targetModelId],
+      userId,
+      libraryId,
+    );
+    return (await this.buildDuplicateConsolidationResult(
+      sourceModelId,
+      targetModelId,
+      rows,
+      db,
+    )).result;
+  }
+
+  /**
+   * Consolidate one exact duplicate model into a retained target. Source
+   * relationships are merged where lossless, while its file records and their
+   * managed storage objects are removed. There is intentionally no bulk form.
+   */
+  async consolidateDuplicateModel(
+    sourceModelId: string,
+    targetModelId: string,
+    userId: string,
+    libraryId: string,
+  ): Promise<ConsolidateDuplicateModelsResult> {
+    let result!: ConsolidateDuplicateModelsResult;
+    let resultStoragePaths: string[] = [];
+
+    await db.transaction(async (tx) => {
+      const rows = await this.lockOwnedModels(
+        [sourceModelId, targetModelId],
+        userId,
+        libraryId,
+        tx,
+      );
+      // Parent model locks prevent new FK memberships; relation-row locks make
+      // the snapshots below stable against concurrent membership/metadata
+      // removal. This prevents a source relationship from disappearing after
+      // it was inspected but before it can be unioned onto the target.
+      await this.lockDuplicateConsolidationRelations(sourceModelId, targetModelId, tx);
+      const build = await this.buildDuplicateConsolidationResult(
+        sourceModelId,
+        targetModelId,
+        rows,
+        tx,
+      );
+      result = build.result;
+      resultStoragePaths = build.storagePaths;
+
+      const targetMetadataRows = await tx
+        .select({ fieldDefinitionId: modelMetadata.fieldDefinitionId })
+        .from(modelMetadata)
+        .where(eq(modelMetadata.modelId, targetModelId));
+      const targetMetadataFieldIds = new Set(
+        targetMetadataRows.map((row) => row.fieldDefinitionId),
+      );
+      const sourceMetadataRows = await tx
+        .select({ fieldDefinitionId: modelMetadata.fieldDefinitionId, value: modelMetadata.value })
+        .from(modelMetadata)
+        .where(eq(modelMetadata.modelId, sourceModelId));
+      const metadataToCopy = sourceMetadataRows.filter((row) =>
+        !targetMetadataFieldIds.has(row.fieldDefinitionId));
+      if (metadataToCopy.length > 0) {
+        await tx.insert(modelMetadata).values(metadataToCopy.map((row) => ({
+          modelId: targetModelId,
+          fieldDefinitionId: row.fieldDefinitionId,
+          value: row.value,
+        })));
+      }
+
+      const sourceCollections = await tx
+        .select({ collectionId: collectionModels.collectionId })
+        .from(collectionModels)
+        .where(eq(collectionModels.modelId, sourceModelId));
+      if (sourceCollections.length > 0) {
+        await tx.insert(collectionModels).values(sourceCollections.map((row) => ({
+          collectionId: row.collectionId,
+          modelId: targetModelId,
+        }))).onConflictDoNothing();
+      }
+
+      const sourceTags = await tx
+        .select({ tagId: modelTags.tagId })
+        .from(modelTags)
+        .where(eq(modelTags.modelId, sourceModelId));
+      if (sourceTags.length > 0) {
+        await tx.insert(modelTags).values(sourceTags.map((row) => ({
+          modelId: targetModelId,
+          tagId: row.tagId,
+        }))).onConflictDoNothing();
+      }
+
+      await tx.delete(models).where(eq(models.id, sourceModelId));
+      await this.recalculateModelStats(targetModelId, tx);
+      await duplicateScannerService.reconcileDuplicateFlags(libraryId, tx);
+    }, { isolationLevel: 'serializable' });
+
+    // The database mutation is authoritative. Storage cleanup is best effort,
+    // matching model/file deletion semantics: a missed object is orphaned but
+    // never causes a partial relationship or file-record mutation.
+    const storagePaths = resultStoragePaths;
+    try {
+      const failures = await storageService.deleteMany(storagePaths);
+      for (const failure of failures) {
+        logger.warn(
+          { sourceModelId, storagePath: failure.filePath, err: failure.reason },
+          'Best-effort duplicate consolidation storage cleanup failed',
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        { sourceModelId, err: error },
+        'Best-effort duplicate consolidation storage cleanup failed',
+      );
+    }
+
+    logger.info(
+      {
+        service: 'ModelService',
+        sourceModelId,
+        targetModelId,
+        deletedFileCount: result.deletedFileCount,
+        reclaimableBytes: result.reclaimableBytes,
+      },
+      'Consolidated exact duplicate model',
+    );
+    return result;
+  }
+
+  private async buildDuplicateConsolidationResult(
+    sourceModelId: string,
+    targetModelId: string,
+    rows: Model[],
+    executor: DatabaseExecutor,
+  ): Promise<DuplicateConsolidationBuild> {
+    if (sourceModelId === targetModelId) {
+      throw validationError('A model cannot be consolidated into itself', 'sourceModelId');
+    }
+    const source = rows.find((row) => row.id === sourceModelId);
+    const target = rows.find((row) => row.id === targetModelId);
+    if (!source || !target) throw notFound('One or more models were not found');
+    if (source.status !== 'ready' || target.status !== 'ready') {
+      throw validationError('Both models must be ready before consolidating', 'sourceModelId');
+    }
+
+    const [sourceFiles, targetFiles] = await Promise.all([
+      executor.select().from(modelFiles).where(eq(modelFiles.modelId, sourceModelId))
+        .orderBy(asc(modelFiles.hash), asc(modelFiles.id)),
+      executor.select().from(modelFiles).where(eq(modelFiles.modelId, targetModelId))
+        .orderBy(asc(modelFiles.hash), asc(modelFiles.id)),
+    ]);
+    if (sourceFiles.length === 0 || sourceFiles.length !== targetFiles.length
+      || sourceFiles.some((file, index) => file.hash !== targetFiles[index]?.hash)) {
+      throw validationError('Models no longer have identical files', 'sourceModelId');
+    }
+
+    const [sourceMetadataRows, targetMetadataRows, sourceCollections, targetCollections, sourceTags, targetTags,
+      thumbnailRows] = await Promise.all([
+      executor.select({
+        fieldDefinitionId: modelMetadata.fieldDefinitionId,
+        fieldName: metadataFieldDefinitions.name,
+        fieldSlug: metadataFieldDefinitions.slug,
+        value: modelMetadata.value,
+      }).from(modelMetadata)
+        .innerJoin(
+          metadataFieldDefinitions,
+          eq(modelMetadata.fieldDefinitionId, metadataFieldDefinitions.id),
+        )
+        .where(eq(modelMetadata.modelId, sourceModelId)),
+      executor.select({ fieldDefinitionId: modelMetadata.fieldDefinitionId }).from(modelMetadata)
+        .where(eq(modelMetadata.modelId, targetModelId)),
+      executor.select({ id: collections.id, name: collections.name }).from(collectionModels)
+        .innerJoin(collections, eq(collectionModels.collectionId, collections.id))
+        .where(eq(collectionModels.modelId, sourceModelId)),
+      executor.select({ collectionId: collectionModels.collectionId }).from(collectionModels)
+        .where(eq(collectionModels.modelId, targetModelId)),
+      executor.select({ id: tags.id, name: tags.name }).from(modelTags)
+        .innerJoin(tags, eq(modelTags.tagId, tags.id))
+        .where(eq(modelTags.modelId, sourceModelId)),
+      executor.select({ tagId: modelTags.tagId }).from(modelTags)
+        .where(eq(modelTags.modelId, targetModelId)),
+      executor.select({
+        id: thumbnails.id,
+        sourceFileId: thumbnails.sourceFileId,
+        sourceFilename: modelFiles.filename,
+        width: thumbnails.width,
+        height: thumbnails.height,
+        format: thumbnails.format,
+        storagePath: thumbnails.storagePath,
+      }).from(thumbnails)
+        .innerJoin(modelFiles, eq(thumbnails.sourceFileId, modelFiles.id))
+        .where(eq(modelFiles.modelId, sourceModelId)),
+    ]);
+    const targetMetadataIds = new Set(targetMetadataRows.map((row) => row.fieldDefinitionId));
+    const targetCollectionIds = new Set(targetCollections.map((row) => row.collectionId));
+    const targetTagIds = new Set(targetTags.map((row) => row.tagId));
+    const copiedMetadata = sourceMetadataRows
+      .filter((row) => !targetMetadataIds.has(row.fieldDefinitionId))
+      .sort((left, right) => left.fieldSlug.localeCompare(right.fieldSlug));
+    const addedCollections = sourceCollections
+      .filter((row) => !targetCollectionIds.has(row.id))
+      .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+    const addedTags = sourceTags
+      .filter((row) => !targetTagIds.has(row.id))
+      .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+
+    return {
+      result: {
+        sourceModel: { id: source.id, name: source.name },
+        targetModel: { id: target.id, name: target.name },
+        removedFiles: sourceFiles.map((file) => ({
+          id: file.id,
+          filename: file.filename,
+          relativePath: file.relativePath,
+          sizeBytes: file.sizeBytes,
+          hash: file.hash,
+        })),
+        removedThumbnails: thumbnailRows
+          .map(({ storagePath: _storagePath, ...thumbnail }) => thumbnail)
+          .sort((left, right) => left.sourceFilename.localeCompare(right.sourceFilename)
+            || left.id.localeCompare(right.id)),
+        copiedMetadata,
+        addedCollections,
+        addedTags,
+        copiedMetadataFieldCount: copiedMetadata.length,
+        addedCollectionCount: addedCollections.length,
+        addedTagCount: addedTags.length,
+        deletedFileCount: sourceFiles.length,
+        reclaimableBytes: sourceFiles.reduce((total, file) => total + file.sizeBytes, 0),
+        deletedSourceModelId: source.id,
+      },
+      storagePaths: [
+        ...sourceFiles.map((file) => file.storagePath),
+        ...thumbnailRows.map((row) => row.storagePath),
+      ],
+    };
+  }
+
+  private async lockDuplicateConsolidationRelations(
+    sourceModelId: string,
+    targetModelId: string,
+    executor: DatabaseExecutor,
+  ): Promise<void> {
+    const modelIds = [sourceModelId, targetModelId];
+    await Promise.all([
+      executor.select({ id: modelFiles.id }).from(modelFiles)
+        .where(inArray(modelFiles.modelId, modelIds)).for('update'),
+      executor.select({ id: modelMetadata.id }).from(modelMetadata)
+        .where(inArray(modelMetadata.modelId, modelIds)).for('update'),
+      executor.select({ collectionId: collectionModels.collectionId }).from(collectionModels)
+        .where(inArray(collectionModels.modelId, modelIds)).for('update'),
+      executor.select({ tagId: modelTags.tagId }).from(modelTags)
+        .where(inArray(modelTags.modelId, modelIds)).for('update'),
+    ]);
   }
 
   async deleteModel(id: string): Promise<void> {

@@ -1,12 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  consolidateDuplicateModelsSchema,
   duplicateFileGroupParamsSchema,
+  type ConsolidateDuplicateModelsRequest,
   type DuplicateFileGroupParams,
 } from '@alexandria/shared';
 import { requireAuth } from '../middleware/auth.js';
 import { requireLibrary } from '../middleware/library.js';
 import { duplicateScannerService } from '../services/duplicate-scanner.service.js';
 import { presenterService } from '../services/presenter.service.js';
+import { modelService } from '../services/model.service.js';
 import { validationError } from '../utils/errors.js';
 
 function parseDuplicateFileGroupParams(value: unknown): DuplicateFileGroupParams {
@@ -59,6 +62,46 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
       const result = await duplicateScannerService.ignoreDuplicateFileGroup(
         request.libraryId!,
         hash,
+      );
+      return reply.status(200).send({ data: result, meta: null, errors: null });
+    },
+  );
+
+  app.post(
+    '/duplicates/consolidate/preview',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const parsed = consolidateDuplicateModelsSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw validationError(issue?.message ?? 'Invalid consolidation request', issue?.path.join('.'));
+      }
+      const body = parsed.data as ConsolidateDuplicateModelsRequest;
+      const result = await modelService.previewDuplicateModelConsolidation(
+        body.sourceModelId,
+        body.targetModelId,
+        request.user!.id,
+        request.libraryId!,
+      );
+      return reply.status(200).send({ data: result, meta: null, errors: null });
+    },
+  );
+
+  app.post(
+    '/duplicates/consolidate',
+    { preHandler: [requireAuth, requireLibrary] },
+    async (request, reply) => {
+      const parsed = consolidateDuplicateModelsSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw validationError(issue?.message ?? 'Invalid consolidation request', issue?.path.join('.'));
+      }
+      const body = parsed.data as ConsolidateDuplicateModelsRequest;
+      const result = await modelService.consolidateDuplicateModel(
+        body.sourceModelId,
+        body.targetModelId,
+        request.user!.id,
+        request.libraryId!,
       );
       return reply.status(200).send({ data: result, meta: null, errors: null });
     },
