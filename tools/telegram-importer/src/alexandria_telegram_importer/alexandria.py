@@ -263,17 +263,17 @@ class AlexandriaClient:
         session_id: str,
         *,
         model_name: str,
-        description: str,
+        description: str | None = None,
+        batch_metadata: dict[str, Any] | None = None,
     ) -> str:
+        payload: dict[str, Any] = dict(batch_metadata or {})
+        payload["modelName"] = model_name[:255]
+        if description is not None:
+            payload["description"] = description[:2000]
         response = await self._request(
             "POST",
             f"/models/import-sessions/{session_id}/commit",
-            json={
-                "batchMetadata": {
-                    "modelName": model_name[:255],
-                    "description": description[:2000],
-                },
-            },
+            json={"batchMetadata": payload},
         )
         return self._data(response)["modelId"]
 

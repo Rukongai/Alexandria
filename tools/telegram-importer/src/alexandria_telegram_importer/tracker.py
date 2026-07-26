@@ -26,6 +26,16 @@ class ImportRecord:
     duplicate_of_import_key: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class StagedBundle:
+    bundle_key: str
+    source_channel_id: int
+    folder_name: str
+    model_message_ids: tuple[int, ...]
+    status: str
+    downloaded_at: str
+
+
 class ImportTracker:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +91,22 @@ class ImportTracker:
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS imports_content_signature_idx "
             "ON imports (content_signature, status)",
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS staged_bundles (
+                bundle_key TEXT PRIMARY KEY,
+                source_channel_id INTEGER NOT NULL,
+                folder_name TEXT NOT NULL,
+                model_message_ids TEXT NOT NULL,
+                status TEXT NOT NULL,
+                downloaded_at TEXT NOT NULL
+            )
+            """,
+        )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS staged_bundles_channel_idx "
+            "ON staged_bundles (source_channel_id)",
         )
         self._connection.commit()
 
@@ -266,6 +292,60 @@ class ImportTracker:
         if record is None:
             raise KeyError(import_key)
         return record
+
+    def record_staged(
+        self,
+        *,
+        bundle_key: str,
+        source_channel_id: int,
+        folder_name: str,
+        model_message_ids: tuple[int, ...],
+    ) -> StagedBundle:
+        now = datetime.now(UTC).isoformat()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO staged_bundles (
+                    bundle_key, source_channel_id, folder_name,
+                    model_message_ids, status, downloaded_at
+                ) VALUES (?, ?, ?, ?, 'downloaded', ?)
+                ON CONFLICT(bundle_key) DO NOTHING
+                """,
+                (
+                    bundle_key,
+                    source_channel_id,
+                    folder_name,
+                    json.dumps(model_message_ids),
+                    now,
+                ),
+            )
+        staged = self.get_staged(bundle_key)
+        if staged is None:
+            raise KeyError(bundle_key)
+        return staged
+
+    def get_staged(self, bundle_key: str) -> StagedBundle | None:
+        row = self._connection.execute(
+            "SELECT * FROM staged_bundles WHERE bundle_key = ?",
+            (bundle_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return StagedBundle(
+            bundle_key=row["bundle_key"],
+            source_channel_id=row["source_channel_id"],
+            folder_name=row["folder_name"],
+            model_message_ids=tuple(json.loads(row["model_message_ids"])),
+            status=row["status"],
+            downloaded_at=row["downloaded_at"],
+        )
+
+    def staged_keys(self, source_channel_id: int) -> set[str]:
+        rows = self._connection.execute(
+            "SELECT bundle_key FROM staged_bundles WHERE source_channel_id = ?",
+            (source_channel_id,),
+        ).fetchall()
+        return {row["bundle_key"] for row in rows}
 
     def counts(self) -> dict[str, int]:
         rows = self._connection.execute(

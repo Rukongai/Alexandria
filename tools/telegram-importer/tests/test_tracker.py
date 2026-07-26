@@ -294,3 +294,98 @@ def test_should_reject_duplicate_source_without_model(tmp_path) -> None:
             tracker.mark_duplicate("duplicate", invalid_original)
     finally:
         tracker.close()
+
+
+def test_should_record_and_read_back_a_staged_bundle(tmp_path) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        tracker.record_staged(
+            bundle_key="abc123",
+            source_channel_id=-100987654,
+            folder_name="002501-dragon-set",
+            model_message_ids=(2501, 2502),
+        )
+
+        staged = tracker.get_staged("abc123")
+
+        assert staged is not None
+        assert staged.folder_name == "002501-dragon-set"
+        assert staged.model_message_ids == (2501, 2502)
+        assert staged.status == "downloaded"
+        assert staged.downloaded_at
+    finally:
+        tracker.close()
+
+
+def test_should_report_staged_keys_for_one_channel_only(tmp_path) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        tracker.record_staged(
+            bundle_key="mine",
+            source_channel_id=-100987654,
+            folder_name="a",
+            model_message_ids=(1,),
+        )
+        tracker.record_staged(
+            bundle_key="theirs",
+            source_channel_id=-100111111,
+            folder_name="b",
+            model_message_ids=(2,),
+        )
+
+        assert tracker.staged_keys(-100987654) == {"mine"}
+    finally:
+        tracker.close()
+
+
+def test_should_treat_recording_the_same_bundle_twice_as_idempotent(tmp_path) -> None:
+    tracker = ImportTracker(tmp_path / "state.sqlite3")
+    try:
+        tracker.record_staged(
+            bundle_key="abc123",
+            source_channel_id=-100987654,
+            folder_name="first",
+            model_message_ids=(1,),
+        )
+        tracker.record_staged(
+            bundle_key="abc123",
+            source_channel_id=-100987654,
+            folder_name="second",
+            model_message_ids=(1,),
+        )
+
+        staged = tracker.get_staged("abc123")
+
+        assert staged is not None
+        assert staged.folder_name == "first"
+        assert tracker.staged_keys(-100987654) == {"abc123"}
+    finally:
+        tracker.close()
+
+
+def test_should_add_the_staged_bundles_table_to_an_existing_state_file(tmp_path) -> None:
+    path = tmp_path / "state.sqlite3"
+    legacy = sqlite3.connect(path)
+    legacy.execute(
+        "CREATE TABLE imports ("
+        "import_key TEXT PRIMARY KEY, source_channel_id INTEGER NOT NULL, "
+        "logical_filename TEXT NOT NULL, upload_filename TEXT NOT NULL, "
+        "model_message_ids TEXT NOT NULL, attachment_message_ids TEXT NOT NULL, "
+        "status TEXT NOT NULL, session_id TEXT, model_id TEXT, error TEXT, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    )
+    legacy.commit()
+    legacy.close()
+
+    tracker = ImportTracker(path)
+    try:
+        tracker.record_staged(
+            bundle_key="abc123",
+            source_channel_id=-100987654,
+            folder_name="002501-dragon-set",
+            model_message_ids=(2501,),
+        )
+
+        assert tracker.get_staged("abc123") is not None
+    finally:
+        tracker.close()
