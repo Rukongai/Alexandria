@@ -713,6 +713,18 @@ function countFiles(nodes: FileTreeNode[]): number {
   return count;
 }
 
+function countDuplicateFiles(nodes: FileTreeNode[]): number {
+  let count = 0;
+  for (const node of nodes) {
+    if (node.type === 'file' && node.isDuplicate) {
+      count++;
+    } else if (node.type === 'directory' && node.children) {
+      count += countDuplicateFiles(node.children);
+    }
+  }
+  return count;
+}
+
 interface FileTreeProps {
   tree: FileTreeNode[];
   modelId: string;
@@ -763,6 +775,7 @@ export function FileTree({
   onSplitFolder,
 }: FileTreeProps) {
   const totalFiles = countFiles(tree);
+  const duplicateFiles = countDuplicateFiles(tree);
   const allFiles = React.useMemo(() => collectFileTargets(tree), [tree]);
   const baseDestinations = React.useMemo(
     () => [
@@ -953,7 +966,9 @@ export function FileTree({
               {operationStatus}
             </span>
           ) : (
-            <span className="text-xs text-muted-foreground">{totalFiles} files</span>
+            <span className="text-xs text-muted-foreground">
+              {totalFiles} files · {duplicateFiles} duplicate{duplicateFiles === 1 ? '' : 's'}
+            </span>
           )}
         </div>
       </div>

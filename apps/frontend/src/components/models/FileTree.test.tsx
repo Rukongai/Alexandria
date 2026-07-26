@@ -76,6 +76,39 @@ describe('FileTree', () => {
     expect(screen.getByText('duplicates').parentElement?.textContent).not.toContain('Duplicate');
   });
 
+  it('shows the duplicate file count in the header', () => {
+    render(
+      <FileTree
+        tree={[
+          {
+            name: 'duplicates',
+            type: 'directory',
+            isDuplicate: false,
+            children: [
+              {
+                name: 'copy.stl',
+                type: 'file',
+                fileType: 'stl',
+                id: 'duplicate-file',
+                isDuplicate: true,
+              },
+            ],
+          },
+          {
+            name: 'original.stl',
+            type: 'file',
+            fileType: 'stl',
+            id: 'original-file',
+            isDuplicate: false,
+          },
+        ]}
+        modelId="m1"
+      />,
+    );
+
+    expect(screen.getByText('2 files · 1 duplicate')).toBeInTheDocument();
+  });
+
   it('fires onOpenStl with the reconstructed relative path for a nested STL', () => {
     const onOpenStl = vi.fn();
     render(<FileTree tree={TREE} modelId="m1" onOpenStl={onOpenStl} />);
