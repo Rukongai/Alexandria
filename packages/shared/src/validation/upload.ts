@@ -79,6 +79,23 @@ export const batchUploadMetadataSchema = z.object({
   { message: 'Choose either an existing collection or a new collection, not both' },
 );
 
+/**
+ * Lenient parse of an archive's root metadata.json, used only to prefill the
+ * review form. Every field is independently optional and catches to undefined,
+ * so one malformed value never costs the author the rest of a hand-written
+ * file, and unknown keys (the importer's `source`, `result`, `schemaVersion`)
+ * are stripped rather than rejected.
+ */
+export const metadataFileSchema = z.object({
+  modelName: z.string().min(1).max(255).optional().catch(undefined),
+  description: z.string().max(2000).optional().catch(undefined),
+  artist: z.string().max(255).optional().catch(undefined),
+  tags: z.array(z.string().min(1).max(100)).max(50).optional().catch(undefined),
+  metadata: setModelMetadataSchema.optional().catch(undefined),
+  collectionId: z.string().uuid().optional().catch(undefined),
+  newCollectionName: z.string().min(1).max(255).optional().catch(undefined),
+}).strip();
+
 export const commitImportSessionSchema = z.object({
   batchMetadata: batchUploadMetadataSchema.optional(),
 });
