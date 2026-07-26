@@ -15,6 +15,7 @@ const LIBRARY_ID = '22222222-2222-4222-8222-222222222222';
 const MODEL_ID = '33333333-3333-4333-8333-333333333333';
 const COLLECTION_ID = '66666666-6666-4666-8666-666666666666';
 const IMPORT_SESSION_ID = '77777777-7777-4777-8777-777777777777';
+const OTHER_IMPORT_SESSION_ID = '88888888-8888-4888-8888-888888888888';
 const connection = {
   id: '44444444-4444-4444-8444-444444444444',
   baseUrl: 'https://provider.example/v1',
@@ -51,6 +52,7 @@ function makeDependencies() {
     metadata: { listFields: vi.fn(), listFieldValues: vi.fn() },
     importSessions: {
       listActive: vi.fn(),
+      getOwnedReadyForReviewRow: vi.fn(),
       getOwnedActiveSession: vi.fn().mockResolvedValue({
         id: IMPORT_SESSION_ID,
         originalFilename: 'Maker - 2024 - Dragon.zip',
@@ -62,6 +64,7 @@ function makeDependencies() {
         updatedAt: '2026-07-21T11:00:00.000Z',
       }),
     },
+    fileProcessing: { extractManifestUrlCandidates: vi.fn().mockResolvedValue([]) },
   };
 }
 
@@ -76,6 +79,7 @@ function serviceWith(deps: ReturnType<typeof makeDependencies>): AiAssistantServ
     collections: deps.collections as never,
     metadata: deps.metadata as never,
     importSessions: deps.importSessions as never,
+    fileProcessing: deps.fileProcessing as never,
   });
 }
 
@@ -130,6 +134,9 @@ describe('AiAssistantService tool-loop safety', () => {
     expect(SYSTEM_PROMPT).toContain('at most 14 provider responses');
     expect(SYSTEM_PROMPT).toContain('current response is the final tool-capable one');
     expect(SYSTEM_PROMPT).toContain('The final provider response is reserved for that tool-free synthesis');
+    expect(SYSTEM_PROMPT).toContain('inspect_import_session_layout');
+    expect(SYSTEM_PROMPT).toContain('ask the user instead of creating a proposal');
+    expect(SYSTEM_PROMPT).toContain('Model and Images roots');
     expect(parseFilenameHint('Maker - 2024-05 - Dragon Bust.tar.gz')).toEqual({
       artistName: 'Maker', date: '2024-05', modelName: 'Dragon Bust',
     });
@@ -390,6 +397,104 @@ describe('AiAssistantService tool-loop safety', () => {
       .toHaveBeenCalledWith(IMPORT_SESSION_ID, USER_ID, LIBRARY_ID);
     expect(deps.presenter.buildModelDetail).not.toHaveBeenCalled();
     expect(deps.providers.createChatCompletion).not.toHaveBeenCalled();
+  });
+
+  it('rejects layout inspection outside the explicit staged targets', async () => {
+    const deps = makeDependencies();
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [{
+        id: 'inspect-other',
+        function: {
+          name: 'inspect_import_session_layout',
+          arguments: JSON.stringify({ importSessionId: OTHER_IMPORT_SESSION_ID }),
+        },
+      }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'I need the selected upload.' } }] });
+
+    await serviceWith(deps).chat({
+      message: 'Organize this upload',
+      context: { importSessionIds: [IMPORT_SESSION_ID] },
+    }, USER_ID, LIBRARY_ID);
+
+    expect(deps.importSessions.getOwnedReadyForReviewRow).not.toHaveBeenCalled();
+    const toolMessage = deps.providers.createChatCompletion.mock.calls[1][1].messages.find(
+      (message: { tool_call_id?: string }) => message.tool_call_id === 'inspect-other',
+    );
+    expect(JSON.parse(toolMessage.content).result.error).toContain('explicit current target');
+  });
+
+  it('rejects staged proposals outside the explicit staged targets', async () => {
+    const deps = makeDependencies();
+    const proposalInput = {
+      summary: 'Rename another upload',
+      changes: [{
+        type: 'update_import_session',
+        importSessionId: OTHER_IMPORT_SESSION_ID,
+        originalFilename: 'Other.zip',
+        expectedUpdatedAt: '2026-07-21T11:00:00.000Z',
+        patch: { modelName: 'Other' },
+      }],
+    };
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [{
+        id: 'preview-other',
+        function: { name: 'preview_changes', arguments: JSON.stringify(proposalInput) },
+      }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'I cannot change that upload.' } }] });
+
+    await serviceWith(deps).chat({
+      message: 'Organize this upload',
+      context: { importSessionIds: [IMPORT_SESSION_ID] },
+    }, USER_ID, LIBRARY_ID);
+
+    expect(deps.proposals.createPreview).not.toHaveBeenCalled();
+    const toolMessage = deps.providers.createChatCompletion.mock.calls[1][1].messages.find(
+      (message: { tool_call_id?: string }) => message.tool_call_id === 'preview-other',
+    );
+    expect(JSON.parse(toolMessage.content).result.error).toContain('explicit current target');
+  });
+
+  it('character-bounds long layout pages and advances the cursor without truncation', async () => {
+    const deps = makeDependencies();
+    const longName = `${'x'.repeat(900)}.txt`;
+    const entries = Array.from({ length: 3 }, (_, index) => ({
+      filename: `${index}-${longName}`,
+      relativePath: `Documents/${index}-${longName}`,
+      fileType: 'document',
+      mimeType: 'text/plain',
+      sizeBytes: 10,
+      hash: String(index).repeat(64),
+    }));
+    deps.importSessions.getOwnedReadyForReviewRow.mockResolvedValue({
+      id: IMPORT_SESSION_ID,
+      originalFilename: 'Maker - 2024-05 - Dragon.zip',
+      updatedAt: new Date('2026-07-21T11:00:00.000Z'),
+      stagingPath: '/tmp/staged-upload',
+      manifest: { entries, totalSizeBytes: 30 },
+    });
+    deps.providers.createChatCompletion
+      .mockResolvedValueOnce({ choices: [{ message: { content: null, tool_calls: [{
+        id: 'inspect-long',
+        function: {
+          name: 'inspect_import_session_layout',
+          arguments: JSON.stringify({ importSessionId: IMPORT_SESSION_ID, limit: 100 }),
+        },
+      }] } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'I need another page.' } }] });
+
+    await serviceWith(deps).chat({
+      message: 'Organize this upload',
+      context: { importSessionIds: [IMPORT_SESSION_ID] },
+    }, USER_ID, LIBRARY_ID);
+
+    const toolMessage = deps.providers.createChatCompletion.mock.calls[1][1].messages.find(
+      (message: { tool_call_id?: string }) => message.tool_call_id === 'inspect-long',
+    );
+    const parsed = JSON.parse(toolMessage.content);
+    expect(parsed.truncated).not.toBe(true);
+    expect(parsed.result.entries).toHaveLength(1);
+    expect(parsed.result.nextCursor).toBe(1);
+    expect(toolMessage.content.length).toBeLessThanOrEqual(3_500);
   });
 
   it('exposes scoped collection, metadata, and import-session read tools', async () => {

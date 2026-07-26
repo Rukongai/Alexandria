@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { setModelMetadataSchema } from './metadata.js';
-import { batchUploadMetadataSchema } from './upload.js';
+import { batchUploadMetadataSchema, importFileLayoutPlanSchema } from './upload.js';
 
 const httpUrlSchema = z.string().url().max(2048).refine((value) => {
   const protocol = new URL(value).protocol;
@@ -121,6 +121,14 @@ const updateImportSessionChangeSchema = z.object({
   }),
 });
 
+const organizeImportSessionFilesChangeSchema = z.object({
+  type: z.literal('organize_import_session_files'),
+  importSessionId: z.string().uuid(),
+  originalFilename: z.string().min(1).max(512),
+  expectedUpdatedAt: z.string().datetime({ offset: true }),
+  layout: importFileLayoutPlanSchema,
+});
+
 const aiBulkModelIdsSchema = z.array(z.string().uuid()).min(1).max(500)
   .refine((ids) => new Set(ids).size === ids.length, {
     message: 'Bulk model IDs must be unique',
@@ -214,6 +222,7 @@ export const aiChangeSchema = z.union([
   setMetadataChangeSchema,
   updateCollectionsChangeSchema,
   updateImportSessionChangeSchema,
+  organizeImportSessionFilesChangeSchema,
   bulkMetadataChangeSchema,
   bulkCollectionsChangeSchema,
 ]);

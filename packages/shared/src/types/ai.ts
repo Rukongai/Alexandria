@@ -1,6 +1,6 @@
 import type { SetModelMetadataRequest } from './metadata.js';
 import type { UpdateModelRequest } from './model.js';
-import type { BatchUploadMetadata } from './upload.js';
+import type { BatchUploadMetadata, ImportFileLayoutPlan } from './upload.js';
 import type { BulkMetadataOperation } from './api.js';
 
 export interface AiProvider {
@@ -100,6 +100,16 @@ export interface AiUpdateImportSessionChange {
   patch: BatchUploadMetadata;
 }
 
+export interface AiOrganizeImportSessionFilesChange {
+  type: 'organize_import_session_files';
+  importSessionId: string;
+  /** Identity guard captured when the proposal is previewed. */
+  originalFilename: string;
+  /** Optimistic stale-state guard captured from the staged session. */
+  expectedUpdatedAt: string;
+  layout: ImportFileLayoutPlan;
+}
+
 export interface AiBulkMetadataChange {
   type: 'bulk_metadata';
   /** Frozen, ownership-validated model IDs resolved when the preview is created. */
@@ -124,6 +134,7 @@ export type AiChange =
   | AiSetMetadataChange
   | AiUpdateCollectionsChange
   | AiUpdateImportSessionChange
+  | AiOrganizeImportSessionFilesChange
   | AiBulkMetadataChange
   | AiBulkCollectionsChange;
 
@@ -135,6 +146,10 @@ export interface AiChangePreviewDisplay {
     modelCount: number;
     sampleModelNames: string[];
   };
+  importSessionLayouts?: Record<string, {
+    fileCount: number;
+    sampleDestinationPaths: string[];
+  }>;
 }
 
 export interface AiChangePreview {

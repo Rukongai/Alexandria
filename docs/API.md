@@ -483,13 +483,17 @@ Send one assistant turn through the selected provider. The assistant can search 
 | `context.modelIds` | UUID string[] | Optional current detail, selection, or page targets; unique; at most 25 model targets across `modelId` and `modelIds` |
 | `context.importSessionIds` | UUID string[] | Optional current staged-upload targets; unique; at most 25; each must be active, owned by the user, and in the active library |
 
-The backend does not persist chat transcripts. It sends the supplied message and history to the selected external provider. Before sending target context, it validates every model and import session; any invalid target rejects the turn before any target data is disclosed. Model context includes compact model details and file information. Import-session context includes its filename, status, `updatedAt`, detected scan summary and path preview, and current `draftMetadata`. These are sent as explicitly untrusted user-role data, not as privileged system instructions. Tool results needed for the turn—including library search/model content, collections, metadata definitions and known values, import sessions, and public search results—are also sent to that provider and labeled as untrusted data.
+The backend does not persist chat transcripts. It sends the supplied message and history to the selected external provider. Before sending target context, it validates every model and import session; any invalid target rejects the turn before any target data is disclosed. Model context includes compact model details and file information. Import-session context includes its filename, status, `updatedAt`, detected scan summary and path preview, current `draftMetadata`, and current `draftFileLayout`. These are sent as explicitly untrusted user-role data, not as privileged system instructions. Tool results needed for the turn—including library search/model content, collections, metadata definitions and known values, import sessions, and public search results—are also sent to that provider and labeled as untrusted data.
 
 The internal list tools for collections, metadata fields, known metadata values, and import sessions return at most 100 items and set `hasMore: true` when additional items exist. This bound applies only to data supplied through the provider tool loop and does not change the corresponding public REST endpoints.
 
 The frontend supplies context from the current page. A model detail page targets that model. The pivot workspace targets up to 25 selected models, or the first 25 visible results when nothing is selected. The upload page targets the active session when it is `ready_for_review`; otherwise it targets up to 25 ready-for-review sessions. Ordinary changes and a `current_models` bulk proposal remain limited to those explicit model targets. For an explicitly requested whole-library uniform edit, the provider may instead select the `active_library` bulk scope; the server resolves that scope rather than trusting provider-supplied model IDs. Changing the active library or exact target set aborts in-flight chat, clears the prior conversation and proposal UI, and ignores stale chat/apply completions so an answer prepared for one selection cannot appear against another.
 
 For a simple “fill metadata” task, the assistant inspects the target's archive/original filename, scan details or files, existing metadata, and configured fields. It first tries the exact `{Artist Name} - {Date} - {Model Name}` convention after stripping the archive extension, maps artist and model name to their relevant fields and the date to a configured date or year field when one exists, and treats the parse as an untrusted hint rather than a change. Source means the depicted character's originating intellectual property, franchise, series, game, film, or other work—not a download site or artist (for example, Fullmetal Alchemist for Lust or Konosuba for Aqua). When local evidence is insufficient, the assistant may do reasonable research, then chooses the best-supported Source result and clearly states uncertainty. It does not continue searching merely to obtain certainty, and leaves Source unset only when the available evidence remains genuinely weak or conflicting. It reads known values before suggesting tags or an existing collection and uses only server-returned collection IDs. The assistant bubble exposes starter prompts for filling metadata, suggesting tags, and suggesting a collection.
+
+The **Organize model** starter appears only when the frontend has at least one ready-for-review staged-upload target. For that task, the assistant must page through the complete authoritative manifest with its internal `inspect_import_session_layout` tool before proposing a change. The tool uses a zero-based offset `cursor`, defaults `limit` to 100, caps it at 100, and returns `entries`, `totalEntries`, and a nullable `nextCursor`. It also returns normalized HTTP(S) URL candidates without exposing arbitrary document text: extraction examines at most 20 text-like files, 64 KiB per file, 512 KiB total, and 24 unique URLs; unreadable files are ignored and Patreon URLs sort first.
+
+After removing the archive extension, an exact `{Artist} - {YYYY-MM} - {Character}` title supplies the artist, character, `YYYY` year, full `YYYY-MM` date, and `MM` month when matching configured fields exist. The organizer proposes `Character` as `modelName`; if no character is available but the artist is clear, it uses `{Artist} - Unknown`. Path evidence is case-insensitive: `NSFW` anywhere in a file or folder name supports `options.markNsfw`, while exact normalized path tokens `pre`, `presupported`, `pre-supported`, or `supported` support `options.markPreSupported`; `unsupported` does not. A clearly evidenced Patreon URL is preferred for a configured URL field. The proposed layout creates exactly the `Model` and `Images` roots, preserves existing image/render subtrees below `Images`, and groups printable files below `Model` by variants clearly supported by the existing structure. If credible URLs conflict or the variant-folder paradigm is unclear, the assistant asks a clarifying question and does not create a proposal.
 
 **Response (200):**
 
@@ -534,7 +538,7 @@ For a simple “fill metadata” task, the assistant inspects the target's archi
 }
 ```
 
-`sources` contains unique source URLs gathered during this turn, up to 24. `snippet` and `imageUrl` are optional. `proposal` is `null` when the provider did not request a valid preview. When a proposal exists, `display.collections` maps referenced collection UUIDs to server-resolved names and `display.images` maps referenced model-file UUIDs to `{ filename, thumbnailUrl }`. A bulk preview also includes `display.bulkTarget`, containing the server-derived `scope`, exact `modelCount`, and up to five server-derived `sampleModelNames`. These presentation fields let the review UI show a human-readable scope, count, bounded name sample, and “N more” remainder without rendering the frozen model UUID list; `changes` remains the exact immutable payload. The shared display fields are optional for compatibility.
+`sources` contains unique source URLs gathered during this turn, up to 24. `snippet` and `imageUrl` are optional. `proposal` is `null` when the provider did not request a valid preview. When a proposal exists, `display.collections` maps referenced collection UUIDs to server-resolved names and `display.images` maps referenced model-file UUIDs to `{ filename, thumbnailUrl }`. A bulk preview also includes `display.bulkTarget`, containing the server-derived `scope`, exact `modelCount`, and up to five server-derived `sampleModelNames`. An organization preview includes `display.importSessionLayouts[importSessionId]` with the exact expanded `fileCount` and up to five `sampleDestinationPaths`. These presentation fields let the review UI show human-readable effects without rendering frozen IDs or requiring the client to expand a compact layout; `changes` remains the exact immutable payload. The shared display fields are optional for compatibility.
 
 Public text lookup uses DuckDuckGo's Instant Answer API and returns at most eight abstract/related-topic sources; it is not a general crawl of arbitrary pages. Image lookup uses Wikimedia Commons and returns at most eight file-page and thumbnail candidates. Both services are keyless, use a 7-second timeout and 1 MiB response-body limit, and fail safely as an unavailable tool result so the assistant may still answer. Returned image URLs are research candidates only: the backend does not import them into managed storage, although the frontend may load a returned thumbnail to display its source card. An AI cover change can reference only an image file already belonging to the target model.
 
@@ -562,6 +566,7 @@ The supported changes are:
 - `set_metadata`: a non-empty object keyed by existing metadata-field slug. It uses the same field-semantic validation as direct metadata writes: `null` clears a value; numbers must be finite; booleans must be booleans; dates must be non-empty parseable strings; URLs must use HTTP or HTTPS; enum and multi-enum values must obey configured options; multi-enums require string arrays; and text fields must satisfy any configured validation pattern.
 - `update_collections`: `addCollectionIds` and `removeCollectionIds` are arrays of at most 50 UUIDs each. At least one ID is required, an ID cannot appear in both arrays, and every collection must belong to the user and active library.
 - `update_import_session`: `importSessionId`, the current `originalFilename`, the session's exact `updatedAt` copied into `expectedUpdatedAt`, and a non-empty `patch` are required. `originalFilename` guards identity; `expectedUpdatedAt` is an optimistic stale-state guard, so any intervening session or draft update makes the proposal invalid. The patch is a `BatchUploadMetadata` object and may include `modelName`, `description`, one of `collectionId` or `newCollectionName`, `artist`, `tags`, configured metadata values keyed by slug, and upload options. Existing collection IDs and configured metadata slugs/types are validated. Applying this change merges it into the persisted review draft; it never commits, enqueues, or otherwise processes the upload.
+- `organize_import_session_files`: requires the same `importSessionId`, `originalFilename`, and exact `expectedUpdatedAt` guards plus an `ImportFileLayoutPlan`. `rootFolders` must be exactly `["Model", "Images"]`; `prefixMappings` and optional exact `fileMappings` are each capped at 100 and at least one mapping is required. Exact-file mappings override prefix mappings, otherwise the longest matching source prefix wins; an empty source prefix is the archive-root fallback. Source paths and prefixes must exist in the scanned manifest, every file must resolve, and destination paths must be unique, non-conflicting, and below `Model/` or `Images/`; images must be below `Images/` and printable model files below `Model/`. Paths use forward slashes and reject traversal, empty segments, control characters, and overlong paths. Preview validation expands the plan to produce the display count/sample. Applying it replaces only `ImportSession.draftFileLayout`; it does not move staged files, commit, or enqueue the session.
 
 `preview_bulk_changes` accepts a summary plus a symbolic target whose `scope` is `current_models` or `active_library`, and at least one of `metadataOperations` or `collectionOperations`. It does not accept model IDs from the provider. The server resolves `current_models` from the validated page context or queries the authenticated user's active library for `active_library`. It then deduplicates and sorts the IDs, verifies every model is owned and in scope, and stores them in canonical `bulk_metadata` and/or `bulk_collections` changes. This freezes the reviewed target set: later library membership changes do not widen or shrink the proposal.
 
@@ -968,6 +973,7 @@ List the authenticated user's active import sessions for the current library. Ac
         ]
       },
       "draftMetadata": null,
+      "draftFileLayout": null,
       "modelId": null,
       "commitProgress": null,
       "error": null,
@@ -980,7 +986,7 @@ List the authenticated user's active import sessions for the current library. Ac
 }
 ```
 
-`data` is an array of `ImportSession`. The `detected` field is `null` while the session is still scanning. `draftMetadata` is a persisted `BatchUploadMetadata` review draft or `null`; applying an assistant proposal may update it, but does not commit the session. `commitProgress` is `null` unless the session is `committing`; see the progress contract below. Session TTL is 24 hours — sessions not committed within that window may be reaped.
+`data` is an array of `ImportSession`. The `detected` field is `null` while the session is still scanning. `draftMetadata` is a persisted `BatchUploadMetadata` review draft or `null`; `draftFileLayout` is an independently persisted `ImportFileLayoutPlan` or `null`. Applying an assistant proposal may update either draft, but does not commit the session. `commitProgress` is `null` unless the session is `committing`; see the progress contract below. Session TTL is 24 hours — sessions not committed within that window may be reaped.
 
 ---
 
@@ -1012,6 +1018,13 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
       "modelName": "Dragon Bust",
       "metadata": { "year": 2025 }
     },
+    "draftFileLayout": {
+      "rootFolders": ["Model", "Images"],
+      "prefixMappings": [
+        { "sourcePrefix": "STL", "destinationPrefix": "Model/Standard" },
+        { "sourcePrefix": "Renders", "destinationPrefix": "Images/Renders" }
+      ]
+    },
     "modelId": null,
     "commitProgress": null,
     "error": null,
@@ -1023,7 +1036,7 @@ Retrieve a single import session. Use this to poll scan progress and retrieve de
 }
 ```
 
-`data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on scan success, `ready_for_review` → `committing` → `committed` after commit, or an active phase → `error` on failure. `draftMetadata` exposes the current persisted review draft and is still only staged state. The upload review form refreshes from a changed server draft, including an applied assistant proposal, but ordinary detected-metadata polling does not overwrite unsaved local form edits. Polling this endpoint after commit returns the same `commitProgress` contract as the list endpoint.
+`data` is an `ImportSession`. `status` transitions: `scanning` → `ready_for_review` on scan success, `ready_for_review` → `committing` → `committed` after commit, or an active phase → `error` on failure. `draftMetadata` and `draftFileLayout` expose the current persisted review drafts and are still only staged state. Migration `0016_add_import_session_draft_file_layout.sql` keeps the layout separate from metadata, so a later explicit metadata form submission does not discard an accepted organization plan. The upload review form refreshes from a changed server draft, including an applied assistant proposal, but ordinary detected-metadata polling does not overwrite unsaved local form edits. Polling this endpoint after commit returns the same `commitProgress` contract as the list endpoint.
 
 While `status` is `committing`, `commitProgress` has this shape:
 
@@ -1106,9 +1119,9 @@ Commit a reviewed import session, creating a model and enqueuing the full ingest
 }
 ```
 
-`batchMetadata` is fully optional. `collectionId` and `newCollectionName` are mutually exclusive — use one or neither. `metadata` accepts configured field values keyed by field slug. An explicitly supplied `batchMetadata` object is authoritative and is used instead of the persisted session draft, even when it is empty. If `batchMetadata` is omitted, the persisted `draftMetadata` is used. Within the effective object, dedicated `artist` and `tags` fields override duplicate `artist` or `tags` entries in `metadata`.
+`batchMetadata` is fully optional. `collectionId` and `newCollectionName` are mutually exclusive — use one or neither. `metadata` accepts configured field values keyed by field slug. An explicitly supplied `batchMetadata` object is authoritative and is used instead of the persisted session metadata draft, even when it is empty. If `batchMetadata` is omitted, the persisted `draftMetadata` is used. Within the effective object, dedicated `artist` and `tags` fields override duplicate `artist` or `tags` entries in `metadata`. A persisted `draftFileLayout` is independent and is applied in either case.
 
-Before creating the model or changing the session state, the server validates every effective metadata value synchronously inside the same transaction used to claim the session. Validation follows the field semantics described under `PATCH /models/:id/metadata`. A failure returns an error, rolls back the claim, leaves the session ready for review, and creates no model. If queueing fails after a successful claim, both the created model and import session are marked `error`.
+Before creating the model or changing the session state, the server validates every effective metadata value and re-expands any saved layout against the current authoritative manifest inside the same transaction used to claim the session. Validation follows the field semantics described under `PATCH /models/:id/metadata`. A failure returns an error, rolls back the claim, leaves the session ready for review, and creates no model. If queueing fails after a successful claim, both the created model and import session are marked `error`.
 
 | Field | Type | Constraints |
 |-------|------|-------------|
@@ -1139,6 +1152,8 @@ Before creating the model or changing the session state, the server validates ev
 ```
 
 Continue polling `GET /models/import-sessions/:id` (or the active-session list) to track the structured commit phases. The commit job is keyed internally by the import session ID, so this uses the existing session polling flow and requires no job-status endpoint. `GET /models/:id/status` remains available for the model's coarse `processing` / `ready` / `error` state, but its `progress` field remains `null` while processing.
+
+When `draftFileLayout` is present, commit expands the compact mapping into destination paths while retaining each entry's original staged path as `sourceRelativePath`. Storage reads from that original path but writes and records the file under its reviewed destination. Alexandria explicitly persists the `Model` and `Images` root folder records even if one has no files. Image thumbnails are generated from the original staged image path and attached to the destination ModelFile, so reorganizing an image does not break thumbnail generation.
 
 The frontend polls active import sessions every two seconds. Its import queue and review pane show the phase, percentage, managed-storage byte/file counters, and current filename; if progress is absent, they render an indeterminate storage state. The review pane also polls model status every two seconds and does not show the model as complete while a non-`complete` session commit phase remains active, even though the model record becomes `ready` before the non-fatal metadata phase runs.
 

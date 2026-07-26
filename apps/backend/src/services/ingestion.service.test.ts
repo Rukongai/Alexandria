@@ -35,6 +35,7 @@ vi.mock('./model.service.js', () => ({
     requireOwnedModel: vi.fn(),
     getModelFiles: vi.fn(),
     getModelFolders: vi.fn(),
+    ensureModelFolders: vi.fn(),
     recalculateModelStats: vi.fn(),
   },
   ModelService: vi.fn(),
@@ -63,6 +64,16 @@ vi.mock('./file-processing.service.js', () => ({
 }));
 
 vi.mock('./import-session.service.js', () => ({
+  applyImportFileLayout: vi.fn((manifest) => ({
+    ...manifest,
+    entries: manifest.entries.map((entry: { filename: string; relativePath: string }) => ({
+      ...entry,
+      sourceRelativePath: entry.relativePath,
+      relativePath: entry.filename.endsWith('.png')
+        ? `Images/Renders/${entry.filename}`
+        : `Model/Standard/${entry.filename}`,
+    })),
+  })),
   importSessionService: {
     create: vi.fn(),
     getRow: vi.fn(),
@@ -551,6 +562,56 @@ describe('IngestionService – staged commit progress', () => {
     expect(importSessionService.update).toHaveBeenCalledWith('session-1', {
       status: 'committed',
     });
+  });
+
+  it('copies reviewed destinations from original sources and persists both root folders', async () => {
+    vi.mocked(importSessionService.getRow).mockResolvedValue({
+      id: 'session-1',
+      stagingPath: '/staging',
+      manifest: {
+        entries: [{
+          filename: 'model.stl', relativePath: 'Original/model.stl', fileType: 'stl',
+          mimeType: 'model/stl', sizeBytes: 100, hash: 'hash',
+        }],
+        totalSizeBytes: 100,
+      },
+      draftFileLayout: {
+        rootFolders: ['Model', 'Images'],
+        prefixMappings: [{ sourcePrefix: 'Original', destinationPrefix: 'Model/Standard' }],
+      },
+    } as never);
+    const job = {
+      id: 'session-1',
+      data: { sessionId: 'session-1', modelId: 'model-1', userId: 'user-1', libraryId: 'library-1' },
+      updateProgress: vi.fn().mockResolvedValue(undefined),
+      opts: { attempts: 1 }, attemptsMade: 0, failedReason: null,
+    };
+
+    await service.processCommitJob(job as never);
+
+    expect(fileProcessingService.copyManifestToStorage).toHaveBeenCalledWith(
+      '/staging',
+      'model-1',
+      expect.objectContaining({
+        entries: [expect.objectContaining({
+          sourceRelativePath: 'Original/model.stl',
+          relativePath: 'Model/Standard/model.stl',
+        })],
+      }),
+      expect.anything(),
+      expect.any(Function),
+    );
+    expect(modelService.createModelFiles).toHaveBeenCalledWith('model-1', [
+      expect.objectContaining({
+        sourceRelativePath: 'Original/model.stl',
+        relativePath: 'Model/Standard/model.stl',
+        storagePath: 'models/model-1/Model/Standard/model.stl',
+      }),
+    ]);
+    expect(modelService.ensureModelFolders).toHaveBeenCalledWith(
+      'model-1',
+      ['Model', 'Images'],
+    );
   });
 
   it('applies configured metadata with dedicated artist/tags taking precedence', async () => {

@@ -79,6 +79,40 @@ export const batchUploadMetadataSchema = z.object({
   { message: 'Choose either an existing collection or a new collection, not both' },
 );
 
+const layoutPathSchema = z.string().trim().max(1000);
+
+export const importFileLayoutPlanSchema = z.object({
+  rootFolders: z.tuple([z.literal('Model'), z.literal('Images')]),
+  prefixMappings: z.array(z.object({
+    sourcePrefix: layoutPathSchema,
+    destinationPrefix: layoutPathSchema.min(1),
+  })).max(100),
+  fileMappings: z.array(z.object({
+    sourcePath: layoutPathSchema.min(1),
+    destinationPath: layoutPathSchema.min(1),
+  })).max(100).optional(),
+}).superRefine((layout, context) => {
+  if (layout.prefixMappings.length === 0 && (layout.fileMappings?.length ?? 0) === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['prefixMappings'],
+      message: 'At least one file layout mapping is required',
+    });
+  }
+  for (const [field, values] of [
+    ['prefixMappings', layout.prefixMappings.map((mapping) => mapping.sourcePrefix)],
+    ['fileMappings', (layout.fileMappings ?? []).map((mapping) => mapping.sourcePath)],
+  ] as const) {
+    if (new Set(values).size !== values.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [field],
+        message: `${field === 'prefixMappings' ? 'Source prefixes' : 'Source file paths'} must be unique`,
+      });
+    }
+  }
+});
+
 export const commitImportSessionSchema = z.object({
   batchMetadata: batchUploadMetadataSchema.optional(),
 });
