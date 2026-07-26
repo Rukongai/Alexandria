@@ -320,6 +320,7 @@ async def test_should_run_codex_with_a_schema_and_sanitized_environment(
         reference_folder=reference,
         command="python3",
         model="gpt-5.4",
+        reasoning_effort="high",
         environment={
             "PATH": "/usr/bin:/bin",
             "CODEX_HOME": "/codex",
@@ -337,6 +338,9 @@ async def test_should_run_codex_with_a_schema_and_sanitized_environment(
     assert result.status == "needs_review"
     assert "--ephemeral" in captured["command"]
     assert captured["command"][captured["command"].index("--model") + 1] == "gpt-5.4"
+    assert captured["command"][captured["command"].index("--config") + 1] == (
+        'model_reasoning_effort="high"'
+    )
     assert "--output-schema" in captured["command"]
     assert captured["environment"] == {
         "PATH": "/usr/bin:/bin",

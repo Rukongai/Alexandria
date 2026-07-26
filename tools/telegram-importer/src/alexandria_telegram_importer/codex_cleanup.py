@@ -233,6 +233,7 @@ class CodexCleanupRunner:
         reference_folder: Path,
         command: str = "codex",
         model: str | None = None,
+        reasoning_effort: str | None = None,
         timeout_seconds: int = DEFAULT_CLEANUP_TIMEOUT,
         environment: Mapping[str, str] | None = None,
     ) -> None:
@@ -242,6 +243,7 @@ class CodexCleanupRunner:
         self.reference_folder = reference_folder.resolve()
         self.command = command
         self.model = model
+        self.reasoning_effort = reasoning_effort
         self.timeout_seconds = timeout_seconds
         self.environment = sanitized_codex_environment(environment)
 
@@ -303,6 +305,10 @@ class CodexCleanupRunner:
         ]
         if self.model:
             command.extend(("--model", self.model))
+        if self.reasoning_effort:
+            command.extend(
+                ("--config", f'model_reasoning_effort="{self.reasoning_effort}"')
+            )
         command.append(prompt)
         log.info("Handing staged bundle %s to Codex", input_folder.name)
         try:

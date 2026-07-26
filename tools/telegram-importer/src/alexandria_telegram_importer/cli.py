@@ -243,6 +243,12 @@ def parser() -> argparse.ArgumentParser:
         default=os.getenv("TELEGRAM_CODEX_MODEL") or None,
         help="Codex model used by --cleanup codex (uses the Codex default when omitted)",
     )
+    result.add_argument(
+        "--codex-reasoning-effort",
+        default=os.getenv("TELEGRAM_CODEX_REASONING_EFFORT") or None,
+        metavar="EFFORT",
+        help="Codex reasoning effort used by --cleanup codex (for example high)",
+    )
     return result
 
 
@@ -666,6 +672,7 @@ async def run_codex_staged_batches(
         reference_folder=args.cleanup_reference,
         command=args.codex_command,
         model=args.codex_model,
+        reasoning_effort=args.codex_reasoning_effort,
         timeout_seconds=args.cleanup_timeout,
     )
     try:
