@@ -263,6 +263,12 @@ def _staging_summary(staging_dir: Path, staged: int, failed: int) -> str:
     return line + (f" {failed} bundle(s) failed to stage." if failed else "")
 
 
+def _upload_summary(outcomes: dict[str, int]) -> str:
+    return "Upload state: " + ", ".join(
+        f"{status}={count}" for status, count in sorted(outcomes.items())
+    )
+
+
 async def _login(args: argparse.Namespace) -> AlexandriaClient:
     email = os.getenv("ALEXANDRIA_EMAIL") or input("Alexandria email: ").strip()
     password = os.getenv("ALEXANDRIA_PASSWORD") or getpass.getpass(
@@ -297,6 +303,32 @@ async def run(args: argparse.Namespace) -> int:
     )
     alexandria: AlexandriaClient | None = None
     tracker: ImportTracker | None = None
+    progress = reporter_from_args(
+        no_progress=args.no_progress,
+        dry_run=args.dry_run,
+        verbose=args.verbose,
+    )
+    work_root = args.state.parent / f"{args.state.name}.work"
+
+    # Uploading staged folders is entirely local. Connecting to Telegram and
+    # scanning the channel first would be wasted work on a large channel, and
+    # would make a local-only operation depend on a Telegram session.
+    if args.upload_only:
+        try:
+            alexandria = await _login(args)
+            outcomes = await FolderUploader(
+                alexandria=alexandria,
+                work_root=work_root,
+                concurrency=args.concurrency,
+                progress=progress,
+            ).run(args.staging_dir)
+            print(_upload_summary(outcomes))
+            return 1 if outcomes.get("failed") else 0
+        finally:
+            if alexandria:
+                await alexandria.close()
+            await telegram.close()
+
     try:
         await telegram.connect(_channel(args.channel))
         refs = await telegram.collect_media(min_message_id=args.from_message_id)
@@ -304,12 +336,6 @@ async def run(args: argparse.Namespace) -> int:
             print(describe_plan(telegram.channel_id, refs))
             return 0
 
-        progress = reporter_from_args(
-            no_progress=args.no_progress,
-            dry_run=args.dry_run,
-            verbose=args.verbose,
-        )
-        work_root = args.state.parent / f"{args.state.name}.work"
         failed_to_stage = 0
 
         if args.download_only is not None or args.stage is not None:
@@ -329,7 +355,7 @@ async def run(args: argparse.Namespace) -> int:
             if not confirm_upload(summary):
                 return 1 if failed_to_stage else 0
 
-        if args.upload_only or args.stage is not None:
+        if args.stage is not None:
             alexandria = await _login(args)
             outcomes = await FolderUploader(
                 alexandria=alexandria,
@@ -337,12 +363,7 @@ async def run(args: argparse.Namespace) -> int:
                 concurrency=args.concurrency,
                 progress=progress,
             ).run(args.staging_dir)
-            print(
-                "Upload state: "
-                + ", ".join(
-                    f"{status}={count}" for status, count in sorted(outcomes.items())
-                ),
-            )
+            print(_upload_summary(outcomes))
             return 1 if outcomes.get("failed") or failed_to_stage else 0
 
         alexandria = await _login(args)

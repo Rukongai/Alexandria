@@ -159,3 +159,50 @@ def test_should_treat_q_as_quitting_and_enter_as_proceeding(monkeypatch) -> None
 
     monkeypatch.setattr("sys.stdin", io.StringIO("\n"))
     assert confirm_upload("2 folders staged.") is True
+
+
+async def test_should_upload_without_touching_telegram(monkeypatch, tmp_path) -> None:
+    """--upload-only is local; connecting to Telegram would be wasted work."""
+    from alexandria_telegram_importer import cli
+
+    connected: list[str] = []
+
+    class FakeTelegram:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def connect(self, channel) -> None:
+            connected.append("connect")
+
+        async def collect_media(self, *, min_message_id=0):
+            connected.append("collect")
+            return []
+
+        async def close(self) -> None:
+            return None
+
+    class FakeUploader:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def run(self, root):
+            return {"completed": 2}
+
+    class FakeClient:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setenv("TELEGRAM_API_ID", "1")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
+    monkeypatch.setattr(cli, "TelegramSource", FakeTelegram)
+    monkeypatch.setattr(cli, "FolderUploader", FakeUploader)
+    monkeypatch.setattr(cli, "_login", lambda args: _ready(FakeClient()))
+
+    args = parser().parse_args(["--upload-only", "--staging-dir", str(tmp_path)])
+
+    assert await cli.run(args) == 0
+    assert connected == []
+
+
+async def _ready(value):
+    return value
