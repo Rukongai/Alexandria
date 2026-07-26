@@ -4,7 +4,7 @@ import type { DetectedMetadataFile } from '@alexandria/shared';
 import { metadataFileSchema } from '@alexandria/shared';
 import { createLogger } from './logger.js';
 
-const log = createLogger('metadata-file');
+const logger = createLogger('MetadataFile');
 
 export const METADATA_FILENAME = 'metadata.json';
 
@@ -26,18 +26,21 @@ export const MAX_METADATA_FILE_BYTES = 64 * 1024;
 export async function readMetadataFile(
   rootDir: string,
 ): Promise<DetectedMetadataFile | undefined> {
-  const filePath = path.join(rootDir, METADATA_FILENAME);
   try {
-    const stats = await fsPromises.stat(filePath);
+    const filePath = path.join(rootDir, METADATA_FILENAME);
+    // lstat, not stat: FileProcessingService rejects symlinks during extraction
+    // for the same reason, and one leaked through named metadata.json would
+    // otherwise have its target read and surfaced into the review form.
+    const stats = await fsPromises.lstat(filePath);
     if (!stats.isFile()) return undefined;
     if (stats.size > MAX_METADATA_FILE_BYTES) {
-      log.debug({ filePath, size: stats.size }, 'Ignoring oversized metadata.json');
+      logger.debug({ rootDir, size: stats.size }, 'Ignoring oversized metadata.json');
       return undefined;
     }
 
     const parsed: unknown = JSON.parse(await fsPromises.readFile(filePath, 'utf8'));
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      log.debug({ filePath }, 'Ignoring metadata.json: expected a JSON object');
+      logger.debug({ rootDir }, 'Ignoring metadata.json: expected a JSON object');
       return undefined;
     }
 
@@ -46,12 +49,16 @@ export async function readMetadataFile(
 
     // Fields that failed their own validation catch to undefined; drop them so
     // the prefill payload carries only values that survived.
-    return Object.fromEntries(
+    const usable = Object.fromEntries(
       Object.entries(result.data).filter(([, value]) => value !== undefined),
     ) as DetectedMetadataFile;
+
+    // A file carrying nothing usable is not a detected metadata file, so
+    // `metadataFile !== undefined` stays a reliable signal for consumers.
+    return Object.keys(usable).length > 0 ? usable : undefined;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      log.debug({ filePath, error }, 'Ignoring unreadable metadata.json');
+      logger.debug({ rootDir, error }, 'Ignoring unreadable metadata.json');
     }
     return undefined;
   }

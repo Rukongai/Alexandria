@@ -42,6 +42,31 @@ function archiveName(filename: string): string {
   return filename.replace(/\.(tar\.gz|zip|rar|7z)$/i, '').trim() || filename;
 }
 
+/**
+ * Pick the collection destination from the first source that names one.
+ *
+ * `DetectedMetadataFile` carries no `collectionId` by design — a UUID from
+ * another library would render as a blank picker and then be submitted anyway.
+ */
+function resolveCollection(
+  draftMetadata: BatchUploadMetadata | null | undefined,
+  fromFile: DetectedImportMetadata['metadataFile'],
+): Pick<FormState, 'collectionId' | 'newCollectionName'> {
+  // The draft is the reviewer's own pick and wins outright, either way round.
+  if (draftMetadata?.newCollectionName) {
+    return { collectionId: '__new__', newCollectionName: draftMetadata.newCollectionName };
+  }
+  if (draftMetadata?.collectionId) {
+    return { collectionId: draftMetadata.collectionId, newCollectionName: '' };
+  }
+  // Only newCollectionName is read from the archive; a collectionId is never
+  // honoured even if one reaches us, since the picker cannot display it.
+  if (fromFile?.newCollectionName) {
+    return { collectionId: '__new__', newCollectionName: fromFile.newCollectionName };
+  }
+  return { collectionId: '', newCollectionName: '' };
+}
+
 function createInitialForm(
   detected: DetectedImportMetadata,
   originalFilename: string,
@@ -62,6 +87,11 @@ function createInitialForm(
     return result;
   }, []);
 
+  // The two collection fields are one choice, so they resolve as a pair. Taking
+  // them field-by-field lets a draft's existing collection lose to a file's new
+  // one, silently discarding the reviewer's own pick.
+  const collection = resolveCollection(draftMetadata, fromFile);
+
   const metadata = { ...(draftMetadata?.metadata ?? fromFile?.metadata ?? {}) };
   const metadataTypes = Object.fromEntries(
     Object.entries(metadata).map(([field, value]) => [
@@ -75,11 +105,7 @@ function createInitialForm(
     modelName:
       draftMetadata?.modelName ?? fromFile?.modelName ?? archiveName(originalFilename),
     description: draftMetadata?.description ?? fromFile?.description ?? '',
-    collectionId: (draftMetadata?.newCollectionName ?? fromFile?.newCollectionName)
-      ? '__new__'
-      : draftMetadata?.collectionId ?? fromFile?.collectionId ?? '',
-    newCollectionName:
-      draftMetadata?.newCollectionName ?? fromFile?.newCollectionName ?? '',
+    ...collection,
     artist: draftMetadata?.artist ?? fromFile?.artist ?? detected.artist ?? '',
     tags,
     tagInput: '',
@@ -92,6 +118,48 @@ function createInitialForm(
   };
 }
 
+/** Where a prefilled field's value came from, for the review-form badges. */
+type FieldSource = 'file' | 'detected' | null;
+
+function fieldSources(
+  detected: DetectedImportMetadata,
+  draftMetadata?: BatchUploadMetadata | null,
+): Record<'modelName' | 'artist' | 'tags', FieldSource> {
+  const fromFile = detected.metadataFile;
+  const pick = (
+    drafted: unknown,
+    file: unknown,
+    guessed: unknown,
+  ): FieldSource => {
+    // A draft is the reviewer's own value, so it carries no provenance badge.
+    if (drafted !== undefined && drafted !== null) return null;
+    if (file !== undefined && file !== null) return 'file';
+    return guessed ? 'detected' : null;
+  };
+
+  return {
+    modelName: pick(draftMetadata?.modelName, fromFile?.modelName, null),
+    artist: pick(draftMetadata?.artist, fromFile?.artist, detected.artist),
+    tags: pick(
+      draftMetadata?.tags,
+      fromFile?.tags,
+      detected.tagsGuessed.length > 0 || null,
+    ),
+  };
+}
+
+function SourceBadge({ source }: { source: FieldSource }) {
+  if (!source) return null;
+  return (
+    <span
+      className="ml-2 font-normal text-[11px]"
+      style={{ color: 'var(--ax-fg-subtle)' }}
+    >
+      {source === 'file' ? 'from metadata.json' : 'auto-detected'}
+    </span>
+  );
+}
+
 export function BatchMetadataForm({
   sessionId,
   originalFilename,
@@ -100,6 +168,7 @@ export function BatchMetadataForm({
   resetKey = sessionId,
   onCommitted,
 }: BatchMetadataFormProps) {
+  const sources = fieldSources(detected, draftMetadata);
   const initialFormRef = useRef(createInitialForm(detected, originalFilename, draftMetadata));
   initialFormRef.current = createInitialForm(detected, originalFilename, draftMetadata);
   const [form, setForm] = useState<FormState>(() => initialFormRef.current);
@@ -159,7 +228,14 @@ export function BatchMetadataForm({
   return (
     <div className="flex min-w-0 flex-col gap-4">
       {/* Model details */}
-      <FormSection label="Model details">
+      <FormSection
+        label={
+          <span>
+            Model details
+            <SourceBadge source={sources.modelName} />
+          </span>
+        }
+      >
         <div className="flex flex-col gap-2">
           <Input
             value={form.modelName}
@@ -223,14 +299,7 @@ export function BatchMetadataForm({
         label={
           <span>
             Artist
-            {(detected.metadataFile?.artist || detected.artist) && (
-              <span
-                className="ml-2 font-normal text-[11px]"
-                style={{ color: 'var(--ax-fg-subtle)' }}
-              >
-                {detected.metadataFile?.artist ? 'from metadata.json' : 'auto-detected'}
-              </span>
-            )}
+            <SourceBadge source={sources.artist} />
           </span>
         }
       >
@@ -247,7 +316,14 @@ export function BatchMetadataForm({
       </FormSection>
 
       {/* Tags */}
-      <FormSection label="Tags to apply to all">
+      <FormSection
+        label={
+          <span>
+            Tags to apply to all
+            <SourceBadge source={sources.tags} />
+          </span>
+        }
+      >
         <div
           className="rounded-lg p-2.5 min-h-[40px]"
           style={{
@@ -268,7 +344,9 @@ export function BatchMetadataForm({
           />
         </div>
         <p className="text-[11.5px] mt-1.5" style={{ color: 'var(--ax-fg-muted)' }}>
-          Inferred from filenames + folder paths. Press Enter or comma to add.
+          {sources.tags === 'file'
+            ? 'Read from the archive’s metadata.json. Press Enter or comma to add.'
+            : 'Inferred from filenames + folder paths. Press Enter or comma to add.'}
         </p>
       </FormSection>
 

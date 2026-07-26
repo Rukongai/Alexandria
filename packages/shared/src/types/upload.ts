@@ -100,16 +100,14 @@ export interface DetectedArchiveFile {
  * Prefill only — never applied automatically at commit. The client always
  * sends the metadata it intends, so detecting this file cannot change the
  * outcome of any upload.
+ *
+ * `collectionId` is deliberately excluded: a collection UUID is meaningful
+ * only in the library it came from, so prefilling one would submit a
+ * destination the picker never displayed. `newCollectionName` is portable.
  */
 export type DetectedMetadataFile = Pick<
   BatchUploadMetadata,
-  | 'modelName'
-  | 'description'
-  | 'artist'
-  | 'tags'
-  | 'metadata'
-  | 'collectionId'
-  | 'newCollectionName'
+  'modelName' | 'description' | 'artist' | 'tags' | 'metadata' | 'newCollectionName'
 >;
 
 /**

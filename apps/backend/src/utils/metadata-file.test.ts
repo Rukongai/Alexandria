@@ -106,10 +106,33 @@ describe('readMetadataFile', () => {
     expect(await readMetadataFile(rootDir)).toBeUndefined();
   });
 
-  it('returns an empty object for a file with no usable fields', async () => {
+  it('returns undefined for a file with no usable fields', async () => {
     await writeMetadata(JSON.stringify({ source: { channelId: -1 } }));
 
-    expect(await readMetadataFile(rootDir)).toEqual({});
+    expect(await readMetadataFile(rootDir)).toBeUndefined();
+  });
+
+  it('ignores a symlink named metadata.json', async () => {
+    const target = path.join(rootDir, 'real.json');
+    await fsPromises.writeFile(target, JSON.stringify({ modelName: 'Sneaky' }), 'utf8');
+    await fsPromises.symlink(target, path.join(rootDir, 'metadata.json'));
+
+    expect(await readMetadataFile(rootDir)).toBeUndefined();
+  });
+
+  it('no longer surfaces a collection id from the archive', async () => {
+    await writeMetadata(
+      JSON.stringify({
+        modelName: 'Dragon',
+        collectionId: '99999999-9999-4999-8999-999999999999',
+        newCollectionName: 'Portable',
+      }),
+    );
+
+    expect(await readMetadataFile(rootDir)).toEqual({
+      modelName: 'Dragon',
+      newCollectionName: 'Portable',
+    });
   });
 
   it('returns undefined when metadata.json is a directory', async () => {

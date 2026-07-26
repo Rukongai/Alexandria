@@ -33,6 +33,12 @@ const collection: CollectionDetail = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
+function collectionSelect(): HTMLSelectElement {
+  const select = screen.getByRole('option', { name: '— None —' }).closest('select');
+  if (!select) throw new Error('collection select not found');
+  return select as HTMLSelectElement;
+}
+
 describe('BatchMetadataForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -397,5 +403,104 @@ describe('BatchMetadataForm', () => {
     expect(screen.getByPlaceholderText('Model name')).toHaveValue('starter');
     expect(screen.getByPlaceholderText('Artist name (optional)')).toHaveValue('Guessed Artist');
     expect(screen.getByText('guessed')).toBeTruthy();
+  });
+
+  it('never prefills a collection id from the archive', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+            // A UUID from whatever library the archive was built against.
+            metadataFile: {
+              modelName: 'Dragon',
+              collectionId: '99999999-9999-4999-8999-999999999999',
+            } as never,
+          }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    // Nothing is silently selected, so nothing unselectable can be submitted.
+    expect(collectionSelect()).toHaveValue('');
+  });
+
+  it('does not submit a collection the user was never shown', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({ data: [], meta: null, errors: null });
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+            metadataFile: {
+              modelName: 'Dragon',
+              collectionId: '99999999-9999-4999-8999-999999999999',
+            } as never,
+          }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import one model' }));
+
+    await waitFor(() => expect(commitImportSession).toHaveBeenCalled());
+    expect(vi.mocked(commitImportSession).mock.calls[0][1]).not.toHaveProperty(
+      'collectionId',
+    );
+  });
+
+  it('keeps a saved draft collection when the archive proposes a new one', () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    vi.mocked(getCollections).mockResolvedValue({
+      data: [collection],
+      meta: null,
+      errors: null,
+    });
+    client.setQueryData(['collections', { depth: 1 }], [collection]);
+
+    render(
+      <QueryClientProvider client={client}>
+        <BatchMetadataForm
+          sessionId="session-1"
+          originalFilename="starter.zip"
+          detected={{
+            modelCount: 1,
+            fileCount: 1,
+            totalSizeBytes: 100,
+            artist: null,
+            tagsGuessed: [],
+            folderStructure: [],
+            metadataFile: { newCollectionName: 'From Archive' },
+          }}
+          draftMetadata={{ collectionId: collection.id }}
+          onCommitted={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    // The draft picked an existing collection; the archive must not override it.
+    expect(collectionSelect()).toHaveValue(collection.id);
+    expect(screen.queryByPlaceholderText('New collection name')).toBeNull();
   });
 });

@@ -81,10 +81,18 @@ export const batchUploadMetadataSchema = z.object({
 
 /**
  * Lenient parse of an archive's root metadata.json, used only to prefill the
- * review form. Every field is independently optional and catches to undefined,
- * so one malformed value never costs the author the rest of a hand-written
- * file, and unknown keys (the importer's `source`, `result`, `schemaVersion`)
- * are stripped rather than rejected.
+ * review form. Each field independently catches to undefined, so one malformed
+ * value never costs the author the rest of a hand-written file, and unknown
+ * keys (the importer's `source`, `result`, `schemaVersion`) are stripped.
+ *
+ * `metadata` is one field, not many: it validates as a whole record, so a
+ * single bad value inside drops the entire object rather than that one key.
+ *
+ * `collectionId` is deliberately absent. A collection UUID is meaningful only
+ * in the library it came from, and the review form's collection picker cannot
+ * render an option it does not have — prefilling one would submit a
+ * destination the user was never shown, failing a commit that would otherwise
+ * have succeeded. `newCollectionName` is the portable form.
  */
 export const metadataFileSchema = z.object({
   modelName: z.string().min(1).max(255).optional().catch(undefined),
@@ -92,9 +100,8 @@ export const metadataFileSchema = z.object({
   artist: z.string().max(255).optional().catch(undefined),
   tags: z.array(z.string().min(1).max(100)).max(50).optional().catch(undefined),
   metadata: setModelMetadataSchema.optional().catch(undefined),
-  collectionId: z.string().uuid().optional().catch(undefined),
   newCollectionName: z.string().min(1).max(255).optional().catch(undefined),
-}).strip();
+});
 
 export const commitImportSessionSchema = z.object({
   batchMetadata: batchUploadMetadataSchema.optional(),
