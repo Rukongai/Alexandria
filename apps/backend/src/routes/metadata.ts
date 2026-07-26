@@ -60,6 +60,17 @@ export async function metadataFieldRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /validate — validate metadata values without mutating a model
+  app.post(
+    '/validate',
+    { preHandler: [requireAuth, validate(setModelMetadataSchema)] },
+    async (request, reply) => {
+      const body = request.body as SetModelMetadataRequest;
+      const values = await metadataService.normalizeAndValidateValues(body);
+      return reply.status(200).send({ data: values, meta: null, errors: null });
+    },
+  );
+
   // GET /:slug/values — list known values for a field (scoped to the request library)
   app.get(
     '/:slug/values',

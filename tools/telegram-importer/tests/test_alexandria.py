@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -49,6 +51,69 @@ def test_should_collect_session_filenames_from_nested_folder_structure() -> None
 
 def test_should_return_no_filenames_when_session_detection_is_absent() -> None:
     assert session_filenames({"detected": None}) == set()
+
+
+@pytest.mark.asyncio
+async def test_should_fetch_and_cache_metadata_field_definitions(monkeypatch) -> None:
+    client = AlexandriaClient("http://127.0.0.1:3000")
+    calls: list[tuple[str, str]] = []
+
+    async def fake_request(method: str, url: str, **_kwargs):
+        calls.append((method, url))
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"slug": "year", "type": "number", "config": None},
+                ],
+            },
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    try:
+        first, second = await asyncio.gather(
+            client.metadata_fields(),
+            client.metadata_fields(),
+        )
+        third = await client.metadata_fields()
+    finally:
+        await client.close()
+
+    assert (
+        first
+        == second
+        == third
+        == ({"slug": "year", "type": "number", "config": None},)
+    )
+    assert calls == [("GET", "/metadata/fields")]
+
+
+@pytest.mark.asyncio
+async def test_should_use_authoritative_metadata_validation(monkeypatch) -> None:
+    client = AlexandriaClient("http://127.0.0.1:3000")
+    captured: dict = {}
+
+    async def fake_request(method: str, url: str, **kwargs):
+        captured.update(method=method, url=url, json=kwargs["json"])
+        return httpx.Response(
+            200,
+            json={"data": kwargs["json"]},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    try:
+        result = await client.validate_metadata({"catalog-id": "MODEL-42"})
+    finally:
+        await client.close()
+
+    assert result == {"catalog-id": "MODEL-42"}
+    assert captured == {
+        "method": "POST",
+        "url": "/metadata/fields/validate",
+        "json": {"catalog-id": "MODEL-42"},
+    }
 
 
 def upload_client(monkeypatch, *, failures: int = 0) -> AlexandriaClient:

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from alexandria_telegram_importer.folder_metadata import (
     SCHEMA_VERSION,
     batch_metadata,
     merge_chain,
     model_name_from_folder,
+    normalize_batch_metadata,
     read_metadata,
     write_metadata,
 )
@@ -107,6 +110,57 @@ def test_should_strip_non_commit_keys_from_batch_metadata() -> None:
     )
 
     assert payload == {"modelName": "Dragon", "tags": ["a"]}
+
+
+def test_should_normalize_metadata_to_alexandria_field_types() -> None:
+    payload = normalize_batch_metadata(
+        {
+            "modelName": "Catwoman",
+            "metadata": {
+                "character-6erm": "Catwoman",
+                "month-9g9z": 6,
+                "year": "2026",
+                "has-archive-edm5": True,
+                "nsfw": "false",
+                "url": "https://example.com/model",
+            },
+        },
+        (
+            {"slug": "character-6erm", "type": "text", "config": None},
+            {"slug": "month-9g9z", "type": "text", "config": None},
+            {"slug": "year", "type": "number", "config": None},
+            {"slug": "has-archive-edm5", "type": "text", "config": None},
+            {"slug": "nsfw", "type": "boolean", "config": None},
+            {"slug": "url", "type": "url", "config": None},
+        ),
+    )
+
+    assert payload["metadata"] == {
+        "character-6erm": "Catwoman",
+        "month-9g9z": "6",
+        "year": 2026,
+        "has-archive-edm5": "true",
+        "nsfw": False,
+        "url": "https://example.com/model",
+    }
+
+
+def test_should_reject_unknown_or_ambiguous_metadata_values() -> None:
+    with pytest.raises(ValueError, match="not configured"):
+        normalize_batch_metadata(
+            {"metadata": {"missing": "value"}},
+            (),
+        )
+    with pytest.raises(ValueError, match="must be a boolean"):
+        normalize_batch_metadata(
+            {"metadata": {"nsfw": "sometimes"}},
+            ({"slug": "nsfw", "type": "boolean", "config": None},),
+        )
+    with pytest.raises(ValueError, match="cannot be converted to a string"):
+        normalize_batch_metadata(
+            {"metadata": {"character": ["June", "July"]}},
+            ({"slug": "character", "type": "text", "config": None},),
+        )
 
 
 def test_should_report_an_error_for_an_unparseable_metadata_file(tmp_path) -> None:
