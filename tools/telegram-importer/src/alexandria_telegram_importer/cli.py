@@ -238,6 +238,11 @@ def parser() -> argparse.ArgumentParser:
         default=os.getenv("TELEGRAM_CODEX_COMMAND", "codex"),
         help="Codex executable used by --cleanup codex (default codex)",
     )
+    result.add_argument(
+        "--codex-model",
+        default=os.getenv("TELEGRAM_CODEX_MODEL") or None,
+        help="Codex model used by --cleanup codex (uses the Codex default when omitted)",
+    )
     return result
 
 
@@ -660,6 +665,7 @@ async def run_codex_staged_batches(
         skill_path=skill_path,
         reference_folder=args.cleanup_reference,
         command=args.codex_command,
+        model=args.codex_model,
         timeout_seconds=args.cleanup_timeout,
     )
     try:
