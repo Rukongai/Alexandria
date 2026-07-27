@@ -12,6 +12,7 @@ import type {
   UpdateModelFolderRequest,
   ConsolidateDuplicateModelsPreview,
   ConsolidateDuplicateModelsResult,
+  MoveModelResponse,
 } from '@alexandria/shared';
 import { MAX_MODEL_FILE_SELECTION_COUNT } from '@alexandria/shared';
 import { db } from '../db/index.js';
@@ -26,6 +27,7 @@ import {
   modelTags,
   metadataFieldDefinitions,
   collections,
+  libraries,
   tags,
 } from '../db/schema/index.js';
 import { conflict, notFound, validationError } from '../utils/errors.js';
@@ -477,6 +479,72 @@ export class ModelService {
       .returning();
 
     return updated;
+  }
+
+  /**
+   * Move an owned model to another owned library. Collection memberships are
+   * library-scoped, so they are removed as part of the move rather than
+   * leaving the destination model linked to collections in the old library.
+   */
+  async moveModel(
+    id: string,
+    userId: string,
+    targetLibraryId: string,
+  ): Promise<MoveModelResponse> {
+    await libraryService.requireOwnedLibrary(userId, targetLibraryId);
+
+    return db.transaction(async (tx) => {
+      const model = await this.lockModelById(id, tx);
+      if (model.userId !== userId) {
+        throw notFound(`Model not found: ${id}`);
+      }
+      if (model.libraryId === targetLibraryId) {
+        throw conflict('Model is already in that library');
+      }
+
+      // Re-check inside the transaction so a concurrently deleted library
+      // cannot become a dangling destination between the ownership check and
+      // the model update.
+      const [targetLibrary] = await tx
+        .select({ id: libraries.id })
+        .from(libraries)
+        .where(and(eq(libraries.id, targetLibraryId), eq(libraries.userId, userId)))
+        .limit(1);
+      if (!targetLibrary) {
+        throw notFound('Library not found');
+      }
+
+      const removedCollections = await tx
+        .delete(collectionModels)
+        .where(eq(collectionModels.modelId, id))
+        .returning({ collectionId: collectionModels.collectionId });
+
+      await tx
+        .update(models)
+        .set({ libraryId: targetLibraryId, updatedAt: new Date() })
+        .where(eq(models.id, id));
+
+      await duplicateScannerService.reconcileDuplicateFlags(model.libraryId, tx);
+      await duplicateScannerService.reconcileDuplicateFlags(targetLibraryId, tx);
+
+      logger.info(
+        {
+          service: 'ModelService',
+          modelId: id,
+          userId,
+          sourceLibraryId: model.libraryId,
+          targetLibraryId,
+          removedCollectionCount: removedCollections.length,
+        },
+        'Model moved to another library',
+      );
+
+      return {
+        modelId: id,
+        libraryId: targetLibraryId,
+        removedCollectionCount: removedCollections.length,
+      };
+    });
   }
 
   async getModelFiles(

@@ -222,7 +222,7 @@ This index makes the enforcement race-safe: the database rejects a second `is_de
 
 `requireLibrary` (`apps/backend/src/middleware/library.ts`) is a Fastify preHandler that runs after `requireAuth` on every route that reads or writes library-scoped data. It reads an optional **`X-Library-Id`** header and calls `LibraryService.resolveLibraryId(userId, header)`, storing the result on `request.libraryId`. Absent header → the user's default library (preserving pre-P5 single-library behavior).
 
-**Security invariant:** `libraryId` is never trusted from untrusted input. The header is accepted only after `resolveLibraryId` confirms the user owns that library; an unknown or un-owned id returns `NOT_FOUND` (same error either way, so ids cannot be enumerated). No route accepts a `libraryId` in the query string, path, or body. The frontend mirrors its `/lib/:id` route segment into the header; the `/libraries` management routes do **not** use `requireLibrary` (they manage the scope itself, keyed by URL `:id` + `userId`).
+**Security invariant:** the active `libraryId` is never trusted from untrusted input. The header is accepted only after `resolveLibraryId` confirms the user owns that library; an unknown or un-owned id returns `NOT_FOUND` (same error either way, so ids cannot be enumerated). The model-move endpoint is the one intentional exception: it accepts a `targetLibraryId` body field and independently verifies that the destination belongs to the authenticated user. The frontend mirrors its `/lib/:id` route segment into the header; the `/libraries` management routes do **not** use `requireLibrary` (they manage the scope itself, keyed by URL `:id` + `userId`).
 
 Routes that apply `requireLibrary` (as of P5):
 
@@ -237,7 +237,9 @@ Routes that apply `requireLibrary` (as of P5):
 - All `/bulk/*` routes
 - `POST /ai/chat`, `POST /ai/proposals/:id/apply`
 
-P5 added library-scope guards to the read/detail routes above via `ModelService.requireModelInLibrary` / `CollectionService.requireCollectionInLibrary` (the entity must belong to `request.libraryId`, else `NOT_FOUND`), so a stale deep link to another library's item 404s after switching. By-id **mutation** routes (`PATCH`/`DELETE /models/:id`, `PATCH`/`DELETE /collections/:id`) remain `userId`-owned only — they are same-user operations and were intentionally left out of the minimal P5 sweep.
+`POST /models/:id/move` is an authenticated, cross-library mutation. It locks and ownership-checks the model, verifies the destination library belongs to the same user, moves the model atomically, removes collection memberships that point into the source library, and reconciles duplicate flags in both libraries. Metadata and tags remain attached because their definitions are global rather than library-scoped.
+
+P5 added library-scope guards to the read/detail routes above via `ModelService.requireModelInLibrary` / `CollectionService.requireCollectionInLibrary` (the entity must belong to `request.libraryId`, else `NOT_FOUND`), so a stale deep link to another library's item 404s after switching. By-id **mutation** routes (`PATCH`/`DELETE /models/:id`, `PATCH`/`DELETE /collections/:id`) remain `userId`-owned only — they are same-user operations and were intentionally left out of the minimal P5 sweep. The cross-library model move is also user-owned, but uses an explicit destination ownership check and transaction because it changes library scope.
 
 ### P4: Smart Collections (shipped)
 

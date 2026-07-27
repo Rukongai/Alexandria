@@ -176,6 +176,16 @@ export interface UpdateModelRequest {
   previewCropScale?: number | null;
 }
 
+export interface MoveModelRequest {
+  targetLibraryId: string;
+}
+
+export interface MoveModelResponse {
+  modelId: string;
+  libraryId: string;
+  removedCollectionCount: number;
+}
+
 export interface MergeModelsRequest {
   sourceModelIds: string[];
 }

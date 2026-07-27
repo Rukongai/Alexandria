@@ -20,6 +20,7 @@ import type {
   CompressModelFolderRequest,
   ExtractImportSessionArchiveRequest,
   CompleteMultipartUploadRequest,
+  MoveModelRequest,
 } from '@alexandria/shared';
 import {
   createModelFolderSchema,
@@ -33,6 +34,7 @@ import {
   updateModelFileSchema,
   updateModelFolderSchema,
   updateModelSchema,
+  moveModelSchema,
   uploadInitSchema,
   multipartUploadInitSchema,
   completeMultipartUploadSchema,
@@ -854,6 +856,19 @@ export async function modelRoutes(app: FastifyInstance): Promise<void> {
       const detail = await presenterService.buildModelDetail(id);
 
       return reply.status(200).send({ data: detail, meta: null, errors: null });
+    },
+  );
+
+  // POST /:id/move — move an owned model to another owned library
+  app.post(
+    '/:id/move',
+    { preHandler: [requireAuth, validate(moveModelSchema)] },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as MoveModelRequest;
+      const result = await modelService.moveModel(id, request.user!.id, body.targetLibraryId);
+
+      return reply.status(200).send({ data: result, meta: null, errors: null });
     },
   );
 

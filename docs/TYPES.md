@@ -1082,6 +1082,16 @@ interface UpdateModelRequest {
   previewImageFileId?: string | null; // set to a ModelFile UUID to pin cover; null to revert to fallback
 }
 
+interface MoveModelRequest {
+  targetLibraryId: string;
+}
+
+interface MoveModelResponse {
+  modelId: string;
+  libraryId: string;
+  removedCollectionCount: number;
+}
+
 interface DeleteModelFilesRequest {
   fileIds: string[]; // 1–500 unique ModelFile UUIDs owned by the target model
 }
