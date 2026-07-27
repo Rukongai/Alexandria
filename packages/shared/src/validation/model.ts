@@ -17,6 +17,10 @@ export const updateModelSchema = z.object({
   previewCropScale: z.number().min(1).max(10).nullable().optional(),
 });
 
+export const moveModelSchema = z.object({
+  targetLibraryId: z.string().uuid(),
+});
+
 export const bulkDeleteSchema = z.object({
   modelIds: z.array(z.string().uuid()).min(1).max(500)
     .refine((ids) => new Set(ids).size === ids.length, {

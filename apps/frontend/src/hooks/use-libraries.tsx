@@ -117,6 +117,15 @@ export function useLibraries(): LibrariesContextValue {
 }
 
 /**
+ * Read library context when available without requiring a provider. This is
+ * useful for pages that have isolated tests or can render outside the library
+ * workspace; those callers simply hide library-specific actions.
+ */
+export function useLibrariesOptional(): LibrariesContextValue | null {
+  return useContext(LibrariesContext);
+}
+
+/**
  * Returns the route-scoped library id without requiring a provider in isolated
  * component tests. Components that retain local library-scoped state use this
  * to guard that state across route transitions.

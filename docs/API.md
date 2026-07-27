@@ -45,7 +45,7 @@ Every model, collection, smart collection, and import session belongs to exactly
 - If the request carries an **`X-Library-Id`** header, that library is used — but only after an ownership check. An unknown or un-owned id returns `404 NOT_FOUND` (same response whether it does not exist or belongs to another user, so ids cannot be enumerated).
 - If the header is absent, the request falls back to the user's **default library**.
 
-Clients never pass `libraryId` in a query string or body; scoping rides on the header only. The frontend mirrors its `/lib/:id` route segment into this header. Library membership itself is managed through the `Libraries` endpoints below.
+Clients never pass the active `libraryId` in a query string or body; scoping rides on the header only. The model-move endpoint intentionally accepts a separately validated `targetLibraryId` body field. The frontend mirrors its `/lib/:id` route segment into this header. Library membership itself is managed through the `Libraries` endpoints below.
 
 > Note: the per-endpoint "Library scope" notes throughout this document predate P5 and say "default library". They now mean **the active library** (the `X-Library-Id` header when present, otherwise the default).
 
@@ -1531,6 +1531,40 @@ Update a model's name, description, or cover image.
 | `previewImageFileId` | string or null (optional) | UUID of a `ModelFile` with `fileType: "image"` to use as the model's cover image. Pass `null` to clear the pinned cover and revert to the first-image fallback. |
 
 **Response (200):** Returns the full `ModelDetail` for the updated model, in the same shape as `GET /models/:id`.
+
+---
+
+### POST /models/:id/move
+
+Move an owned model to another library owned by the authenticated user.
+
+**Auth required:** Yes
+
+**Path parameter:** `id` — model UUID
+
+**Request body:**
+
+```json
+{
+  "targetLibraryId": "uuid-of-destination-library"
+}
+```
+
+The operation is atomic. Existing collection memberships are removed because collections belong to their original library; metadata and tags remain attached to the model. Moving to the current library returns `409 CONFLICT`. A destination library not owned by the user returns `404 NOT_FOUND`.
+
+**Response (200):**
+
+```json
+{
+  "data": {
+    "modelId": "model-uuid",
+    "libraryId": "destination-library-uuid",
+    "removedCollectionCount": 1
+  },
+  "meta": null,
+  "errors": null
+}
+```
 
 ---
 

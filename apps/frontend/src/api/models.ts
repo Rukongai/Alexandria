@@ -21,6 +21,7 @@ import type {
   SplitModelFolderResponse,
   CompressFolderResponse,
   ArchiveContents,
+  MoveModelResponse,
 } from '@alexandria/shared';
 import { get, getBlob, post, postForLibrary, patch, del, putRaw, postForm } from './client';
 import { buildQueryString } from '../lib/query';
@@ -56,6 +57,11 @@ export async function getModelStatus(id: string): Promise<JobStatus> {
 
 export async function updateModel(id: string, data: UpdateModelRequest): Promise<ModelDetail> {
   const response = await patch<ModelDetail>(`/models/${id}`, data);
+  return response.data;
+}
+
+export async function moveModel(id: string, targetLibraryId: string): Promise<MoveModelResponse> {
+  const response = await post<MoveModelResponse>(`/models/${id}/move`, { targetLibraryId });
   return response.data;
 }
 

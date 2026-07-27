@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, AlertTriangle, Download, GitMerge, Loader2, Upload, X } from 'lucide-react';
+import { ChevronLeft, AlertTriangle, ArrowRightLeft, Download, GitMerge, Loader2, Upload, X } from 'lucide-react';
 import type { ModelCard, ModelDetail, SplitModelFolderRequest } from '@alexandria/shared';
 import { addModelsToCollection, getCollections } from '../api/collections';
 import {
@@ -15,6 +15,7 @@ import {
   getModelFiles,
   getModels,
   mergeModels,
+  moveModel,
   splitModelFolder,
   updateModelFile,
   updateModelFolder,
@@ -23,13 +24,14 @@ import {
 import { ModelHero } from '../components/models/ModelHero';
 import { ModelDetailPanel } from '../components/models/ModelDetailPanel';
 import { SplitFolderDialog } from '../components/models/SplitFolderDialog';
+import { MoveModelDialog } from '../components/models/MoveModelDialog';
 import { ModelBreadcrumb } from '../components/models/ModelBreadcrumb';
 import { ModelViewer3DModal } from '../components/models/ModelViewer3DModal';
 import { TextFilePreviewModal } from '../components/models/TextFilePreviewModal';
 import { ArchivePreviewModal } from '../components/models/ArchivePreviewModal';
 import { ModelDetailSkeleton } from '../components/models/ModelDetailSkeleton';
 import { collectStlFiles, type StlFileRef, type TextFileRef } from '../lib/model-files';
-import { useLibraryPath } from '../hooks/use-libraries';
+import { useLibrariesOptional, useLibraryPath } from '../hooks/use-libraries';
 import { Button, buttonVariants } from '../components/ui/button';
 import {
   Dialog,
@@ -80,6 +82,9 @@ export function ModelDetailPage() {
   const { id } = useParams<{ id: string }>();
   useAssistantTarget({ modelIds: id ? [id] : [] });
   const libPath = useLibraryPath();
+  const librariesContext = useLibrariesOptional();
+  const libraries = librariesContext?.libraries ?? [];
+  const currentLibraryId = librariesContext?.currentLibraryId ?? null;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -163,12 +168,38 @@ export function ModelDetailPage() {
   const [activeArchive, setActiveArchive] = React.useState<{ fileId: string; name: string } | null>(null);
   const [uploadDialogOpen, setUploadDialogOpen] = React.useState(false);
   const [mergeDialogOpen, setMergeDialogOpen] = React.useState(false);
+  const [moveDialogOpen, setMoveDialogOpen] = React.useState(false);
   const [splitTarget, setSplitTarget] = React.useState<
     | { type: 'folder'; path: string; name: string }
     | { type: 'files'; fileIds: string[]; name: string }
     | null
   >(null);
   const [selectedImageFileId, setSelectedImageFileId] = React.useState<string | null>(null);
+
+  const moveMutation = useMutation({
+    mutationFn: async (targetLibraryId: string) => {
+      if (!id) throw new Error('Model id is required');
+      return moveModel(id, targetLibraryId);
+    },
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['libraries'] }),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['search'] }),
+        queryClient.invalidateQueries({ queryKey: ['collections'] }),
+        queryClient.invalidateQueries({ queryKey: ['smart-collections'] }),
+      ]);
+      toast({ title: 'Model moved' });
+      navigate(`/lib/${result.libraryId}/models/${result.modelId}`);
+    },
+    onError: (error) => {
+      toast({
+        title: 'Could not move model',
+        description: error instanceof Error ? error.message : undefined,
+        variant: 'destructive',
+      });
+    },
+  });
 
   const fileMutation = useMutation({
     mutationFn: async (action: FileAction) => {
@@ -330,6 +361,20 @@ export function ModelDetailPage() {
                 <GitMerge className="h-4 w-4" />
                 <span className="hidden sm:inline">Merge</span>
               </Button>
+              {libraries.length > 1 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => setMoveDialogOpen(true)}
+                  aria-label="Move model"
+                  title="Move model"
+                >
+                  <ArrowRightLeft className="h-4 w-4" />
+                  <span className="hidden sm:inline">Move</span>
+                </Button>
+              )}
               <a
                 href={`/api/models/${model.id}/download`}
                 className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'gap-2')}
@@ -475,6 +520,14 @@ export function ModelDetailPage() {
             targetModel={model}
             open={mergeDialogOpen}
             onOpenChange={setMergeDialogOpen}
+          />
+          <MoveModelDialog
+            modelName={model.name}
+            libraries={libraries}
+            currentLibraryId={currentLibraryId}
+            open={moveDialogOpen}
+            onOpenChange={setMoveDialogOpen}
+            onConfirm={(targetLibraryId) => moveMutation.mutateAsync(targetLibraryId).then(() => undefined)}
           />
         </>
       )}
