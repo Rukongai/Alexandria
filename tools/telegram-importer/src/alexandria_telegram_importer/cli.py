@@ -402,12 +402,12 @@ async def stage_bundles(
     tracker: ImportTracker,
     refs: list[MediaRef],
     staging_dir: Path,
-    limit: int,
+    limit: int | None,
     progress: ProgressReporter,
     concurrency: int = 1,
     exclude_keys: set[str] | None = None,
 ) -> StagingResult:
-    """Stage up to `limit` not-yet-staged bundles.
+    """Stage up to `limit` not-yet-staged bundles, or all when it is omitted.
 
     Returns the new persisted bundle records plus failures and downloaded bytes.
     `concurrency` bundles are staged at once, matching the direct import path.
@@ -416,7 +416,7 @@ async def stage_bundles(
     stager = BundleStager(telegram=telegram, root=staging_dir)
     pending = []
     for bundle in build_bundles(telegram.channel_id, refs):
-        if len(pending) >= limit:
+        if limit is not None and len(pending) >= limit:
             break
         key = bundle_key(telegram.channel_id, bundle)
         if key not in already:
