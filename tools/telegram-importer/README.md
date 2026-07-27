@@ -414,6 +414,11 @@ This applies to documents larger than 512 KB, which covers model archives. Photo
 
 The connections are opened once and reused for the whole run, and they are separate from `--concurrency`: `N` concurrent models share the same pool of download connections rather than each opening their own. Raising both multiplies Telegram's view of the account's activity, so raise `--concurrency` first and only lower `--download-connections` if flood waits appear.
 
+If Telegram terminates the parallel pool with a transport error such as HTTP
+429, the importer disables that pool for the rest of the run and retries
+through Telethon's managed single-connection downloader. The remaining files
+continue at reduced speed instead of inheriting disconnected pooled senders.
+
 ## Progress output
 
 In an interactive terminal the importer pins a live block below the scrolling log: an overall bar, a running tally of this run's outcomes, and one row per model being imported.
