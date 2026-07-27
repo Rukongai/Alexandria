@@ -625,6 +625,8 @@ describe('buildDuplicateScanResult', () => {
     const result = presenterService.buildDuplicateScanResult({
       scannedModelCount: 3,
       scannedFileCount: 5,
+      scannedArchiveFileCount: 0,
+      scannedArchiveEntryCount: 0,
       groups: [
         {
           fingerprint: 'fingerprint',
@@ -674,11 +676,14 @@ describe('buildDuplicateScanResult', () => {
           ],
         },
       ],
+      archiveFileGroups: [],
     });
 
     expect(result).toEqual({
       scannedModelCount: 3,
       scannedFileCount: 5,
+      scannedArchiveFileCount: 0,
+      scannedArchiveEntryCount: 0,
       redundantModelCount: 1,
       redundantFileCount: 1,
       reclaimableBytes: 120,
@@ -732,6 +737,7 @@ describe('buildDuplicateScanResult', () => {
           ],
         },
       ],
+      archiveFileGroups: [],
     });
   });
 });

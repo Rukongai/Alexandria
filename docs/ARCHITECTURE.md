@@ -390,11 +390,13 @@ On startup, S3 mode performs `HeadBucket` validation before database migration a
 
 ### DuplicateScannerService
 
-**Owns:** Detection and reporting of exact duplicate files and exact duplicate models within one authenticated user's active library, persisted duplicate-review flags, library-scoped ignored duplicate identities, and reconciliation of those flags after file membership changes.
+**Owns:** Detection and reporting of exact duplicate physical files, duplicate archive members, and exact duplicate models within one authenticated user's active library, persisted duplicate-review flags, library-scoped ignored duplicate identities, and reconciliation of those flags after file membership changes.
 
 **Does not own:** File hashing, model/file deletion, or model merging. ModelService performs structural mutations and then delegates duplicate-flag reconciliation back to DuplicateScannerService.
 
 **Behavior:** `scanDuplicates(libraryId)` considers only `ready` models that have at least one file. The route supplies the ownership-checked `request.libraryId` produced by `requireLibrary`, and concurrent requests for the same library share one in-flight scan. PostgreSQL aggregates every eligible model's complete sorted multiset of file hashes into one row per model; a second query returns file detail only for hashes that occur more than once in the same scope. Library-scoped ignored file hashes and whole-model fingerprints are removed from the report. This bounds transferred and retained detail to actual, non-ignored duplicate-file candidates instead of every stored file. Whole-model identity remains independent of file order while preserving repeated hashes: a model containing the same file twice does not match one containing it once. Filenames and relative paths participate in neither form of matching, and only file hashes or whole-model identities shared by at least two candidates are returned.
+
+The scan separately selects stored files with supported archive extensions (`zip`, `rar`, `7z`, `tar.gz`, and `tgz`) and extracts each one in an isolated temporary directory through `FileProcessingService.processArchive`. That reuses the existing archive path and link safeguards and produces the member manifest and hashes without creating `ModelFile` rows. Unreadable or rejected archives are logged and skipped. Matching members are grouped only when they occur in different archive files; `scannedArchiveFileCount`, `scannedArchiveEntryCount`, and `archiveFileGroups` are returned as informational, read-only data. They do not participate in physical-file mark/ignore actions, which continue to use the existing `fileGroups` report and persistence paths.
 
 File candidates are ordered by file creation time and file UUID, with owning-model creation time and model UUID as later tie-breakers. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID. Whole-model candidates remain oldest-first by model creation time and UUID, and whole-model groups are ordered by their oldest model, with fingerprint as the final tie-breaker. PresenterService formats timestamps and assembles per-group and aggregate counts and two independent reclaimable-byte estimates. File-level savings can overlap whole-model savings, so clients must not add `fileReclaimableBytes` to `reclaimableBytes`.
 
@@ -818,7 +820,7 @@ All provider routes apply `requireAuth` and enforce provider ownership in `AiPro
 **Tools**
 | Method | Route | Purpose | Service Chain | Library-scoped |
 |--------|-------|---------|---------------|---------------|
-| GET | /tools/duplicates | Report exact duplicate files and ready models with identical complete file-hash multisets | DuplicateScannerService → PresenterService | Yes |
+| GET | /tools/duplicates | Report exact duplicate physical files, archive members, and ready models with identical complete file-hash multisets | DuplicateScannerService → PresenterService | Yes |
 | POST | /tools/duplicates/mark | Mark every file in the current non-ignored scan | DuplicateScannerService | Yes |
 | POST | /tools/duplicates/file-groups/:hash/mark | Mark one current duplicate file set | DuplicateScannerService | Yes |
 | POST | /tools/duplicates/file-groups/:hash/ignore | Ignore one current duplicate file set and clear its flags | DuplicateScannerService | Yes |

@@ -30,15 +30,39 @@ export interface DuplicateFileGroup {
   files: DuplicateFile[];
 }
 
+/** A duplicate archive member reported for information only. */
+export interface DuplicateArchiveFile {
+  id: string;
+  modelId: string;
+  modelName: string;
+  filename: string;
+  relativePath: string;
+  archiveFileId: string;
+  archiveFilename: string;
+  archiveRelativePath: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface DuplicateArchiveFileGroup {
+  hash: string;
+  sizeBytes: number;
+  reclaimableBytes: number;
+  files: DuplicateArchiveFile[];
+}
+
 export interface DuplicateScanResult {
   scannedModelCount: number;
   scannedFileCount: number;
+  scannedArchiveFileCount: number;
+  scannedArchiveEntryCount: number;
   redundantModelCount: number;
   redundantFileCount: number;
   reclaimableBytes: number;
   fileReclaimableBytes: number;
   groups: DuplicateGroup[];
   fileGroups: DuplicateFileGroup[];
+  archiveFileGroups: DuplicateArchiveFileGroup[];
 }
 
 export interface MarkDuplicatesResult {

@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import type { IgnoreDuplicatesResult, MarkDuplicatesResult } from '@alexandria/shared';
 import { db } from '../db/index.js';
@@ -9,12 +14,21 @@ import {
   modelFiles,
   models,
 } from '../db/schema/index.js';
+import { detectArchiveExtension } from '../utils/archive.js';
+import { mapWithConcurrency } from '../utils/concurrency.js';
 import { notFound } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
+import {
+  fileProcessingService,
+  type FileManifest,
+  type FileProcessingService,
+} from './file-processing.service.js';
+import { storageService, type IStorageService } from './storage.service.js';
 
 const logger = createLogger('DuplicateScannerService');
 const MAX_SERIALIZABLE_ATTEMPTS = 3;
 const RETRYABLE_TRANSACTION_CODES = new Set(['40001', '40P01']);
+const ARCHIVE_INSPECTION_CONCURRENCY = 4;
 
 export interface DuplicateScanCandidate {
   id: string;
@@ -46,11 +60,54 @@ export interface DuplicateFileScanGroup {
   files: DuplicateFileScanCandidate[];
 }
 
+export interface DuplicateArchiveMemberScanCandidate {
+  id: string;
+  modelId: string;
+  modelName: string;
+  filename: string;
+  relativePath: string;
+  archiveFileId: string;
+  archiveFilename: string;
+  archiveRelativePath: string;
+  sizeBytes: number;
+  createdAt: Date;
+  modelCreatedAt: Date;
+}
+
+export interface DuplicateArchiveFileScanGroup {
+  hash: string;
+  files: DuplicateArchiveMemberScanCandidate[];
+}
+
+interface ArchiveFileRow {
+  modelId: string;
+  modelName: string;
+  modelCreatedAt: Date;
+  archiveFileId: string;
+  archiveFilename: string;
+  archiveRelativePath: string;
+  archiveStoragePath: string;
+  archiveFileCreatedAt: Date;
+}
+
+interface ArchiveInspectionEntry {
+  hash: string;
+  candidate: DuplicateArchiveMemberScanCandidate;
+}
+
+interface ArchiveInspectionResult {
+  entries: ArchiveInspectionEntry[];
+  succeeded: boolean;
+}
+
 export interface DuplicateScan {
   scannedModelCount: number;
   scannedFileCount: number;
+  scannedArchiveFileCount: number;
+  scannedArchiveEntryCount: number;
   groups: DuplicateScanGroup[];
   fileGroups: DuplicateFileScanGroup[];
+  archiveFileGroups: DuplicateArchiveFileScanGroup[];
 }
 
 export interface IDuplicateScannerService {
@@ -72,7 +129,11 @@ export interface IDuplicateScannerService {
 export class DuplicateScannerService implements IDuplicateScannerService {
   private readonly inFlightByLibrary = new Map<string, Promise<DuplicateScan>>();
 
-  constructor(private readonly database: DatabaseExecutor = db) {}
+  constructor(
+    private readonly database: DatabaseExecutor = db,
+    private readonly storage: IStorageService = storageService,
+    private readonly fileProcessing: FileProcessingService = fileProcessingService,
+  ) {}
 
   /** Coalesce concurrent requests for the same library onto one database scan. */
   scanDuplicates(libraryId: string): Promise<DuplicateScan> {
@@ -102,7 +163,7 @@ export class DuplicateScannerService implements IDuplicateScannerService {
   /** Mark one current, non-ignored file group while preserving other current marks. */
   async markDuplicateFileGroup(libraryId: string, hash: string): Promise<MarkDuplicatesResult> {
     return this.withSerializableTransaction(async (tx) => {
-      const scan = await this.runScan(libraryId, tx);
+      const scan = await this.runScan(libraryId, tx, false);
       const group = scan.fileGroups.find((candidate) => candidate.hash === hash);
       if (!group) throw notFound('Duplicate file group not found');
 
@@ -113,7 +174,7 @@ export class DuplicateScannerService implements IDuplicateScannerService {
   /** Persist one current file-group key, then clear its review flags. */
   async ignoreDuplicateFileGroup(libraryId: string, hash: string): Promise<IgnoreDuplicatesResult> {
     const result = await this.withSerializableTransaction(async (tx) => {
-      const scan = await this.runScan(libraryId, tx);
+      const scan = await this.runScan(libraryId, tx, false);
       const group = scan.fileGroups.find((candidate) => candidate.hash === hash);
       if (!group) throw notFound('Duplicate file group not found');
 
@@ -151,6 +212,7 @@ export class DuplicateScannerService implements IDuplicateScannerService {
   private async runScan(
     libraryId: string,
     executor: DatabaseExecutor = this.database,
+    includeArchiveGroups = true,
   ): Promise<DuplicateScan> {
     // Keep the complete hash multiset aggregation in PostgreSQL so unique-file
     // detail does not cross the database boundary. The second query returns
@@ -214,10 +276,50 @@ export class DuplicateScannerService implements IDuplicateScannerService {
       .from(duplicateModelIgnores)
       .where(eq(duplicateModelIgnores.libraryId, libraryId));
 
-    const [modelRows, duplicateFileRows, ignoredModelRows] = await Promise.all([
+    const archiveFileRowsQuery = includeArchiveGroups
+      ? executor
+        .select({
+          modelId: models.id,
+          modelName: models.name,
+          modelCreatedAt: models.createdAt,
+          archiveFileId: modelFiles.id,
+          archiveFilename: modelFiles.filename,
+          archiveRelativePath: modelFiles.relativePath,
+          archiveStoragePath: modelFiles.storagePath,
+          archiveFileCreatedAt: modelFiles.createdAt,
+        })
+        .from(models)
+        .innerJoin(modelFiles, eq(modelFiles.modelId, models.id))
+        .where(and(
+          eq(models.libraryId, libraryId),
+          eq(models.status, 'ready'),
+          sql<boolean>`lower(${modelFiles.filename}) like '%.zip'
+            or lower(${modelFiles.filename}) like '%.rar'
+            or lower(${modelFiles.filename}) like '%.7z'
+            or lower(${modelFiles.filename}) like '%.tar.gz'
+            or lower(${modelFiles.filename}) like '%.tgz'`,
+        ))
+        .orderBy(asc(modelFiles.createdAt), asc(modelFiles.id))
+      : Promise.resolve([] as ArchiveFileRow[]);
+    const ignoredFileHashesQuery = includeArchiveGroups
+      ? executor
+        .select({ hash: duplicateFileIgnores.hash })
+        .from(duplicateFileIgnores)
+        .where(eq(duplicateFileIgnores.libraryId, libraryId))
+      : Promise.resolve([] as Array<{ hash: string }>);
+
+    const [
+      modelRows,
+      duplicateFileRows,
+      ignoredModelRows,
+      archiveFileRows,
+      ignoredFileHashes,
+    ] = await Promise.all([
       modelRowsQuery,
       duplicateFileRowsQuery,
       ignoredModelRowsQuery,
+      archiveFileRowsQuery,
+      ignoredFileHashesQuery,
     ]);
     const ignoredModelFingerprints = new Set(ignoredModelRows.map((row) => row.fingerprint));
 
@@ -273,10 +375,21 @@ export class DuplicateScannerService implements IDuplicateScannerService {
       .filter(([, files]) => files.length > 1)
       .map(([hash, files]) => ({ hash, files: [...files].sort(compareFileCandidates) }))
       .sort(compareFileGroups);
+    const archiveScan = includeArchiveGroups
+      ? await this.scanArchiveFiles(
+        archiveFileRows,
+        new Set(ignoredFileHashes.map((row) => row.hash)),
+      )
+      : {
+        scannedArchiveFileCount: 0,
+        scannedArchiveEntryCount: 0,
+        archiveFileGroups: [],
+      };
 
     const result: DuplicateScan = {
       scannedModelCount: modelRows.length,
       scannedFileCount: modelRows.reduce((sum, row) => sum + row.hashes.length, 0),
+      ...archiveScan,
       groups,
       fileGroups,
     };
@@ -287,13 +400,125 @@ export class DuplicateScannerService implements IDuplicateScannerService {
         libraryId,
         scannedModelCount: result.scannedModelCount,
         scannedFileCount: result.scannedFileCount,
+        scannedArchiveFileCount: result.scannedArchiveFileCount,
+        scannedArchiveEntryCount: result.scannedArchiveEntryCount,
         duplicateModelGroupCount: result.groups.length,
         duplicateFileGroupCount: result.fileGroups.length,
+        duplicateArchiveFileGroupCount: result.archiveFileGroups.length,
       },
       'Completed duplicate scan',
     );
 
     return result;
+  }
+
+  private async scanArchiveFiles(
+    rows: ArchiveFileRow[],
+    ignoredFileHashes: Set<string>,
+  ): Promise<{
+    scannedArchiveFileCount: number;
+    scannedArchiveEntryCount: number;
+    archiveFileGroups: DuplicateArchiveFileScanGroup[];
+  }> {
+    const archiveFiles = rows.filter((row) => Boolean(detectArchiveExtension(row.archiveFilename)));
+    const inspected = await mapWithConcurrency(
+      archiveFiles,
+      ARCHIVE_INSPECTION_CONCURRENCY,
+      (row) => this.inspectArchiveFile(row, ignoredFileHashes),
+    );
+    const successfulInspections = inspected.filter((inspection) => inspection.succeeded);
+    const entries = successfulInspections.flatMap((inspection) => inspection.entries);
+    const entriesByHash = new Map<string, DuplicateArchiveMemberScanCandidate[]>();
+
+    for (const entry of entries) {
+      const matchingEntries = entriesByHash.get(entry.hash);
+      if (matchingEntries) matchingEntries.push(entry.candidate);
+      else entriesByHash.set(entry.hash, [entry.candidate]);
+    }
+
+    const archiveFileGroups = [...entriesByHash.entries()]
+      .filter(([, candidates]) => new Set(candidates.map((candidate) => candidate.archiveFileId)).size > 1)
+      .map(([hash, files]) => ({ hash, files: [...files].sort(compareArchiveMemberCandidates) }))
+      .sort(compareArchiveFileGroups);
+
+    return {
+      scannedArchiveFileCount: successfulInspections.length,
+      scannedArchiveEntryCount: entries.length,
+      archiveFileGroups,
+    };
+  }
+
+  private async inspectArchiveFile(
+    row: ArchiveFileRow,
+    ignoredFileHashes: Set<string>,
+  ): Promise<ArchiveInspectionResult> {
+    let tempDir: string | undefined;
+    try {
+      tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'alexandria-duplicate-archive-'));
+      const archiveFilename = path.posix.basename(row.archiveFilename.replaceAll('\\', '/'));
+      const archivePath = path.join(tempDir, archiveFilename);
+      const extractDir = path.join(tempDir, 'contents');
+
+      await pipeline(
+        await this.storage.retrieveStream(row.archiveStoragePath),
+        fs.createWriteStream(archivePath),
+      );
+      const manifest = await this.fileProcessing.processArchive(archivePath, extractDir);
+      return {
+        entries: this.archiveManifestEntries(row, manifest)
+          .filter((entry) => !ignoredFileHashes.has(entry.hash)),
+        succeeded: true,
+      };
+    } catch (error) {
+      logger.warn(
+        {
+          service: 'DuplicateScannerService',
+          archiveFileId: row.archiveFileId,
+          modelId: row.modelId,
+          archiveFilename: row.archiveFilename,
+          error: String(error),
+        },
+        'Skipped unreadable archive during duplicate scan',
+      );
+      return { entries: [], succeeded: false };
+    } finally {
+      if (tempDir) await this.cleanupArchiveInspection(tempDir);
+    }
+  }
+
+  private archiveManifestEntries(
+    row: ArchiveFileRow,
+    manifest: FileManifest,
+  ): ArchiveInspectionEntry[] {
+    return manifest.entries.map((entry) => ({
+      hash: entry.hash,
+      candidate: {
+        id: `${row.archiveFileId}:${entry.relativePath}`,
+        modelId: row.modelId,
+        modelName: row.modelName,
+        filename: entry.filename,
+        relativePath: entry.relativePath,
+        archiveFileId: row.archiveFileId,
+        archiveFilename: row.archiveFilename,
+        archiveRelativePath: row.archiveRelativePath,
+        sizeBytes: entry.sizeBytes,
+        createdAt: row.archiveFileCreatedAt,
+        modelCreatedAt: row.modelCreatedAt,
+      },
+    }));
+  }
+
+  private async cleanupArchiveInspection(tempDir: string): Promise<void> {
+    await fsPromises.rm(tempDir, { recursive: true, force: true }).catch((error: unknown) => {
+      logger.warn(
+        {
+          service: 'DuplicateScannerService',
+          tempDir,
+          error: String(error),
+        },
+        'Failed to remove duplicate archive inspection directory',
+      );
+    });
   }
 
   private async reconcileFlags(
@@ -417,6 +642,25 @@ function compareFileCandidates(
 }
 
 function compareFileGroups(left: DuplicateFileScanGroup, right: DuplicateFileScanGroup): number {
+  return left.files[0].createdAt.getTime() - right.files[0].createdAt.getTime()
+    || compareStrings(left.hash, right.hash)
+    || compareStrings(left.files[0].id, right.files[0].id);
+}
+
+function compareArchiveMemberCandidates(
+  left: DuplicateArchiveMemberScanCandidate,
+  right: DuplicateArchiveMemberScanCandidate,
+): number {
+  return left.createdAt.getTime() - right.createdAt.getTime()
+    || compareStrings(left.id, right.id)
+    || left.modelCreatedAt.getTime() - right.modelCreatedAt.getTime()
+    || compareStrings(left.modelId, right.modelId);
+}
+
+function compareArchiveFileGroups(
+  left: DuplicateArchiveFileScanGroup,
+  right: DuplicateArchiveFileScanGroup,
+): number {
   return left.files[0].createdAt.getTime() - right.files[0].createdAt.getTime()
     || compareStrings(left.hash, right.hash)
     || compareStrings(left.files[0].id, right.files[0].id);

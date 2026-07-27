@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Readable } from 'node:stream';
 import { ErrorCodes } from '@alexandria/shared';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -27,7 +28,22 @@ interface ModelCandidateRow {
   hashes: string[];
 }
 
-function databaseReturning(rows: FileCandidateRow[], ignoredFingerprints: string[] = []) {
+interface ArchiveCandidateRow {
+  modelId: string;
+  modelName: string;
+  modelCreatedAt: Date;
+  archiveFileId: string;
+  archiveFilename: string;
+  archiveRelativePath: string;
+  archiveStoragePath: string;
+  archiveFileCreatedAt: Date;
+}
+
+function databaseReturning(
+  rows: FileCandidateRow[],
+  ignoredFingerprints: string[] = [],
+  archiveRows: ArchiveCandidateRow[] = [],
+) {
   const modelRows = [...rows.reduce((byModel, row) => {
     const existing = byModel.get(row.modelId);
     if (existing) existing.hashes.push(row.hash);
@@ -81,15 +97,36 @@ function databaseReturning(rows: FileCandidateRow[], ignoredFingerprints: string
     ignoredFingerprints.map((fingerprint) => ({ fingerprint })),
   );
 
+  const archiveQuery = {
+    from: vi.fn(),
+    innerJoin: vi.fn(),
+    where: vi.fn(),
+    orderBy: vi.fn(),
+  };
+  archiveQuery.from.mockReturnValue(archiveQuery);
+  archiveQuery.innerJoin.mockReturnValue(archiveQuery);
+  archiveQuery.where.mockReturnValue(archiveQuery);
+  archiveQuery.orderBy.mockResolvedValue(archiveRows);
+
+  const ignoredFileHashQuery = {
+    from: vi.fn(),
+    where: vi.fn(),
+  };
+  ignoredFileHashQuery.from.mockReturnValue(ignoredFileHashQuery);
+  ignoredFileHashQuery.where.mockResolvedValue([]);
+
   return {
     database: {
       select: vi.fn()
         .mockReturnValueOnce(modelQuery)
         .mockReturnValueOnce(fileQuery)
-        .mockReturnValueOnce(ignoredModelQuery),
+        .mockReturnValueOnce(ignoredModelQuery)
+        .mockReturnValueOnce(archiveQuery)
+        .mockReturnValueOnce(ignoredFileHashQuery),
     },
     modelQuery,
     fileQuery,
+    archiveQuery,
   };
 }
 
@@ -152,6 +189,24 @@ function fileRow(
   };
 }
 
+function archiveRow(
+  modelId: string,
+  archiveFileId: string,
+  options: Partial<ArchiveCandidateRow> = {},
+): ArchiveCandidateRow {
+  const modelCreatedAt = options.modelCreatedAt ?? new Date('2026-01-01T00:00:00.000Z');
+  return {
+    modelId,
+    modelName: options.modelName ?? modelId,
+    modelCreatedAt,
+    archiveFileId,
+    archiveFilename: options.archiveFilename ?? `${archiveFileId}.zip`,
+    archiveRelativePath: options.archiveRelativePath ?? `archives/${archiveFileId}.zip`,
+    archiveStoragePath: options.archiveStoragePath ?? `models/${modelId}/${archiveFileId}.zip`,
+    archiveFileCreatedAt: options.archiveFileCreatedAt ?? modelCreatedAt,
+  };
+}
+
 describe('DuplicateScannerService', () => {
   it('finds individual duplicate files and complete model hash multisets', async () => {
     const { database, modelQuery, fileQuery } = databaseReturning([
@@ -179,7 +234,7 @@ describe('DuplicateScannerService', () => {
 
     const result = await service.scanDuplicates('library-1');
 
-    expect(database.select).toHaveBeenCalledTimes(3);
+    expect(database.select).toHaveBeenCalledTimes(5);
     expect(modelQuery.groupBy).toHaveBeenCalledOnce();
     expect(fileQuery.where).toHaveBeenCalledOnce();
     expect(result.scannedModelCount).toBe(4);
@@ -251,7 +306,7 @@ describe('DuplicateScannerService', () => {
     ]);
 
     expect(first).toEqual(second);
-    expect(fixture.database.select).toHaveBeenCalledTimes(3);
+    expect(fixture.database.select).toHaveBeenCalledTimes(5);
   });
 
   it('does not scan or group models without files', async () => {
@@ -261,9 +316,90 @@ describe('DuplicateScannerService', () => {
       .resolves.toEqual({
         scannedModelCount: 0,
         scannedFileCount: 0,
+        scannedArchiveFileCount: 0,
+        scannedArchiveEntryCount: 0,
         groups: [],
         fileGroups: [],
+        archiveFileGroups: [],
       });
+  });
+
+  it('finds duplicate members across stored archives without making them actionable file groups', async () => {
+    const fixture = databaseReturning([], [], [
+      archiveRow('model-old', 'archive-old', {
+        archiveFileCreatedAt: new Date('2026-01-01T01:00:00.000Z'),
+      }),
+      archiveRow('model-new', 'archive-new', {
+        archiveFileCreatedAt: new Date('2026-02-01T01:00:00.000Z'),
+      }),
+    ]);
+    const storage = {
+      retrieveStream: vi.fn().mockResolvedValue(Readable.from([Buffer.from('archive')])),
+    };
+    const fileProcessing = {
+      processArchive: vi.fn().mockImplementation(async (archivePath: string) => ({
+        entries: [
+          {
+            filename: 'body.stl',
+            relativePath: 'meshes/body.stl',
+            sizeBytes: 12,
+            hash: 'member-hash',
+          },
+          ...(archivePath.includes('archive-old') ? [{
+            filename: 'unique.stl',
+            relativePath: 'unique.stl',
+            sizeBytes: 7,
+            hash: 'unique-hash',
+          }] : []),
+        ],
+      })),
+    };
+
+    const result = await new DuplicateScannerService(
+      fixture.database as never,
+      storage as never,
+      fileProcessing as never,
+    ).scanDuplicates('library-1');
+
+    expect(result.scannedArchiveFileCount).toBe(2);
+    expect(result.scannedArchiveEntryCount).toBe(3);
+    expect(result.fileGroups).toEqual([]);
+    expect(result.archiveFileGroups).toEqual([{
+      hash: 'member-hash',
+      files: [
+        expect.objectContaining({
+          id: 'archive-old:meshes/body.stl',
+          archiveFileId: 'archive-old',
+          modelId: 'model-old',
+          filename: 'body.stl',
+          relativePath: 'meshes/body.stl',
+        }),
+        expect.objectContaining({
+          id: 'archive-new:meshes/body.stl',
+          archiveFileId: 'archive-new',
+          modelId: 'model-new',
+        }),
+      ],
+    }]);
+  });
+
+  it('skips an unreadable archive without failing the ordinary duplicate scan', async () => {
+    const fixture = databaseReturning([], [], [archiveRow('model-1', 'broken-archive')]);
+    const storage = {
+      retrieveStream: vi.fn().mockRejectedValue(new Error('archive unavailable')),
+    };
+    const fileProcessing = { processArchive: vi.fn() };
+
+    await expect(new DuplicateScannerService(
+      fixture.database as never,
+      storage as never,
+      fileProcessing as never,
+    ).scanDuplicates('library-1')).resolves.toMatchObject({
+      scannedArchiveFileCount: 0,
+      scannedArchiveEntryCount: 0,
+      archiveFileGroups: [],
+    });
+    expect(fileProcessing.processArchive).not.toHaveBeenCalled();
   });
 
   it('excludes ignored whole-model fingerprints while retaining file-level candidates', async () => {

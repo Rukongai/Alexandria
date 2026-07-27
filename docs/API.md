@@ -1604,6 +1604,8 @@ Scan the active library for exact duplicate files and exact duplicate model cont
 
 Only `ready` models with at least one file are scanned. PostgreSQL aggregates each eligible model's file hashes into one model row and returns individual file detail only for hashes that occur more than once in the same library/status scope. Individual files are duplicates when their SHA-256 hashes match. Two models are duplicates only when their complete sorted multisets of per-file SHA-256 hashes match. Sorting makes file order irrelevant, while treating the hashes as a multiset preserves multiplicity: a model containing two copies of a file does not match a model containing one copy. Filenames and relative paths do not participate in either comparison. File hashes and whole-model fingerprints stored as ignored for the active library are excluded.
 
+Supported stored archives (`zip`, `rar`, `7z`, `tar.gz`, and `tgz`) are also inspected for duplicate members. Each archive is extracted in an isolated temporary directory through the existing `FileProcessingService` safeguards, including archive path and link protections; unreadable archives are skipped so they do not fail the physical-file scan. Matching archive members are reported separately in `archiveFileGroups` and are informational only.
+
 **Response (200):**
 
 ```json
@@ -1611,6 +1613,8 @@ Only `ready` models with at least one file are scanned. PostgreSQL aggregates ea
   "data": {
     "scannedModelCount": 3,
     "scannedFileCount": 6,
+    "scannedArchiveFileCount": 2,
+    "scannedArchiveEntryCount": 5,
     "redundantModelCount": 1,
     "redundantFileCount": 3,
     "reclaimableBytes": 1000,
@@ -1697,6 +1701,39 @@ Only `ready` models with at least one file are scanned. PostgreSQL aggregates ea
           }
         ]
       }
+    ],
+    "archiveFileGroups": [
+      {
+        "hash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "sizeBytes": 500,
+        "reclaimableBytes": 500,
+        "files": [
+          {
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4:meshes/dragon-body.stl",
+            "modelId": "11111111-1111-4111-8111-111111111111",
+            "modelName": "Dragon Bust",
+            "filename": "dragon-body.stl",
+            "relativePath": "meshes/dragon-body.stl",
+            "archiveFileId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+            "archiveFilename": "dragon-bust.zip",
+            "archiveRelativePath": "archives/dragon-bust.zip",
+            "sizeBytes": 500,
+            "createdAt": "2026-01-15T10:33:00.000Z"
+          },
+          {
+            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3:parts/body.stl",
+            "modelId": "22222222-2222-4222-8222-222222222222",
+            "modelName": "Dragon Bust Copy",
+            "filename": "body.stl",
+            "relativePath": "parts/body.stl",
+            "archiveFileId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3",
+            "archiveFilename": "renamed-copy.zip",
+            "archiveRelativePath": "renamed-copy.zip",
+            "sizeBytes": 500,
+            "createdAt": "2026-02-01T12:03:00.000Z"
+          }
+        ]
+      }
     ]
   },
   "meta": null,
@@ -1707,6 +1744,8 @@ Only `ready` models with at least one file are scanned. PostgreSQL aggregates ea
 `data` is a `DuplicateScanResult`. Each member of `groups` is a `DuplicateGroup`, whose `models` are `DuplicateModel` values. The fingerprint is the SHA-256 digest of the encoded sorted file-hash multiset and should be treated as an opaque group identifier. Models within a group are oldest-first, with UUID as the equal-timestamp tie-breaker; groups are likewise ordered by their oldest model. `scannedModelCount` counts eligible models whether or not they belong to a duplicate group. `redundantModelCount` counts duplicate copies beyond the oldest model in each group. Group and scan `reclaimableBytes` sum the stored sizes of those later copies; `totalSizeBytes` is the oldest model's stored total.
 
 Each member of `fileGroups` is a `DuplicateFileGroup`, whose `files` are `DuplicateFile` values. `scannedFileCount` counts all files read from eligible models. Within a file group, candidates are ordered by file creation time and file UUID, with owning model creation time and model UUID as later tie-breakers. `sizeBytes` is the oldest candidate's stored size, while `reclaimableBytes` sums every later candidate's size. `redundantFileCount` and `fileReclaimableBytes` aggregate those later candidates across all file groups. File groups are ordered by their oldest file's creation time, then hash and oldest file UUID.
+
+`scannedArchiveFileCount` counts supported stored archive files that were successfully extracted, and `scannedArchiveEntryCount` counts their extracted manifest entries. Unreadable or otherwise rejected archives are skipped and do not contribute to either count. `archiveFileGroups` contains `DuplicateArchiveFileGroup` values for archive members with matching SHA-256 hashes in different stored archive files. Each member includes the physical model and archive context (`archiveFileId`, `archiveFilename`, and `archiveRelativePath`) in addition to its entry path, size, and timestamp. Archive-member groups are informational and read-only: they do not contribute to `redundantFileCount`, `fileReclaimableBytes`, or physical-file flags, and the existing physical file mark and ignore endpoints continue to operate only on `fileGroups`.
 
 The example's `Dragon Bust Variant` has one file identical to both whole-model copies but different remaining content, so it appears in a file group without joining the whole-model group. File-level savings are independent from and may overlap whole-model savings; do not add `fileReclaimableBytes` to `reclaimableBytes`. All byte values are estimates only—the decision and any deletion remain manual.
 
