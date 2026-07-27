@@ -304,6 +304,7 @@ def test_should_record_and_read_back_a_staged_bundle(tmp_path) -> None:
             source_channel_id=-100987654,
             folder_name="002501-dragon-set",
             model_message_ids=(2501, 2502),
+            attachment_message_ids=(2499, 2500),
         )
 
         staged = tracker.get_staged("abc123")
@@ -311,6 +312,7 @@ def test_should_record_and_read_back_a_staged_bundle(tmp_path) -> None:
         assert staged is not None
         assert staged.folder_name == "002501-dragon-set"
         assert staged.model_message_ids == (2501, 2502)
+        assert staged.attachment_message_ids == (2499, 2500)
         assert staged.status == "downloaded"
         assert staged.downloaded_at
     finally:
@@ -463,6 +465,7 @@ def test_should_migrate_cleanup_columns_into_an_existing_staged_table(tmp_path) 
 
         assert staged is not None
         assert staged.output_folders == ()
+        assert staged.attachment_message_ids is None
         assert staged.cleanup_attempts == 0
         assert staged.updated_at == staged.downloaded_at
     finally:

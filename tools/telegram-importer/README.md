@@ -107,6 +107,9 @@ The default run sends every model straight to Alexandria. A staged import splits
 # Stage 20 bundles as folders and exit
 uv run alexandria-telegram-import --download-only 20 --staging-dir ./work
 
+# Stage only the messages named in a link file and exit
+uv run alexandria-telegram-import --download-only ./message-links.txt --staging-dir ./work
+
 # Upload every model folder currently in ./work and exit
 uv run alexandria-telegram-import --upload-only --staging-dir ./work
 
@@ -124,6 +127,49 @@ uv run alexandria-telegram-import \
 ```
 
 All three require `--staging-dir`, and `--staging-dir` requires one of them. `TELEGRAM_STAGING_DIR` sets the default directory. `--concurrency` applies to both phases: N bundles stage at once, and N folders upload at once. `--upload-only` is entirely local — it needs no Telegram credentials and opens no Telegram session — and combining it with `--dry-run` prints what would be uploaded without contacting Alexandria. Manual cleanup remains the default: `--stage N` without `--cleanup codex` prints one staging summary and waits for Enter before uploading exactly as before. Enter `q` to leave the folders for a later `--upload-only`; a non-interactive standard input is treated as quitting rather than hanging. Automated cleanup skips this pause and drains batches continuously.
+
+### Downloading selected message links
+
+Pass a text file instead of a number to `--download-only` to stage an exact
+selection without scanning the rest of a channel:
+
+```text
+# message-links.txt — blank lines and whole-line comments are allowed
+https://t.me/public_channel/2501
+https://t.me/public_channel/2502?single
+https://t.me/c/2050123456/901
+```
+
+```bash
+uv run alexandria-telegram-import \
+  --download-only ./message-links.txt \
+  --staging-dir ./work
+```
+
+Public channel links, public preview links using `/s/`, and private channel
+links using `/c/` are accepted. Duplicate links are downloaded once, and one
+file may select messages from several channels visible to the signed-in
+Telegram account. The links select the source channels, so `--channel`,
+`TELEGRAM_CHANNEL`, and `--from-message-id` do not affect this mode.
+
+Only the linked messages are fetched. They are ordered by message ID within
+each channel and passed through the normal grouping rules, then written in the
+same staging-folder layout as numeric `--download-only`. A gap containing an
+unlisted message starts a new grouping run, so distant selected model posts do
+not get merged just because the messages between them were filtered out.
+Include every model archive part and any immediately preceding attachments you
+want in the staged bundle; the importer does not fetch unlisted neighboring
+messages. A missing message, a text-only message, or selected attachment media
+with no following selected model is reported and makes the command exit with
+status 1. Use `--dry-run` with the same arguments to inspect the selected
+grouping without downloading.
+
+Staged state records the attachment message IDs assigned to each model bundle,
+so rerunning the same selection safely skips bundles already staged. If a rerun
+assigns different attachments to the same bundle, or an older state row has an
+unknown attachment selection, the command exits with status 1. Reconcile or
+remove the existing staged folder and matching state before retrying; the
+importer will not silently replace it.
 
 ### Automated Codex cleanup
 
@@ -425,7 +471,7 @@ The importer uploads these through Alexandria's multipart endpoints in `split` m
 
 A standalone model file such as an STL is wrapped in a temporary ZIP before upload. Existing archives are uploaded as-is. Uploads use Alexandria's 10 MB chunk protocol and retry each failed chunk up to three times.
 
-The committed model name comes from the logical filename with its recognized extension removed and underscores and hyphens changed to spaces. Its description contains unique captions from the assigned attachments and the model's own message or parts, the related-model note when applicable, the channel ID and model message IDs, and a `t.me` source link when the channel has a public username. Descriptions are limited to Alexandria's 2,000-character request limit.
+The committed model name comes from the logical filename with its recognized extension removed and underscores and hyphens changed to spaces. Its description contains unique captions from the assigned attachments and the model's own message or parts, the related-model note when applicable, the channel ID and model message IDs, and a `t.me` source link for public or private channels. Descriptions are limited to Alexandria's 2,000-character request limit.
 
 ## Duplicate detection
 

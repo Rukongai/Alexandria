@@ -46,7 +46,25 @@ class TelegramSource:
             "Logged into Telegram as %s", getattr(me, "username", None) or me.first_name
         )
         selected = channel if channel is not None else await self._pick_channel()
-        self.entity = await self._client.get_entity(selected)
+        await self.select_channel(selected)
+
+    async def select_channel(self, channel: str | int) -> None:
+        """Select a source channel after the Telegram session is connected."""
+        selected = channel
+        try:
+            self.entity = await self._client.get_entity(selected)
+        except ValueError as error:
+            if not isinstance(selected, int):
+                raise
+            self.entity = None
+            async for dialog in self._client.iter_dialogs():
+                if utils.get_peer_id(dialog.entity) == selected:
+                    self.entity = dialog.entity
+                    break
+            if self.entity is None:
+                raise RuntimeError(
+                    f"Telegram channel {selected} is not visible to this account"
+                ) from error
         self.channel_id = utils.get_peer_id(self.entity)
         self.channel_username = getattr(self.entity, "username", None)
         log.info("Reading Telegram channel %s", getattr(self.entity, "title", selected))
@@ -93,6 +111,24 @@ class TelegramSource:
             return f"photo:{message.photo.id}:{size}"
         return None
 
+    @classmethod
+    def _media_ref(cls, message: Any) -> MediaRef | None:
+        filename = cls._filename(message)
+        if not filename:
+            return None
+        return MediaRef(
+            message_id=message.id,
+            filename=filename,
+            kind=(
+                MediaKind.MODEL
+                if is_model_filename(filename)
+                else MediaKind.ATTACHMENT
+            ),
+            caption=message.message.strip() if message.message else None,
+            size=message.file.size if message.file and message.file.size else 0,
+            media_identity=cls._media_identity(message),
+        )
+
     async def collect_media(self, *, min_message_id: int = 0) -> list[MediaRef]:
         refs: list[MediaRef] = []
         async for message in self._client.iter_messages(
@@ -100,24 +136,32 @@ class TelegramSource:
             reverse=True,
             min_id=min_message_id,
         ):
-            filename = self._filename(message)
-            if not filename:
-                continue
-            refs.append(
-                MediaRef(
-                    message_id=message.id,
-                    filename=filename,
-                    kind=(
-                        MediaKind.MODEL
-                        if is_model_filename(filename)
-                        else MediaKind.ATTACHMENT
-                    ),
-                    caption=message.message.strip() if message.message else None,
-                    size=message.file.size if message.file and message.file.size else 0,
-                    media_identity=self._media_identity(message),
-                ),
-            )
+            if ref := self._media_ref(message):
+                refs.append(ref)
         return refs
+
+    async def collect_media_by_ids(
+        self, message_ids: tuple[int, ...]
+    ) -> tuple[list[MediaRef], tuple[int, ...]]:
+        """Collect only explicitly selected messages, reporting missing media."""
+        messages = await self._client.get_messages(self.entity, ids=list(message_ids))
+        if not isinstance(messages, list):
+            messages = [messages]
+        by_id = {
+            message.id: message
+            for message in messages
+            if message is not None and getattr(message, "id", None) is not None
+        }
+        refs: list[MediaRef] = []
+        unavailable: list[int] = []
+        for message_id in message_ids:
+            message = by_id.get(message_id)
+            ref = self._media_ref(message) if message is not None else None
+            if ref is None:
+                unavailable.append(message_id)
+            else:
+                refs.append(ref)
+        return refs, tuple(unavailable)
 
     async def download(
         self,
@@ -194,4 +238,7 @@ class TelegramSource:
     def message_link(self, message_id: int) -> str | None:
         if self.channel_username:
             return f"https://t.me/{self.channel_username}/{message_id}"
+        peer_id = str(abs(self.channel_id))
+        if peer_id.startswith("100") and len(peer_id) > 3:
+            return f"https://t.me/c/{peer_id[3:]}/{message_id}"
         return None
