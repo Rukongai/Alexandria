@@ -1269,6 +1269,31 @@ Retrieve the full detail payload for a model.
 
 ---
 
+### POST /models/:id/files/upload
+
+Append one or more loose files or the extracted contents of an archive to an existing model. The model must belong to the authenticated user and the active library selected by `X-Library-Id`, or the user's default library when the header is omitted.
+
+**Auth required:** Yes. The model must belong to the authenticated user and active library.
+
+**Path parameter:** `id` — model UUID
+
+**Request body:** `multipart/form-data` with one or more `files` fields. Each uploaded file is limited to 100 MB. Supported archive formats are extracted; other uploads are appended as loose files.
+
+```bash
+curl -X POST http://localhost:3001/models/11111111-1111-4111-8111-111111111111/files/upload \
+  -b cookies.txt \
+  -F 'files=@model.zip' \
+  -F 'files=@notes.txt'
+```
+
+After each upload's files have been appended successfully, the server looks for `metadata.json` at the extracted archive root or staged loose-file root. A valid file can update `modelName`, `description`, `artist`, `tags`, and configured `metadata` fields on the existing model; `newCollectionName` finds or creates a collection in the active library and adds the model to it. Metadata import is best-effort: an absent, invalid, unreadable, symlinked, nested, or larger-than-64-KB file is ignored without failing the file upload. Unknown keys are ignored, and invalid supported fields are omitted.
+
+**Response (200):** Returns the updated `ModelDetail`, in the same shape as `GET /models/:id`.
+
+The endpoint returns `400 VALIDATION_ERROR` when no file is provided, an uploaded file exceeds 100 MB, or an upload contains no supported files. A model outside the authenticated user's active library returns `404 NOT_FOUND`.
+
+---
+
 ### GET /models/:id/files
 
 Retrieve the file tree for a model. The flat list of `ModelFile` records is assembled into a nested directory tree by `PresenterService`.
