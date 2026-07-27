@@ -115,17 +115,18 @@ PostgreSQL stores metadata and application state, not model-file bytes. Moving o
 
 ### Companion utilities
 
-`tools/telegram-importer/` is an optional, separately installed Python userbot CLI. It reads
-Telegram channel history with Telethon and drives Alexandria exclusively through the existing
-authenticated staged-upload API. It is not part of the backend runtime and does not write to the
-database or storage adapter directly. Complete archives use the normal chunked upload path, split
-ZIP/RAR sets use multipart `split` mode, and preceding Telegram media is appended to the staged
-session before commit. The utility owns its SQLite restart and duplicate state and short-lived local
-downloads; Alexandria continues to own all committed files through its configured local or S3
-storage backend. On an interactive terminal it renders a live progress dashboard on stderr — the
-reason it carries `rich`, its only presentation dependency — and falls back to periodic log lines
-when output is captured. That display is strictly observational: it is injected into the importer
-and cannot alter, delay, or fail an import.
+`tools/telegram-importer/` is an optional, separately installed Python userbot CLI. With Telethon,
+it can either scan one Telegram channel's history or resolve the exact messages in a multi-channel
+link file without scanning intervening history. It drives Alexandria exclusively through the
+existing authenticated staged-upload API; it is not part of the backend runtime and does not write
+to the database or storage adapter directly. Complete archives use the normal chunked upload path,
+split ZIP/RAR sets use multipart `split` mode, and preceding Telegram media is appended to the
+staged session before commit. The utility owns its SQLite restart and duplicate state and
+short-lived local downloads; Alexandria continues to own all committed files through its configured
+local or S3 storage backend. On an interactive terminal it renders a live progress dashboard on
+stderr — the reason it carries `rich`, its only presentation dependency — and falls back to periodic
+log lines when output is captured. That display is strictly observational: it is injected into the
+importer and cannot alter, delay, or fail an import.
 
 The staged path remains manual by default, including its existing operator pause, and can optionally
 orchestrate Codex as a non-interactive, per-bundle cleanup worker. Automated cleanup requires a

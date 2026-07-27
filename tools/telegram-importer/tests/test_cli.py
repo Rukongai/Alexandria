@@ -17,6 +17,7 @@ from alexandria_telegram_importer.parallel_download import (
     DEFAULT_CONNECTIONS,
     MAX_CONNECTIONS,
 )
+from alexandria_telegram_importer.models import MediaKind, MediaRef
 
 
 def test_should_import_one_model_at_a_time_by_default() -> None:
@@ -143,6 +144,16 @@ def test_should_reject_a_non_positive_download_count() -> None:
         parser().parse_args(["--staging-dir", "/tmp/work", "--download-only", "0"])
 
 
+def test_should_accept_a_message_link_file_for_download_only(tmp_path) -> None:
+    links = tmp_path / "links.txt"
+    args = parser().parse_args(
+        ["--staging-dir", str(tmp_path / "work"), "--download-only", str(links)]
+    )
+
+    validate_staging_args(args)
+    assert args.download_only == links
+
+
 def test_should_accept_each_staging_mode(tmp_path) -> None:
     for extra in (["--download-only", "5"], ["--upload-only"], ["--stage", "5"]):
         args = parser().parse_args(["--staging-dir", str(tmp_path), *extra])
@@ -242,6 +253,165 @@ async def test_should_upload_without_touching_telegram(monkeypatch, tmp_path) ->
 
     assert await cli.run(args) == 0
     assert connected == []
+
+
+async def test_should_stage_only_messages_selected_by_links(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+
+    links = tmp_path / "links.txt"
+    links.write_text(
+        "https://t.me/first/30\n"
+        "https://t.me/first/10\n"
+        "https://t.me/c/123/20\n",
+        encoding="utf-8",
+    )
+    selections: list[tuple[str | int, tuple[int, ...]]] = []
+    staged_refs: list[tuple[int, ...]] = []
+
+    class FakeTelegram:
+        channel_id = 0
+        channel_username = None
+
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def connect(self, channel) -> None:
+            self.channel_id = -1001
+            self.channel_username = "first"
+            selections.append((channel, ()))
+
+        async def select_channel(self, channel) -> None:
+            self.channel_id = channel
+            self.channel_username = None
+            selections.append((channel, ()))
+
+        async def collect_media_by_ids(self, message_ids):
+            channel, _ = selections[-1]
+            selections[-1] = (channel, message_ids)
+            return (
+                [
+                    MediaRef(
+                        message_id=message_id,
+                        filename=f"model-{message_id}.zip",
+                        kind=MediaKind.MODEL,
+                    )
+                    for message_id in message_ids
+                ],
+                (),
+            )
+
+        def message_link(self, message_id):
+            return f"https://t.me/source/{message_id}"
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_stage_bundles(**kwargs):
+        staged_refs.append(tuple(ref.message_id for ref in kwargs["refs"]))
+        return cli.StagingResult((), (), 100)
+
+    monkeypatch.setenv("TELEGRAM_API_ID", "1")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
+    monkeypatch.setattr(cli, "TelegramSource", FakeTelegram)
+    monkeypatch.setattr(cli, "stage_bundles", fake_stage_bundles)
+
+    args = parser().parse_args(
+        [
+            "--download-only",
+            str(links),
+            "--staging-dir",
+            str(tmp_path / "staging"),
+            "--state",
+            str(tmp_path / "state.sqlite3"),
+        ]
+    )
+
+    assert await cli.run(args) == 0
+    assert selections == [("@first", (10, 30)), (-100123, (20,))]
+    assert staged_refs == [(10,), (30,), (20,)]
+
+
+async def test_should_reject_changed_attachments_for_an_existing_staged_bundle(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+    from alexandria_telegram_importer.grouping import build_bundles
+    from alexandria_telegram_importer.staging import bundle_key
+    from alexandria_telegram_importer.tracker import ImportTracker
+
+    state = tmp_path / "state.sqlite3"
+    model = MediaRef(message_id=10, filename="dragon.zip", kind=MediaKind.MODEL)
+    bundle = next(build_bundles(-1001, [model]))
+    tracker = ImportTracker(state)
+    try:
+        tracker.record_staged(
+            bundle_key=bundle_key(-1001, bundle),
+            source_channel_id=-1001,
+            folder_name="000010-dragon",
+            model_message_ids=(10,),
+            attachment_message_ids=(),
+        )
+    finally:
+        tracker.close()
+
+    links = tmp_path / "links.txt"
+    links.write_text(
+        "https://t.me/first/9\nhttps://t.me/first/10\n",
+        encoding="utf-8",
+    )
+
+    class FakeTelegram:
+        channel_id = -1001
+        channel_username = "first"
+
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def connect(self, channel) -> None:
+            assert channel == "@first"
+
+        async def collect_media_by_ids(self, message_ids):
+            assert message_ids == (9, 10)
+            return (
+                [
+                    MediaRef(
+                        message_id=9,
+                        filename="render.jpg",
+                        kind=MediaKind.ATTACHMENT,
+                    ),
+                    model,
+                ],
+                (),
+            )
+
+        def message_link(self, message_id):
+            return f"https://t.me/first/{message_id}"
+
+        async def download(self, *args, **kwargs):
+            raise AssertionError("an already-staged bundle must not download again")
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setenv("TELEGRAM_API_ID", "1")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
+    monkeypatch.setattr(cli, "TelegramSource", FakeTelegram)
+    args = parser().parse_args(
+        [
+            "--download-only",
+            str(links),
+            "--staging-dir",
+            str(tmp_path / "staging"),
+            "--state",
+            str(state),
+            "--no-progress",
+        ]
+    )
+
+    assert await cli.run(args) == 1
+    assert not (tmp_path / "staging").exists()
 
 
 async def _ready(value):

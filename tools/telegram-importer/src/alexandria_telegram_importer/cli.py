@@ -25,6 +25,7 @@ from .folder_metadata import read_metadata
 from .folder_upload import FolderUploader, delete_committed, describe_staging
 from .grouping import build_bundles
 from .importer import ChannelImporter, describe_plan
+from .message_links import group_message_links, read_message_links
 from .models import MediaRef
 from .parallel_download import DEFAULT_CONNECTIONS, MAX_CONNECTIONS
 from .progress import (
@@ -66,6 +67,17 @@ def _positive(value: str) -> int:
         raise argparse.ArgumentTypeError(
             f"count must be an integer, got {value!r}"
         ) from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("count must be at least 1")
+    return parsed
+
+
+def _download_selection(value: str) -> int | Path:
+    """Accept the legacy bundle count or a file containing exact message links."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        return Path(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("count must be at least 1")
     return parsed
@@ -173,9 +185,12 @@ def parser() -> argparse.ArgumentParser:
     staging_mode = result.add_mutually_exclusive_group()
     staging_mode.add_argument(
         "--download-only",
-        type=_positive,
-        metavar="N",
-        help="Stage up to N new Telegram bundles as folders, then exit",
+        type=_download_selection,
+        metavar="N|FILE",
+        help=(
+            "Stage up to N new Telegram bundles, or stage only messages listed "
+            "as Telegram links in FILE, then exit"
+        ),
     )
     staging_mode.add_argument(
         "--upload-only",
@@ -436,6 +451,9 @@ async def stage_bundles(
                     model_message_ids=tuple(
                         part.message_id for unit in bundle.models for part in unit.parts
                     ),
+                    attachment_message_ids=tuple(
+                        ref.message_id for ref in bundle.attachments
+                    ),
                 ),
             )
             staged_bytes += size
@@ -635,6 +653,132 @@ def _cleanup_summary(outcomes: dict[str, int]) -> str:
     return "Cleanup state: " + ", ".join(
         f"{status}={count}" for status, count in sorted(outcomes.items())
     )
+
+
+def _contiguous_refs(refs: list[MediaRef]) -> tuple[list[MediaRef], ...]:
+    """Split exact selections where an unlisted Telegram message creates a gap."""
+    runs: list[list[MediaRef]] = []
+    for ref in sorted(refs, key=lambda item: item.message_id):
+        if not runs or ref.message_id != runs[-1][-1].message_id + 1:
+            runs.append([])
+        runs[-1].append(ref)
+    return tuple(runs)
+
+
+async def download_linked_messages(
+    *,
+    args: argparse.Namespace,
+    telegram: TelegramSource,
+    tracker: ImportTracker | None,
+    progress: ProgressReporter,
+) -> int:
+    """Stage only media explicitly named by a message-link file."""
+    try:
+        links = read_message_links(args.download_only)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+
+    groups = group_message_links(links)
+    staged = 0
+    staged_bytes = 0
+    failed = 0
+    selected = 0
+    plans: list[str] = []
+
+    for index, (channel, message_ids) in enumerate(groups):
+        if index == 0:
+            await telegram.connect(channel)
+        else:
+            await telegram.select_channel(channel)
+        refs, unavailable = await telegram.collect_media_by_ids(message_ids)
+        selected += len(message_ids)
+        for message_id in unavailable:
+            log.error(
+                "Telegram message %s has no downloadable media or is unavailable",
+                telegram.message_link(message_id) or message_id,
+            )
+
+        runs = _contiguous_refs(refs)
+        run_bundles = [
+            (run, list(build_bundles(telegram.channel_id, run))) for run in runs
+        ]
+        bundles = [bundle for _, items in run_bundles for bundle in items]
+        consumed_ids = {
+            ref.message_id
+            for bundle in bundles
+            for ref in (
+                *bundle.attachments,
+                *(part for model in bundle.models for part in model.parts),
+            )
+        }
+        ignored = [ref.message_id for ref in refs if ref.message_id not in consumed_ids]
+        for message_id in ignored:
+            log.error(
+                "Telegram message %s is attachment media with no following selected model",
+                telegram.message_link(message_id) or message_id,
+            )
+        failed += len(unavailable) + len(ignored)
+
+        if tracker is not None:
+            for bundle in bundles:
+                key = bundle_key(telegram.channel_id, bundle)
+                existing = tracker.get_staged(key)
+                requested_attachments = tuple(
+                    ref.message_id for ref in bundle.attachments
+                )
+                if (
+                    existing is not None
+                    and existing.attachment_message_ids != requested_attachments
+                ):
+                    failed += 1
+                    log.error(
+                        "Telegram bundle %s was already staged with attachment "
+                        "message IDs %s, but this link file selects %s; reconcile "
+                        "or remove the existing staged state before retrying",
+                        existing.folder_name,
+                        existing.attachment_message_ids,
+                        requested_attachments,
+                    )
+
+        if args.dry_run:
+            selections = [
+                describe_plan(telegram.channel_id, run)
+                for run, items in run_bundles
+                if items
+            ]
+            plans.append(
+                f"Channel {telegram.channel_id} ({channel}):\n"
+                + ("\n".join(selections) if selections else "No model media found.")
+            )
+            continue
+        if not bundles:
+            continue
+        if tracker is None:
+            raise RuntimeError("Linked-message staging requires an import tracker")
+        for run, items in run_bundles:
+            if not items:
+                continue
+            result = await stage_bundles(
+                telegram=telegram,
+                tracker=tracker,
+                refs=run,
+                staging_dir=args.staging_dir,
+                limit=len(items),
+                progress=progress,
+                concurrency=args.concurrency,
+            )
+            staged += result.staged
+            staged_bytes += result.staged_bytes
+            failed += result.failed
+
+    if args.dry_run:
+        print("\n\n".join(plans))
+    else:
+        print(
+            _staging_summary(args.staging_dir, staged, failed, staged_bytes)
+            + f" {selected} message link(s) selected."
+        )
+    return 1 if failed else 0
 
 
 async def _login(args: argparse.Namespace) -> AlexandriaClient:
@@ -998,6 +1142,16 @@ async def run(args: argparse.Namespace) -> int:
     )
 
     try:
+        if isinstance(args.download_only, Path):
+            if not args.dry_run:
+                tracker = ImportTracker(args.state)
+            return await download_linked_messages(
+                args=args,
+                telegram=telegram,
+                tracker=tracker,
+                progress=progress,
+            )
+
         await telegram.connect(_channel(args.channel))
         refs = await telegram.collect_media(min_message_id=args.from_message_id)
         if args.dry_run:

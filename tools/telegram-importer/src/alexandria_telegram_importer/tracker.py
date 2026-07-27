@@ -35,6 +35,7 @@ class StagedBundle:
     model_message_ids: tuple[int, ...]
     status: str
     downloaded_at: str
+    attachment_message_ids: tuple[int, ...] | None = None
     output_folders: tuple[str, ...] = ()
     cleanup_report: dict[str, Any] | None = None
     cleanup_attempts: int = 0
@@ -104,6 +105,7 @@ class ImportTracker:
                 source_channel_id INTEGER NOT NULL,
                 folder_name TEXT NOT NULL,
                 model_message_ids TEXT NOT NULL,
+                attachment_message_ids TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL,
                 downloaded_at TEXT NOT NULL,
                 output_folders TEXT NOT NULL DEFAULT '[]',
@@ -120,6 +122,9 @@ class ImportTracker:
             ).fetchall()
         }
         staged_migrations = {
+            # NULL marks legacy rows whose original attachment selection is
+            # unknowable; exact-link reruns must ask for reconciliation.
+            "attachment_message_ids": "TEXT",
             "output_folders": "TEXT NOT NULL DEFAULT '[]'",
             "cleanup_report": "TEXT",
             "cleanup_attempts": "INTEGER NOT NULL DEFAULT 0",
@@ -330,6 +335,7 @@ class ImportTracker:
         source_channel_id: int,
         folder_name: str,
         model_message_ids: tuple[int, ...],
+        attachment_message_ids: tuple[int, ...] = (),
     ) -> StagedBundle:
         now = datetime.now(UTC).isoformat()
         with self._connection:
@@ -337,8 +343,9 @@ class ImportTracker:
                 """
                 INSERT INTO staged_bundles (
                     bundle_key, source_channel_id, folder_name,
-                    model_message_ids, status, downloaded_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'downloaded', ?, ?)
+                    model_message_ids, attachment_message_ids,
+                    status, downloaded_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'downloaded', ?, ?)
                 ON CONFLICT(bundle_key) DO NOTHING
                 """,
                 (
@@ -346,6 +353,7 @@ class ImportTracker:
                     source_channel_id,
                     folder_name,
                     json.dumps(model_message_ids),
+                    json.dumps(attachment_message_ids),
                     now,
                     now,
                 ),
@@ -367,6 +375,11 @@ class ImportTracker:
             source_channel_id=row["source_channel_id"],
             folder_name=row["folder_name"],
             model_message_ids=tuple(json.loads(row["model_message_ids"])),
+            attachment_message_ids=(
+                tuple(json.loads(row["attachment_message_ids"]))
+                if row["attachment_message_ids"] is not None
+                else None
+            ),
             status=row["status"],
             downloaded_at=row["downloaded_at"],
             output_folders=tuple(json.loads(row["output_folders"] or "[]")),
