@@ -306,6 +306,49 @@ async def test_should_not_limit_staging_when_download_only_has_no_count(
     assert limits == [None]
 
 
+async def test_should_stage_every_pending_bundle_when_limit_is_omitted(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+    from alexandria_telegram_importer.progress import NullProgress
+
+    recorded: list[dict] = []
+
+    class FakeTracker:
+        def staged_keys(self, channel_id):
+            return set()
+
+        def record_staged(self, **kwargs):
+            recorded.append(kwargs)
+            return SimpleNamespace(folder_name=kwargs["folder_name"])
+
+    class FakeStager:
+        def __init__(self, *, telegram, root) -> None:
+            self.root = root
+
+        async def stage(self, bundle, handle):
+            folder = self.root / str(bundle.models[0].first_message_id)
+            folder.mkdir(parents=True)
+            return folder
+
+    monkeypatch.setattr(cli, "BundleStager", FakeStager)
+    result = await cli.stage_bundles(
+        telegram=SimpleNamespace(channel_id=-100123),
+        tracker=FakeTracker(),
+        refs=[
+            MediaRef(1, "first.zip", MediaKind.MODEL),
+            MediaRef(2, "preview.jpg", MediaKind.ATTACHMENT),
+            MediaRef(3, "second.zip", MediaKind.MODEL),
+        ],
+        staging_dir=tmp_path / "staging",
+        limit=None,
+        progress=NullProgress(),
+    )
+
+    assert [item["model_message_ids"] for item in recorded] == [(1,), (3,)]
+    assert len(result.items) == 2
+
+
 async def test_should_stage_only_messages_selected_by_links(
     monkeypatch, tmp_path
 ) -> None:
