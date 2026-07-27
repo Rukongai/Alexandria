@@ -186,10 +186,12 @@ def parser() -> argparse.ArgumentParser:
     staging_mode.add_argument(
         "--download-only",
         type=_download_selection,
+        nargs="?",
+        const=0,
         metavar="N|FILE",
         help=(
-            "Stage up to N new Telegram bundles, or stage only messages listed "
-            "as Telegram links in FILE, then exit"
+            "Stage every new Telegram bundle, up to N when supplied, or only "
+            "messages listed as Telegram links in FILE, then exit"
         ),
     )
     staging_mode.add_argument(
