@@ -22,12 +22,15 @@ describe('duplicate tools API', () => {
     const result = {
       scannedModelCount: 0,
       scannedFileCount: 0,
+      scannedArchiveFileCount: 0,
+      scannedArchiveEntryCount: 0,
       redundantModelCount: 0,
       redundantFileCount: 0,
       reclaimableBytes: 0,
       fileReclaimableBytes: 0,
       groups: [],
       fileGroups: [],
+      archiveFileGroups: [],
     };
     vi.mocked(get).mockResolvedValue(envelope(result));
 

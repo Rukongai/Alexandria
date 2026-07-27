@@ -31,6 +31,8 @@ const mockConsolidateDuplicateModels = vi.mocked(consolidateDuplicateModels);
 const duplicateScanResult = {
   scannedModelCount: 2,
   scannedFileCount: 2,
+  scannedArchiveFileCount: 0,
+  scannedArchiveEntryCount: 0,
   redundantFileCount: 1,
   fileReclaimableBytes: 100,
   fileGroups: [
@@ -60,6 +62,7 @@ const duplicateScanResult = {
       ],
     },
   ],
+  archiveFileGroups: [],
   redundantModelCount: 0,
   reclaimableBytes: 0,
   groups: [],
@@ -68,9 +71,12 @@ const duplicateScanResult = {
 const emptyScanResult = {
   scannedModelCount: 2,
   scannedFileCount: 2,
+  scannedArchiveFileCount: 0,
+  scannedArchiveEntryCount: 0,
   redundantFileCount: 0,
   fileReclaimableBytes: 0,
   fileGroups: [],
+  archiveFileGroups: [],
   redundantModelCount: 0,
   reclaimableBytes: 0,
   groups: [],
@@ -146,6 +152,8 @@ describe('ToolsPage', () => {
     mockScanDuplicates.mockResolvedValue({
       scannedModelCount: 3,
       scannedFileCount: 8,
+      scannedArchiveFileCount: 2,
+      scannedArchiveEntryCount: 5,
       redundantFileCount: 1,
       fileReclaimableBytes: 1024,
       fileGroups: [
@@ -199,6 +207,39 @@ describe('ToolsPage', () => {
           ],
         },
       ],
+      archiveFileGroups: [
+        {
+          hash: 'matching-archive-member',
+          sizeBytes: 512,
+          reclaimableBytes: 512,
+          files: [
+            {
+              id: 'archive-entry-1',
+              modelId: 'model-1',
+              modelName: 'Dragon original',
+              filename: 'body.stl',
+              relativePath: 'meshes/body.stl',
+              archiveFileId: 'archive-file-1',
+              archiveFilename: 'dragon.zip',
+              archiveRelativePath: 'archives/dragon.zip',
+              sizeBytes: 512,
+              createdAt: '2025-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'archive-entry-2',
+              modelId: 'model-2',
+              modelName: 'Dragon copy',
+              filename: 'body.stl',
+              relativePath: 'meshes/body.stl',
+              archiveFileId: 'archive-file-2',
+              archiveFilename: 'dragon-copy.zip',
+              archiveRelativePath: 'archives/dragon-copy.zip',
+              sizeBytes: 512,
+              createdAt: '2025-02-01T00:00:00.000Z',
+            },
+          ],
+        },
+      ],
     });
 
     render(<ToolsPage />, { wrapper: makeWrapper() });
@@ -206,12 +247,20 @@ describe('ToolsPage', () => {
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Duplicate files' })).toBeTruthy());
     expect(screen.getByText('body-copy.stl')).toBeTruthy();
-    expect(screen.getByText('meshes/body.stl')).toBeTruthy();
+    expect(screen.getAllByText('meshes/body.stl')).toHaveLength(3);
     expect(
       screen.getAllByRole('link', { name: 'Dragon original' })[0].getAttribute('href'),
     ).toBe('/models/model-1');
     expect(screen.getByText('Suggested keep').parentElement?.textContent).toContain('body.stl');
     expect(screen.getByRole('heading', { name: 'Whole-model duplicates' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Duplicate archive members' })).toBeTruthy();
+    expect(screen.getByText('archives/dragon.zip')).toBeTruthy();
+    expect(screen.getByText('archives/dragon-copy.zip')).toBeTruthy();
+    expect(screen.getByText('Informational only')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /mark duplicates in archive/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /ignore duplicates in archive/i })).toBeNull();
+    expect(screen.getByText('Archive files scanned').nextElementSibling?.textContent).toBe('2');
+    expect(screen.getByText('Archive entries scanned').nextElementSibling?.textContent).toBe('5');
     expect(screen.getByText('Oldest copy')).toBeTruthy();
     expect(screen.getByText('Files scanned').nextElementSibling?.textContent).toBe('8');
     expect(screen.getByRole('button', { name: /mark duplicates in file set 1/i })).toBeTruthy();
@@ -279,6 +328,8 @@ describe('ToolsPage', () => {
     finishScan({
       scannedModelCount: 2,
       scannedFileCount: 5,
+      scannedArchiveFileCount: 0,
+      scannedArchiveEntryCount: 0,
       redundantFileCount: 1,
       fileReclaimableBytes: 100,
       fileGroups: [
@@ -311,6 +362,7 @@ describe('ToolsPage', () => {
       redundantModelCount: 0,
       reclaimableBytes: 0,
       groups: [],
+      archiveFileGroups: [],
     });
 
     await waitFor(() => {
@@ -324,18 +376,21 @@ describe('ToolsPage', () => {
     mockScanDuplicates.mockResolvedValue({
       scannedModelCount: 4,
       scannedFileCount: 12,
+      scannedArchiveFileCount: 0,
+      scannedArchiveEntryCount: 0,
       redundantFileCount: 0,
       fileReclaimableBytes: 0,
       fileGroups: [],
       redundantModelCount: 0,
       reclaimableBytes: 0,
       groups: [],
+      archiveFileGroups: [],
     });
 
     render(<ToolsPage />, { wrapper: makeWrapper() });
     fireEvent.click(screen.getByRole('button', { name: /scan library/i }));
 
-    await waitFor(() => expect(screen.getByText(/no duplicate files or models found/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/no duplicate files, models, or archive members found/i)).toBeTruthy());
     expect(screen.getByText(/compared 12 files across 4 ready models/i)).toBeTruthy();
   });
 
@@ -344,18 +399,21 @@ describe('ToolsPage', () => {
       .mockResolvedValueOnce({
         scannedModelCount: 1,
         scannedFileCount: 1,
+        scannedArchiveFileCount: 0,
+        scannedArchiveEntryCount: 0,
         redundantFileCount: 0,
         fileReclaimableBytes: 0,
         fileGroups: [],
         redundantModelCount: 0,
         reclaimableBytes: 0,
         groups: [],
+        archiveFileGroups: [],
       })
       .mockRejectedValueOnce(new Error('scan failed'));
 
     render(<ToolsPage />, { wrapper: makeWrapper() });
     fireEvent.click(screen.getByRole('button', { name: /scan library/i }));
-    await waitFor(() => expect(screen.getByText(/no duplicate files or models found/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/no duplicate files, models, or archive members found/i)).toBeTruthy());
 
     fireEvent.click(screen.getByRole('button', { name: /scan again/i }));
 
@@ -444,7 +502,7 @@ describe('ToolsPage', () => {
     });
     expect(mockIgnoreDuplicateFileGroup).toHaveBeenCalledWith('same-file');
     expect(mockScanDuplicates).toHaveBeenCalledTimes(2);
-    expect(screen.getByText(/no duplicate files or models found/i)).toBeTruthy();
+    expect(screen.getByText(/no duplicate files, models, or archive members found/i)).toBeTruthy();
   });
 
   it('announces an accessible error for the file set action that failed', async () => {

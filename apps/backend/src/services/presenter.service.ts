@@ -133,15 +133,42 @@ export class PresenterService implements IPresenterService {
       };
     });
 
+    const archiveFileGroups = scan.archiveFileGroups.map((group) => {
+      const reclaimableBytes = group.files
+        .slice(1)
+        .reduce((sum, file) => sum + file.sizeBytes, 0);
+
+      return {
+        hash: group.hash,
+        sizeBytes: group.files[0].sizeBytes,
+        reclaimableBytes,
+        files: group.files.map((file) => ({
+          id: file.id,
+          modelId: file.modelId,
+          modelName: file.modelName,
+          filename: file.filename,
+          relativePath: file.relativePath,
+          archiveFileId: file.archiveFileId,
+          archiveFilename: file.archiveFilename,
+          archiveRelativePath: file.archiveRelativePath,
+          sizeBytes: file.sizeBytes,
+          createdAt: file.createdAt.toISOString(),
+        })),
+      };
+    });
+
     return {
       scannedModelCount: scan.scannedModelCount,
       scannedFileCount: scan.scannedFileCount,
+      scannedArchiveFileCount: scan.scannedArchiveFileCount,
+      scannedArchiveEntryCount: scan.scannedArchiveEntryCount,
       redundantModelCount: groups.reduce((sum, group) => sum + group.models.length - 1, 0),
       redundantFileCount: fileGroups.reduce((sum, group) => sum + group.files.length - 1, 0),
       reclaimableBytes: groups.reduce((sum, group) => sum + group.reclaimableBytes, 0),
       fileReclaimableBytes: fileGroups.reduce((sum, group) => sum + group.reclaimableBytes, 0),
       groups,
       fileGroups,
+      archiveFileGroups,
     };
   }
 

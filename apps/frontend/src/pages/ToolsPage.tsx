@@ -2,18 +2,25 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
+  Archive,
   CheckCircle2,
   Combine,
   Copy,
   EyeOff,
   FileSearch,
+  Info,
   Loader2,
   RefreshCw,
   Tags,
   Wrench,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import type { DuplicateFile, DuplicateModel, DuplicateScanResult } from '@alexandria/shared';
+import type {
+  DuplicateArchiveFile,
+  DuplicateFile,
+  DuplicateModel,
+  DuplicateScanResult,
+} from '@alexandria/shared';
 import {
   ignoreDuplicateFileGroup,
   markDuplicateFileGroup,
@@ -281,8 +288,13 @@ function duplicateScanAnnouncement(result: DuplicateScanResult): string {
   const redundantFiles = countPhrase(result.redundantFileCount, 'redundant file');
   const modelGroups = countPhrase(result.groups.length, 'duplicate model group');
   const redundantModels = countPhrase(result.redundantModelCount, 'redundant model');
+  const archiveGroups = countPhrase(result.archiveFileGroups.length, 'duplicate archive group');
+  const archiveMembers = countPhrase(
+    result.archiveFileGroups.reduce((sum, group) => sum + group.files.length - 1, 0),
+    'redundant archive member',
+  );
 
-  return `Scan complete. Found ${fileGroups} with ${redundantFiles}, and ${modelGroups} with ${redundantModels}.`;
+  return `Scan complete. Found ${fileGroups} with ${redundantFiles}, ${modelGroups} with ${redundantModels}, and ${archiveGroups} with ${archiveMembers}.`;
 }
 
 function countPhrase(count: number, singular: string): string {
@@ -310,18 +322,27 @@ function DuplicateResults({
 }) {
   const hasDuplicateFiles = result.fileGroups.length > 0;
   const hasDuplicateModels = result.groups.length > 0;
+  const hasDuplicateArchiveFiles = result.archiveFileGroups.length > 0;
+  const hasArchiveScan =
+    hasDuplicateArchiveFiles ||
+    result.scannedArchiveFileCount > 0 ||
+    result.scannedArchiveEntryCount > 0;
 
-  if (!hasDuplicateFiles && !hasDuplicateModels) {
+  if (!hasDuplicateFiles && !hasDuplicateModels && !hasArchiveScan) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
         <CheckCircle2 className="h-9 w-9 text-emerald-600" />
         <div>
-          <p className="font-medium text-foreground">No duplicate files or models found</p>
+          <p className="font-medium text-foreground">No duplicate files, models, or archive members found</p>
           <p className="mt-1 text-sm text-muted-foreground">
             Compared {result.scannedFileCount.toLocaleString()}{' '}
             {result.scannedFileCount === 1 ? 'file' : 'files'} across{' '}
             {result.scannedModelCount.toLocaleString()}{' '}
-            {result.scannedModelCount === 1 ? 'ready model' : 'ready models'}.
+            {result.scannedModelCount === 1 ? 'ready model' : 'ready models'} and{' '}
+            {result.scannedArchiveEntryCount.toLocaleString()}{' '}
+            {result.scannedArchiveEntryCount === 1 ? 'archive entry' : 'archive entries'} from{' '}
+            {result.scannedArchiveFileCount.toLocaleString()}{' '}
+            {result.scannedArchiveFileCount === 1 ? 'archive file' : 'archive files'}.
           </p>
         </div>
       </div>
@@ -330,31 +351,33 @@ function DuplicateResults({
 
   return (
     <div className="flex flex-col gap-6">
-      <section
-        aria-labelledby="duplicate-actions-heading"
-        className="flex flex-col gap-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between"
-      >
-        <div>
-          <h2 id="duplicate-actions-heading" className="text-sm font-semibold text-foreground">
-            Review these duplicate results
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Marking adds a Duplicate indicator to every reported file and to any model whose every
-            file is duplicated. You can also mark or ignore one duplicate file set at a time below.
-            Ignoring a set clears its existing Duplicate indicators. No review action deletes files.
-          </p>
-        </div>
-        <div className="flex flex-shrink-0 flex-wrap gap-2">
-          <Button onClick={onMarkAll} disabled={actionsDisabled}>
-            {markingAll ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Tags className="mr-2 h-4 w-4" />
-            )}
-            {markingAll ? 'Marking…' : 'Mark all duplicates'}
-          </Button>
-        </div>
-      </section>
+      {(hasDuplicateFiles || hasDuplicateModels) && (
+        <section
+          aria-labelledby="duplicate-actions-heading"
+          className="flex flex-col gap-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div>
+            <h2 id="duplicate-actions-heading" className="text-sm font-semibold text-foreground">
+              Review these duplicate results
+            </h2>
+            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+              Marking adds a Duplicate indicator to every reported file and to any model whose every
+              file is duplicated. You can also mark or ignore one duplicate file set at a time below.
+              Ignoring a set clears its existing Duplicate indicators. No review action deletes files.
+            </p>
+          </div>
+          <div className="flex flex-shrink-0 flex-wrap gap-2">
+            <Button onClick={onMarkAll} disabled={actionsDisabled}>
+              {markingAll ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Tags className="mr-2 h-4 w-4" />
+              )}
+              {markingAll ? 'Marking…' : 'Mark all duplicates'}
+            </Button>
+          </div>
+        </section>
+      )}
 
       <section aria-labelledby="duplicate-files-heading" className="flex flex-col gap-4">
         <div>
@@ -460,6 +483,74 @@ function DuplicateResults({
           </p>
         )}
       </section>
+
+      {hasArchiveScan && (
+        <section
+          aria-labelledby="duplicate-archive-members-heading"
+          className="flex flex-col gap-4 border-t pt-6"
+        >
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg bg-muted p-2 text-foreground">
+              <Archive className="h-5 w-5" />
+            </div>
+            <div>
+              <h2
+                id="duplicate-archive-members-heading"
+                className="text-base font-semibold text-foreground"
+              >
+                Duplicate archive members
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Matching entries found inside stored archive files. These results are informational
+                only; archive members do not have mark or ignore actions here.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2 rounded-lg border border-sky-500/30 bg-sky-500/5 p-3 text-sm text-foreground">
+            <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-sky-600" />
+            <p>
+              Archive members are nested content. Review the containing archive and model before
+              deciding whether any physical file needs attention.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+            <ScanStat label="Archive files scanned" value={result.scannedArchiveFileCount.toLocaleString()} />
+            <ScanStat label="Archive entries scanned" value={result.scannedArchiveEntryCount.toLocaleString()} />
+            <ScanStat label="Duplicate archive groups" value={result.archiveFileGroups.length.toLocaleString()} />
+          </div>
+
+          {hasDuplicateArchiveFiles ? (
+            <div className="flex flex-col gap-4">
+              {result.archiveFileGroups.map((group, index) => (
+                <div key={group.hash} className="overflow-hidden rounded-lg border">
+                  <div className="flex flex-col gap-3 border-b bg-muted/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">
+                        Duplicate archive member set {index + 1}
+                      </h3>
+                      <p className="text-xs text-muted-foreground">
+                        {group.files.length} identical members · {formatFileSize(group.sizeBytes)} each
+                      </p>
+                    </div>
+                    <Badge variant="outline">Informational only</Badge>
+                  </div>
+                  <div className="divide-y">
+                    {group.files.map((file) => (
+                      <DuplicateArchiveFileRow key={file.id} file={file} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-lg border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+              No duplicate archive members were found.
+            </p>
+          )}
+        </section>
+      )}
 
       {hasDuplicateModels && (
         <section
@@ -567,6 +658,38 @@ function DuplicateFileRow({
         </Link>
         <span className="whitespace-nowrap text-xs text-muted-foreground">
           Added {formatDate(file.createdAt)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function DuplicateArchiveFileRow({ file }: { file: DuplicateArchiveFile }) {
+  const libPath = useLibraryPath();
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium text-foreground">{file.filename}</p>
+        <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={file.relativePath}>
+          {file.relativePath}
+        </p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Archive: <span className="font-medium text-foreground">{file.archiveFilename}</span>
+        </p>
+        <p className="truncate font-mono text-xs text-muted-foreground" title={file.archiveRelativePath}>
+          {file.archiveRelativePath}
+        </p>
+      </div>
+      <div className="flex shrink-0 flex-col items-start gap-1 sm:items-end">
+        <Link
+          to={libPath(`/models/${file.modelId}`)}
+          className="text-sm font-medium text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {file.modelName}
+        </Link>
+        <span className="whitespace-nowrap text-xs text-muted-foreground">
+          {formatFileSize(file.sizeBytes)} · Added {formatDate(file.createdAt)}
         </span>
       </div>
     </div>

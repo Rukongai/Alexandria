@@ -331,6 +331,8 @@ describe('GET /tools/duplicates integration', () => {
       data: {
         scannedModelCount: 3,
         scannedFileCount: 6,
+        scannedArchiveFileCount: 0,
+        scannedArchiveEntryCount: 0,
         redundantModelCount: 1,
         redundantFileCount: 3,
         reclaimableBytes: 200,
@@ -418,6 +420,7 @@ describe('GET /tools/duplicates integration', () => {
             ],
           },
         ],
+        archiveFileGroups: [],
       },
       meta: null,
       errors: null,
