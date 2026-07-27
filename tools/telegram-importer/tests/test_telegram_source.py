@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from telethon.errors import FileReferenceExpiredError
+from telethon.errors import FileReferenceExpiredError, InvalidBufferError
 from telethon.tl.types import Channel, ChatPhotoEmpty
 
 from alexandria_telegram_importer import parallel_download, telegram_source
@@ -198,6 +198,46 @@ async def test_should_fall_back_to_telethon_when_parallel_download_is_unsupporte
     path = await source.download(ref, tmp_path)
 
     assert path.read_bytes() == b"payload"
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        ConnectionError("Cannot send requests while disconnected"),
+        InvalidBufferError((-429).to_bytes(4, "little", signed=True)),
+    ],
+)
+async def test_should_disable_a_broken_parallel_pool_and_fall_back_to_telethon(
+    tmp_path, monkeypatch, transport_error
+) -> None:
+    client = RecordingTelethonClient()
+
+    class FailedPool:
+        size = 4
+        disabled = False
+
+        async def disable(self) -> None:
+            self.disabled = True
+            self.size = 1
+
+    source = source_with(client, connections=4)
+    source._downloads = FailedPool()
+    monkeypatch.setattr(
+        telegram_source.parallel_download, "plan", lambda *_: ("loc", 2, 4096)
+    )
+
+    async def fail(*_args, **_kwargs):
+        raise transport_error
+
+    monkeypatch.setattr(telegram_source.parallel_download, "download", fail)
+    ref = MediaRef(message_id=7, filename="dragon.zip", kind=MediaKind.MODEL)
+
+    path = await source.download(ref, tmp_path)
+
+    assert path.read_bytes() == b"payload"
+    assert source._downloads.disabled is True
     assert client.calls == 1
 
 

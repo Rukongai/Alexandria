@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from telethon import TelegramClient, utils
-from telethon.errors import FileReferenceExpiredError, FloodWaitError
+from telethon.errors import (
+    FileReferenceExpiredError,
+    FloodWaitError,
+    InvalidBufferError,
+)
 from telethon.tl.types import Channel
 
 from . import parallel_download
@@ -227,6 +231,19 @@ class TelegramSource:
                     target.name,
                     error,
                 )
+            except (ConnectionError, InvalidBufferError) as error:
+                # A transport-level 429 permanently disconnects Telethon's
+                # custom sender. Retaining that sender poisons every later
+                # parallel download, while the client's main connection often
+                # remains healthy. Retire the pool and finish this run through
+                # Telethon's managed downloader instead.
+                log.warning(
+                    "Parallel download transport failed for %s; disabling it "
+                    "for this run and falling back to one connection: %s",
+                    target.name,
+                    error,
+                )
+                await self._downloads.disable()
 
         downloaded = await self._client.download_media(
             message, file=str(target), progress_callback=on_progress

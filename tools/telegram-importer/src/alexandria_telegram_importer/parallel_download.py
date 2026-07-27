@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -69,15 +70,19 @@ class ConnectionPool:
         self._size = size
         self._senders: dict[int, list[MTProtoSender]] = {}
         self._lock = asyncio.Lock()
+        self._disabled = False
 
     @property
     def size(self) -> int:
-        return self._size
+        # A size of one makes `plan` select Telethon's normal downloader.
+        return 1 if self._disabled else self._size
 
     async def senders(self, dc_id: int) -> list[MTProtoSender]:
         # The lock makes the whole first build atomic, so concurrent imports
         # cannot each open a full set of connections for the same data centre.
         async with self._lock:
+            if self._disabled:
+                raise UnsupportedDownload("parallel download pool is disabled")
             if (existing := self._senders.get(dc_id)) is not None:
                 return existing
             created: list[MTProtoSender] = []
@@ -91,6 +96,20 @@ class ConnectionPool:
             log.debug("Opened %d download connections to DC %d", len(created), dc_id)
             self._senders[dc_id] = created
             return created
+
+    async def disable(self) -> None:
+        """Stop parallel downloads after a transport-level pool failure.
+
+        Telegram can terminate an extra MTProto connection with a transport
+        429. Telethon deliberately leaves that sender disconnected, so keeping
+        it in the pool would make every later file fail immediately.
+
+        Do not disconnect here: concurrent downloads may still own requests on
+        healthy senders in the shared pool, and Telethon cancels those requests
+        during disconnect. Normal source teardown closes the disabled pool once
+        every staging task has drained.
+        """
+        self._disabled = True
 
     async def _connect(self, dc_id: int) -> MTProtoSender:
         client = self._client
@@ -139,6 +158,15 @@ async def _disconnect_quietly(sender: MTProtoSender) -> None:
         await sender.disconnect()
     except Exception as error:  # noqa: BLE001 - teardown must not mask the real fault
         log.debug("Could not close a download connection: %s", error)
+    # A transport 429 completes Telethon's disconnected future with the same
+    # exception. Retrieve it during teardown so asyncio does not report a
+    # misleading "Future exception was never retrieved" after the fallback.
+    disconnected = getattr(sender, "disconnected", None)
+    if inspect.isawaitable(disconnected):
+        try:
+            await disconnected
+        except Exception as error:  # noqa: BLE001 - the request already owns the fault
+            log.debug("Download connection ended with: %s", error)
 
 
 def plan(message: Any, connections: int) -> tuple[Any, int, int] | None:

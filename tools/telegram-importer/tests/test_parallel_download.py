@@ -364,5 +364,53 @@ async def test_should_open_each_connection_once_and_reuse_it(monkeypatch) -> Non
     assert all(sender.disconnected for sender in opened)
 
 
+@pytest.mark.asyncio
+async def test_should_not_cancel_requests_when_disabling_pool(monkeypatch) -> None:
+    opened = []
+
+    class RecordingSender:
+        def __init__(self, _auth_key, loggers=None) -> None:
+            self.disconnected = False
+            self.pending = []
+            opened.append(self)
+
+        async def connect(self, _connection) -> None:
+            pass
+
+        async def send(self, _request) -> str:
+            future = asyncio.get_running_loop().create_future()
+            self.pending.append(future)
+            return await future
+
+        async def disconnect(self) -> None:
+            self.disconnected = True
+            for future in self.pending:
+                if not future.done():
+                    future.cancel()
+
+    monkeypatch.setattr(parallel_download, "MTProtoSender", RecordingSender)
+    pool = ConnectionPool(FakeClientForPool(), 1)
+    sender = (await pool.senders(2))[0]
+    first = asyncio.create_task(sender.send("first"))
+    second = asyncio.create_task(sender.send("second"))
+    await asyncio.sleep(0)
+
+    await pool.disable()
+
+    assert pool.size == 1
+    assert not sender.disconnected
+    assert not first.done()
+    assert not second.done()
+    with pytest.raises(UnsupportedDownload, match="disabled"):
+        await pool.senders(2)
+
+    sender.pending[0].set_result("first")
+    sender.pending[1].set_result("second")
+    assert await asyncio.gather(first, second) == ["first", "second"]
+
+    await pool.close()
+    assert all(sender.disconnected for sender in opened)
+
+
 async def _instant_sleep(_seconds) -> None:
     return None
