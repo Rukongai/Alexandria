@@ -124,6 +124,13 @@ def test_should_reject_a_staging_flag_without_a_staging_directory() -> None:
         validate_staging_args(args)
 
 
+def test_should_stage_the_whole_channel_when_download_only_has_no_count(tmp_path) -> None:
+    args = parser().parse_args(["--download-only", "--staging-dir", str(tmp_path)])
+
+    validate_staging_args(args)
+    assert args.download_only == 0
+
+
 def test_should_reject_a_staging_directory_without_a_staging_flag() -> None:
     args = parser().parse_args(["--staging-dir", "/tmp/work"])
 
@@ -242,6 +249,50 @@ async def test_should_upload_without_touching_telegram(monkeypatch, tmp_path) ->
 
     assert await cli.run(args) == 0
     assert connected == []
+
+
+async def test_should_not_limit_staging_when_download_only_has_no_count(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+
+    limits: list[int | None] = []
+
+    class FakeTelegram:
+        channel_id = -100123
+
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def connect(self, channel) -> None:
+            return None
+
+        async def collect_media(self, *, min_message_id=0):
+            return []
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_stage_bundles(**kwargs):
+        limits.append(kwargs["limit"])
+        return cli.StagingResult((), (), 0)
+
+    monkeypatch.setenv("TELEGRAM_API_ID", "1")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
+    monkeypatch.setattr(cli, "TelegramSource", FakeTelegram)
+    monkeypatch.setattr(cli, "stage_bundles", fake_stage_bundles)
+    args = parser().parse_args(
+        [
+            "--download-only",
+            "--staging-dir",
+            str(tmp_path / "staging"),
+            "--state",
+            str(tmp_path / "state.sqlite3"),
+        ]
+    )
+
+    assert await cli.run(args) == 0
+    assert limits == [None]
 
 
 async def _ready(value):

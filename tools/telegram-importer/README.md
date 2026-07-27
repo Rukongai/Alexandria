@@ -107,6 +107,9 @@ The default run sends every model straight to Alexandria. A staged import splits
 # Stage 20 bundles as folders and exit
 uv run alexandria-telegram-import --download-only 20 --staging-dir ./work
 
+# Stage every new bundle in the channel as folders and exit
+uv run alexandria-telegram-import --download-only --staging-dir ./work
+
 # Upload every model folder currently in ./work and exit
 uv run alexandria-telegram-import --upload-only --staging-dir ./work
 

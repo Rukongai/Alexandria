@@ -174,8 +174,13 @@ def parser() -> argparse.ArgumentParser:
     staging_mode.add_argument(
         "--download-only",
         type=_positive,
+        nargs="?",
+        const=0,
         metavar="N",
-        help="Stage up to N new Telegram bundles as folders, then exit",
+        help=(
+            "Stage every new Telegram bundle, or up to N when supplied, as "
+            "folders, then exit"
+        ),
     )
     staging_mode.add_argument(
         "--upload-only",
