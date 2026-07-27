@@ -31,12 +31,14 @@ vi.mock('./model.service.js', () => ({
     createModelFiles: vi.fn(),
     createThumbnails: vi.fn(),
     updateModelStatus: vi.fn(),
+    updateModel: vi.fn(),
     getModelById: vi.fn(),
     requireOwnedModel: vi.fn(),
     getModelFiles: vi.fn(),
     getModelFolders: vi.fn(),
     ensureModelFolders: vi.fn(),
     recalculateModelStats: vi.fn(),
+    buildAdditionalFileInputs: vi.fn(),
   },
   ModelService: vi.fn(),
 }));
@@ -112,6 +114,10 @@ vi.mock('./collection.service.js', () => ({
   CollectionService: vi.fn(),
 }));
 
+vi.mock('../utils/metadata-file.js', () => ({
+  readMetadataFile: vi.fn(),
+}));
+
 // Only the backend instance is faked. `storeVerified` and `uploadConcurrencyFor`
 // keep their real implementations so these tests exercise the actual
 // verification and fan-out logic rather than a stand-in for it.
@@ -167,6 +173,7 @@ import { storageService } from './storage.service.js';
 import { importSessionService } from './import-session.service.js';
 import { metadataService } from './metadata.service.js';
 import { collectionService } from './collection.service.js';
+import { readMetadataFile } from '../utils/metadata-file.js';
 import fsPromises from 'node:fs/promises';
 import { validationError } from '../utils/errors.js';
 import { notFound } from '../utils/errors.js';
@@ -1195,6 +1202,116 @@ describe('IngestionService – remote folder import', () => {
     expect(jobService.enqueueFolderImportJob).toHaveBeenCalledWith(
       expect.objectContaining({ deleteAfterUpload: true }),
     );
+  });
+});
+
+describe('IngestionService – appendUploadToModel', () => {
+  let service: IngestionService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new IngestionService();
+    vi.mocked(readMetadataFile).mockResolvedValue(undefined);
+    vi.mocked(metadataService.setModelMetadata).mockResolvedValue(undefined);
+    vi.mocked(fileProcessingService.processArchive).mockResolvedValue({
+      entries: [
+        {
+          filename: 'model.stl',
+          relativePath: 'model.stl',
+          fileType: 'stl',
+          mimeType: 'model/stl',
+          sizeBytes: 100,
+          hash: 'model-hash',
+        },
+        {
+          filename: 'metadata.json',
+          relativePath: 'metadata.json',
+          fileType: 'other',
+          mimeType: 'application/json',
+          sizeBytes: 50,
+          hash: 'metadata-hash',
+        },
+      ],
+      totalSizeBytes: 150,
+    });
+    vi.mocked(modelService.buildAdditionalFileInputs).mockResolvedValue([
+      {
+        filename: 'model.stl',
+        relativePath: 'model.stl',
+        fileType: 'stl',
+        mimeType: 'model/stl',
+        sizeBytes: 100,
+        storagePath: 'models/model-1/model.stl',
+        hash: 'model-hash',
+      },
+      {
+        filename: 'metadata.json',
+        relativePath: 'metadata.json',
+        fileType: 'other',
+        mimeType: 'application/json',
+        sizeBytes: 50,
+        storagePath: 'models/model-1/metadata.json',
+        hash: 'metadata-hash',
+      },
+    ] as never);
+    vi.mocked(modelService.createModelFiles).mockResolvedValue([
+      { id: 'file-1', fileType: 'stl' },
+      { id: 'file-2', fileType: 'other' },
+    ] as never);
+    vi.mocked(collectionService.findOrCreateByName).mockResolvedValue({
+      id: 'collection-1',
+    } as never);
+  });
+
+  it('imports a root metadata.json when manually appending an archive', async () => {
+    vi.mocked(readMetadataFile).mockResolvedValue({
+      modelName: 'Dragon Knight',
+      description: 'A curated model',
+      artist: 'Example Artist',
+      tags: ['dragon', 'knight'],
+      metadata: { source: 'Example Game' },
+      newCollectionName: 'Fantasy',
+    });
+
+    await service.appendUploadToModel(
+      { tempFilePath: '/tmp/model.zip', originalFilename: 'model.zip' },
+      'model-1',
+      'user-1',
+      'library-1',
+    );
+
+    expect(readMetadataFile).toHaveBeenCalledWith('/tmp/model.zip_extracted');
+    expect(modelService.updateModel).toHaveBeenCalledWith('model-1', {
+      name: 'Dragon Knight',
+      description: 'A curated model',
+    });
+    expect(metadataService.setModelMetadata).toHaveBeenCalledWith('model-1', {
+      source: 'Example Game',
+      artist: 'Example Artist',
+      tags: ['dragon', 'knight'],
+    });
+    expect(collectionService.findOrCreateByName).toHaveBeenCalledWith(
+      'Fantasy',
+      'user-1',
+      'library-1',
+    );
+    expect(collectionService.addModelToCollection).toHaveBeenCalledWith(
+      'collection-1',
+      'model-1',
+    );
+  });
+
+  it('leaves model metadata unchanged when a manual upload has no metadata.json', async () => {
+    await service.appendUploadToModel(
+      { tempFilePath: '/tmp/model.zip', originalFilename: 'model.zip' },
+      'model-1',
+      'user-1',
+      'library-1',
+    );
+
+    expect(modelService.updateModel).not.toHaveBeenCalled();
+    expect(metadataService.setModelMetadata).not.toHaveBeenCalled();
+    expect(collectionService.findOrCreateByName).not.toHaveBeenCalled();
   });
 });
 

@@ -730,6 +730,7 @@ export class IngestionService {
       const manifest = archiveExtension
         ? await fileProcessingService.processArchive(file.tempFilePath, extractDir)
         : await this.stageSingleFileUpload(file.tempFilePath, file.originalFilename, extractDir);
+      const metadataFile = await readMetadataFile(extractDir);
 
       if (manifest.entries.length === 0) {
         throw validationError('Upload did not contain any supported files');
@@ -762,6 +763,13 @@ export class IngestionService {
         const createdFiles = await modelService.createModelFiles(modelId, modelFileInputs);
         await this.generateAndStoreThumbnails(modelId, manifest.entries, createdFiles, extractDir);
         await modelService.recalculateModelStats(modelId);
+        await this.applyBatchMetadata(
+          modelId,
+          userId,
+          libraryId,
+          metadataFile,
+          true,
+        );
       } catch (err) {
         await Promise.all(storedPaths.map((storedPath) => storageService.delete(storedPath).catch(() => {})));
         throw err;
@@ -807,9 +815,23 @@ export class IngestionService {
     userId: string,
     libraryId: string,
     batchMetadata: BatchUploadMetadata | undefined,
+    updateExistingModel = false,
   ): Promise<void> {
     if (!batchMetadata) return;
     try {
+      if (updateExistingModel) {
+        const name = batchMetadata.modelName?.trim();
+        const modelUpdates = {
+          ...(name ? { name } : {}),
+          ...(batchMetadata.description !== undefined
+            ? { description: batchMetadata.description }
+            : {}),
+        };
+        if (Object.keys(modelUpdates).length > 0) {
+          await modelService.updateModel(modelId, modelUpdates);
+        }
+      }
+
       const metadata = this.buildBatchMetadataValues(batchMetadata);
       if (Object.keys(metadata).length > 0) {
         await metadataService.setModelMetadata(modelId, metadata);

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from telethon.errors import FileReferenceExpiredError
+from telethon.tl.types import Channel, ChatPhotoEmpty
 
 from alexandria_telegram_importer import parallel_download, telegram_source
 from alexandria_telegram_importer.models import MediaKind, MediaRef
@@ -59,7 +60,74 @@ def source_with(client, *, connections: int = 1) -> TelegramSource:
     source._client = client
     source._downloads = SimpleNamespace(size=connections)
     source.entity = object()
+    source.channel_id = -1002050123456
+    source.channel_username = None
     return source
+
+
+def downloadable_message(message_id: int, filename: str | None):
+    file = (
+        SimpleNamespace(name=filename, ext=".zip", size=1024)
+        if filename is not None
+        else None
+    )
+    return SimpleNamespace(
+        id=message_id,
+        file=file,
+        document=SimpleNamespace(id=message_id) if file else None,
+        photo=None,
+        message=f"Caption {message_id}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_should_collect_only_selected_message_ids_and_report_missing_media() -> None:
+    class SelectionClient:
+        async def get_messages(self, _entity, ids):
+            assert ids == [10, 20, 30]
+            return [
+                downloadable_message(10, "dragon.zip"),
+                downloadable_message(20, None),
+                None,
+            ]
+
+    source = source_with(SelectionClient())
+
+    refs, unavailable = await source.collect_media_by_ids((10, 20, 30))
+
+    assert [(ref.message_id, ref.filename) for ref in refs] == [(10, "dragon.zip")]
+    assert unavailable == (20, 30)
+
+
+def test_should_build_a_private_message_link_from_the_peer_id() -> None:
+    source = source_with(RecordingTelethonClient())
+
+    assert source.message_link(321) == "https://t.me/c/2050123456/321"
+
+
+@pytest.mark.asyncio
+async def test_should_resolve_an_uncached_private_channel_from_dialogs() -> None:
+    selected = Channel(
+        id=2050123456,
+        title="Private models",
+        photo=ChatPhotoEmpty(),
+        date=None,
+        access_hash=123,
+    )
+
+    class FreshSessionClient:
+        async def get_entity(self, _channel):
+            raise ValueError("entity is not cached")
+
+        async def iter_dialogs(self):
+            yield SimpleNamespace(entity=selected)
+
+    source = source_with(FreshSessionClient())
+
+    await source.select_channel(-1002050123456)
+
+    assert source.entity is selected
+    assert source.channel_id == -1002050123456
 
 
 @pytest.mark.asyncio
