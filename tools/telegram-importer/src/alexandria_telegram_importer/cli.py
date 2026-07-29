@@ -5,8 +5,10 @@ import asyncio
 import getpass
 import logging
 import os
+import signal
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +42,35 @@ from .telegram_source import TelegramSource
 from .tracker import ImportTracker, StagedBundle
 
 log = logging.getLogger(__name__)
+
+
+def _install_graceful_stop_handlers() -> tuple[asyncio.Event, Callable[[], None]]:
+    """Request an orderly staging stop when the process receives a signal."""
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    installed: list[signal.Signals] = []
+
+    def request_stop(received: signal.Signals) -> None:
+        if stop_event.is_set():
+            return
+        log.warning(
+            "%s received; finishing active download bundles before stopping",
+            received.name,
+        )
+        stop_event.set()
+
+    for received in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(received, request_stop, received)
+        except (NotImplementedError, RuntimeError):
+            continue
+        installed.append(received)
+
+    def remove_handlers() -> None:
+        for received in installed:
+            loop.remove_signal_handler(received)
+
+    return stop_event, remove_handlers
 
 
 def _data_dir() -> Path:
@@ -314,6 +345,7 @@ class StagingResult:
     items: tuple[StagedBundle, ...]
     failed_keys: tuple[str, ...]
     staged_bytes: int
+    stopped: bool = False
 
     @property
     def staged(self) -> int:
@@ -406,11 +438,14 @@ async def stage_bundles(
     progress: ProgressReporter,
     concurrency: int = 1,
     exclude_keys: set[str] | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> StagingResult:
     """Stage up to `limit` not-yet-staged bundles, or all when it is omitted.
 
     Returns the new persisted bundle records plus failures and downloaded bytes.
     `concurrency` bundles are staged at once, matching the direct import path.
+    When `stop_event` is set, bundles already downloading finish but no queued
+    bundle begins.
     """
     already = tracker.staged_keys(telegram.channel_id) | (exclude_keys or set())
     stager = BundleStager(telegram=telegram, root=staging_dir)
@@ -432,6 +467,8 @@ async def stage_bundles(
         nonlocal staged_bytes
         label = bundle.models[0].logical_filename
         async with slots:
+            if stop_event is not None and stop_event.is_set():
+                return
             try:
                 with guarded_model(progress, label, parts=1) as handle:
                     folder = await stager.stage(bundle, handle)
@@ -474,6 +511,7 @@ async def stage_bundles(
         items=tuple(sorted(staged_items, key=lambda item: item.folder_name)),
         failed_keys=tuple(sorted(failed_keys)),
         staged_bytes=staged_bytes,
+        stopped=stop_event is not None and stop_event.is_set(),
     )
 
 
@@ -673,6 +711,7 @@ async def download_linked_messages(
     telegram: TelegramSource,
     tracker: ImportTracker | None,
     progress: ProgressReporter,
+    stop_event: asyncio.Event | None = None,
 ) -> int:
     """Stage only media explicitly named by a message-link file."""
     try:
@@ -768,10 +807,14 @@ async def download_linked_messages(
                 limit=len(items),
                 progress=progress,
                 concurrency=args.concurrency,
+                stop_event=stop_event,
             )
             staged += result.staged
             staged_bytes += result.staged_bytes
             failed += result.failed
+            if result.stopped:
+                print("Graceful stop complete; staged bundles are ready to resume later.")
+                return 1 if failed else 0
 
     if args.dry_run:
         print("\n\n".join(plans))
@@ -806,6 +849,7 @@ async def run_codex_staged_batches(
     refs: list[MediaRef],
     progress: ProgressReporter,
     work_root: Path,
+    stop_event: asyncio.Event | None = None,
 ) -> int:
     """Drain Telegram through stage, Codex cleanup, and scoped upload batches."""
     skill_path = args.cleanup_skill or find_cleanup_skill()
@@ -965,7 +1009,9 @@ async def run_codex_staged_batches(
         items: tuple[StagedBundle, ...],
         *,
         label: str,
-    ) -> None:
+    ) -> bool:
+        if stop_event is not None and stop_event.is_set():
+            return True
         cleanup = await cleanup_staged_bundles(
             items=items,
             staging_dir=args.staging_dir,
@@ -978,7 +1024,10 @@ async def run_codex_staged_batches(
         for status, count in cleanup.outcomes.items():
             totals[status] += count
         for bundle in cleanup.ready_bundles:
+            if stop_event is not None and stop_event.is_set():
+                return True
             await upload_ready(bundle, label=label)
+        return stop_event is not None and stop_event.is_set()
 
     try:
         pending_cleanups = tracker.staged_by_status(
@@ -1019,6 +1068,8 @@ async def run_codex_staged_batches(
             ("ready",),
         )
         for item in resumable_uploads:
+            if stop_event is not None and stop_event.is_set():
+                break
             batch_number += 1
             paths = tuple(
                 (args.staging_dir / path).resolve() for path in item.output_folders
@@ -1029,16 +1080,26 @@ async def run_codex_staged_batches(
                 label=f"Batch {batch_number}",
             )
 
+        if stop_event is not None and stop_event.is_set():
+            print("Graceful stop complete; staged bundles are ready to resume later.")
+            return 0
+
         resumable_cleanups = tracker.staged_by_status(
             telegram.channel_id,
             ("downloaded", "cleaning", "cleanup_failed"),
         )
         for offset in range(0, len(resumable_cleanups), args.stage):
+            if stop_event is not None and stop_event.is_set():
+                break
             items = resumable_cleanups[offset : offset + args.stage]
             batch_number += 1
             totals["resumed"] += len(items)
             print(f"Batch {batch_number}: resuming cleanup for {len(items)} folder(s)")
             await clean_and_upload(items, label=f"Batch {batch_number}")
+
+        if stop_event is not None and stop_event.is_set():
+            print("Graceful stop complete; staged bundles are ready to resume later.")
+            return 0
 
         while True:
             staging = await stage_bundles(
@@ -1050,9 +1111,13 @@ async def run_codex_staged_batches(
                 progress=progress,
                 concurrency=args.concurrency,
                 exclude_keys=excluded_keys,
+                stop_event=stop_event,
             )
             excluded_keys.update(staging.failed_keys)
             totals["stage_failed"] += staging.failed
+            if staging.stopped:
+                print("Graceful stop complete; staged bundles are ready to resume later.")
+                break
             if not staging.items and not staging.failed_keys:
                 break
 
@@ -1069,7 +1134,9 @@ async def run_codex_staged_batches(
             if not staging.items:
                 continue
             totals["staged"] += staging.staged
-            await clean_and_upload(staging.items, label=f"Batch {batch_number}")
+            if await clean_and_upload(staging.items, label=f"Batch {batch_number}"):
+                print("Graceful stop complete; staged bundles are ready to resume later.")
+                break
     finally:
         if alexandria is not None:
             await alexandria.close()
@@ -1143,8 +1210,12 @@ async def run(args: argparse.Namespace) -> int:
         download_connections=args.download_connections,
     )
 
+    stop_event: asyncio.Event | None = None
+    remove_stop_handlers: Callable[[], None] | None = None
+
     try:
         if isinstance(args.download_only, Path):
+            stop_event, remove_stop_handlers = _install_graceful_stop_handlers()
             if not args.dry_run:
                 tracker = ImportTracker(args.state)
             return await download_linked_messages(
@@ -1152,6 +1223,7 @@ async def run(args: argparse.Namespace) -> int:
                 telegram=telegram,
                 tracker=tracker,
                 progress=progress,
+                stop_event=stop_event,
             )
 
         await telegram.connect(_channel(args.channel))
@@ -1163,6 +1235,7 @@ async def run(args: argparse.Namespace) -> int:
         failed_to_stage = 0
 
         if args.download_only is not None or args.stage is not None:
+            stop_event, remove_stop_handlers = _install_graceful_stop_handlers()
             tracker = ImportTracker(args.state)
             if args.stage is not None and args.cleanup == "codex":
                 return await run_codex_staged_batches(
@@ -1172,6 +1245,7 @@ async def run(args: argparse.Namespace) -> int:
                     refs=refs,
                     progress=progress,
                     work_root=work_root,
+                    stop_event=stop_event,
                 )
             staging = await stage_bundles(
                 telegram=telegram,
@@ -1181,6 +1255,7 @@ async def run(args: argparse.Namespace) -> int:
                 limit=args.download_only or args.stage,
                 progress=progress,
                 concurrency=args.concurrency,
+                stop_event=stop_event,
             )
             summary = _staging_summary(
                 args.staging_dir,
@@ -1189,6 +1264,9 @@ async def run(args: argparse.Namespace) -> int:
                 staging.staged_bytes,
             )
             failed_to_stage = staging.failed
+            if staging.stopped:
+                print(summary + " Graceful stop complete; staged bundles are ready to resume later.")
+                return 1 if failed_to_stage else 0
             if args.download_only is not None:
                 print(summary)
                 return 1 if failed_to_stage else 0
@@ -1228,6 +1306,8 @@ async def run(args: argparse.Namespace) -> int:
             tracker.close()
         if alexandria:
             await alexandria.close()
+        if remove_stop_handlers is not None:
+            remove_stop_handlers()
         await telegram.close()
 
 

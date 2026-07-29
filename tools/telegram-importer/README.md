@@ -131,6 +131,8 @@ uv run alexandria-telegram-import \
 
 All three require `--staging-dir`, and `--staging-dir` requires one of them. `TELEGRAM_STAGING_DIR` sets the default directory. `--concurrency` applies to both phases: N bundles stage at once, and N folders upload at once. `--upload-only` is entirely local — it needs no Telegram credentials and opens no Telegram session — and combining it with `--dry-run` prints what would be uploaded without contacting Alexandria. Manual cleanup remains the default: `--stage N` without `--cleanup codex` prints one staging summary and waits for Enter before uploading exactly as before. Enter `q` to leave the folders for a later `--upload-only`; a non-interactive standard input is treated as quitting rather than hanging. Automated cleanup skips this pause and drains batches continuously.
 
+During staged downloading, press `Ctrl+C` once (or send `SIGTERM`) to request a clean stop. The importer finishes every bundle already downloading, records those folders normally, and exits before starting another bundle or beginning cleanup/upload. Run the same command again to resume from the persisted staging state.
+
 ### Downloading selected message links
 
 Pass a text file instead of a number to `--download-only` to stage an exact
