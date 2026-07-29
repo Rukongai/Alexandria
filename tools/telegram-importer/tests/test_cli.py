@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import zipfile
 from dataclasses import replace
@@ -1180,3 +1181,189 @@ def _forbidden_telegram(**kwargs):
 
 async def _fail(message: str):
     raise AssertionError(message)
+
+
+async def test_should_finish_active_bundle_without_starting_next_after_stop_request(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+    from alexandria_telegram_importer.progress import NullProgress
+
+    recorded: list[dict] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class FakeTracker:
+        def staged_keys(self, channel_id):
+            return set()
+
+        def record_staged(self, **kwargs):
+            recorded.append(kwargs)
+            return SimpleNamespace(folder_name=kwargs["folder_name"])
+
+    class FakeStager:
+        def __init__(self, *, telegram, root) -> None:
+            self.root = root
+
+        async def stage(self, bundle, handle):
+            started.set()
+            await release.wait()
+            folder = self.root / str(bundle.models[0].first_message_id)
+            folder.mkdir(parents=True)
+            return folder
+
+    monkeypatch.setattr(cli, "BundleStager", FakeStager)
+    stop_event = asyncio.Event()
+    staging = asyncio.create_task(
+        cli.stage_bundles(
+            telegram=SimpleNamespace(channel_id=-100123),
+            tracker=FakeTracker(),
+            refs=[
+                MediaRef(1, "first.zip", MediaKind.MODEL),
+                MediaRef(2, "preview.jpg", MediaKind.ATTACHMENT),
+                MediaRef(3, "second.zip", MediaKind.MODEL),
+            ],
+            staging_dir=tmp_path / "staging",
+            limit=None,
+            progress=NullProgress(),
+            concurrency=1,
+            stop_event=stop_event,
+        )
+    )
+
+    await started.wait()
+    stop_event.set()
+    release.set()
+    result = await staging
+
+    assert result.stopped is True
+    assert [item["model_message_ids"] for item in recorded] == [(1,)]
+
+
+async def test_should_finish_all_active_bundles_without_starting_queued_bundles(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+    from alexandria_telegram_importer.progress import NullProgress
+
+    recorded: list[dict] = []
+    started: list[int] = []
+    two_active = asyncio.Event()
+    release = asyncio.Event()
+
+    class FakeTracker:
+        def staged_keys(self, channel_id):
+            return set()
+
+        def record_staged(self, **kwargs):
+            recorded.append(kwargs)
+            return SimpleNamespace(folder_name=kwargs["folder_name"])
+
+    class FakeStager:
+        def __init__(self, *, telegram, root) -> None:
+            self.root = root
+
+        async def stage(self, bundle, handle):
+            message_id = bundle.models[0].first_message_id
+            started.append(message_id)
+            if len(started) == 2:
+                two_active.set()
+            await release.wait()
+            folder = self.root / str(message_id)
+            folder.mkdir(parents=True)
+            return folder
+
+    monkeypatch.setattr(cli, "BundleStager", FakeStager)
+    stop_event = asyncio.Event()
+    staging = asyncio.create_task(
+        cli.stage_bundles(
+            telegram=SimpleNamespace(channel_id=-100123),
+            tracker=FakeTracker(),
+            refs=[
+                MediaRef(1, "first.zip", MediaKind.MODEL),
+                MediaRef(2, "first.jpg", MediaKind.ATTACHMENT),
+                MediaRef(3, "second.zip", MediaKind.MODEL),
+                MediaRef(4, "second.jpg", MediaKind.ATTACHMENT),
+                MediaRef(5, "third.zip", MediaKind.MODEL),
+            ],
+            staging_dir=tmp_path / "staging",
+            limit=None,
+            progress=NullProgress(),
+            concurrency=2,
+            stop_event=stop_event,
+        )
+    )
+
+    await two_active.wait()
+    stop_event.set()
+    release.set()
+    result = await staging
+
+    assert result.stopped is True
+    assert set(started) == {1, 3}
+    assert {item["model_message_ids"] for item in recorded} == {(1,), (3,)}
+
+
+async def test_should_not_upload_after_stop_requested_during_codex_cleanup(
+    monkeypatch, tmp_path
+) -> None:
+    from alexandria_telegram_importer import cli
+    from alexandria_telegram_importer.tracker import StagedBundle
+
+    item = StagedBundle(
+        bundle_key="first-key",
+        source_channel_id=-100123,
+        folder_name="first",
+        model_message_ids=(1,),
+        status="downloaded",
+        downloaded_at="2026-01-01T00:00:00+00:00",
+    )
+    stop_event = asyncio.Event()
+
+    class FakeRunner:
+        def __init__(self, **kwargs) -> None:
+            self.reference_folder = kwargs["reference_folder"]
+
+        def preflight(self) -> None:
+            return None
+
+    class FakeTracker:
+        def staged_by_status(self, channel_id, statuses):
+            return ()
+
+    async def fake_stage_bundles(**kwargs):
+        return cli.StagingResult((item,), (), 1)
+
+    async def fake_cleanup_staged_bundles(**kwargs):
+        stop_event.set()
+        return cli.CleanupBatchResult(
+            (cli.ReadyBundle(item, (tmp_path / "staging" / "first",)),),
+            {"ready": 1},
+        )
+
+    monkeypatch.setattr(cli, "CodexCleanupRunner", FakeRunner)
+    monkeypatch.setattr(cli, "stage_bundles", fake_stage_bundles)
+    monkeypatch.setattr(cli, "cleanup_staged_bundles", fake_cleanup_staged_bundles)
+    monkeypatch.setattr(cli, "_login", lambda args: _fail("must not upload"))
+    args = SimpleNamespace(
+        cleanup_skill=tmp_path / "SKILL.md",
+        cleanup_reference=tmp_path / "reference",
+        codex_command="codex",
+        codex_model=None,
+        codex_reasoning_effort=None,
+        cleanup_timeout=60,
+        cleanup_concurrency=1,
+        concurrency=1,
+        stage=1,
+        staging_dir=tmp_path / "staging",
+    )
+
+    assert await cli.run_codex_staged_batches(
+        args=args,
+        telegram=SimpleNamespace(channel_id=-100123),
+        tracker=FakeTracker(),
+        refs=[],
+        progress=None,
+        work_root=tmp_path / "work",
+        stop_event=stop_event,
+    ) == 0
